@@ -99,7 +99,7 @@ armoire = "armoire.cli:main"
 Homepage = "https://github.com/dafu-zhu/armoire"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6", "pytest-playwright>=0.5"]
+dev = ["pytest>=8.0", "httpx2>=2.9", "ruff>=0.6", "pytest-playwright>=0.5"]
 
 [build-system]
 requires = ["hatchling"]
