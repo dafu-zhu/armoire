@@ -21,7 +21,8 @@
 - No request may walk the full tree. Directory listing is one level; the flat index is built once at startup.
 - Default ignores, exactly: `.git`, `.venv`, `node_modules`, `__pycache__`, `site-packages`, `.ruff_cache`, `.pytest_cache`.
 - Colors, verbatim: background `#ffffff`, text `#1f2328`, link `#0969da`, border `#d1d9e0`, subtle fill `#f6f8fa`. Radius 6px.
-- Package name and CLI are both `armoire`. Static assets ship inside the package at `src/armoire/static/`.
+- Package name and CLI are both `armoire`. Static assets ship inside the package at `src/armoire/static/`, vendored libraries included — the wheel must be self-contained or `uvx armoire serve` is broken on install.
+- Frontend behaviour is verified by Playwright against a live server, never by asserting on JavaScript source text.
 
 ## Deviation from the spec
 
@@ -98,7 +99,7 @@ armoire = "armoire.cli:main"
 Homepage = "https://github.com/dafu-zhu/armoire"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6"]
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6", "pytest-playwright>=0.5"]
 
 [build-system]
 requires = ["hatchling"]
@@ -256,10 +257,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-extras --dev
+      - run: uv run playwright install --with-deps chromium
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest -v
 ```
+
+The vendored frontend libraries are committed to the repository, so no fetch step
+is needed here — see Task 9.
 
 - [ ] **Step 8: Verify lint and the full suite pass locally**
 
@@ -1484,13 +1489,13 @@ git commit -m "feat: armoire serve command"
 
 ### Task 9: Vendored libraries, page shell, and design tokens
 
-Frontend tasks cannot be driven by pytest assertions on behaviour. Each ends with
-an explicit manual verification step naming exactly what to look at.
+Frontend behaviour is verified by Playwright against a live server. This task also
+establishes the shared fixtures every later frontend test uses.
 
 **Files:**
-- Create: `scripts/vendor.py`, `src/armoire/static/app.css`
+- Create: `scripts/vendor.py`, `src/armoire/static/app.css`, `src/armoire/static/vendor/**` (committed)
 - Modify: `src/armoire/static/index.html` (replaces the Task 7 placeholder)
-- Test: `tests/test_static.py`
+- Test: `tests/conftest.py`, `tests/test_shell.py`
 
 **Interfaces:**
 - Consumes: nothing
@@ -1502,10 +1507,12 @@ an explicit manual verification step naming exactly what to look at.
 Create `scripts/vendor.py`:
 
 ```python
-"""Download frontend libraries into the package once.
+"""Download the frontend libraries into the package.
 
 Vendored rather than CDN-loaded so armoire works offline and makes no network
-request per page load. Run this after cloning; the output is gitignored.
+request per page load. The downloaded files are COMMITTED to the repository:
+the wheel has to be self-contained or `uvx armoire serve` installs a broken
+page. Re-run this only to bump a version.
 """
 
 import urllib.request
@@ -1558,7 +1565,10 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it and confirm the files land**
 
 Run: `uv run python scripts/vendor.py`
-Expected: seven files in `src/armoire/static/vendor/`, seven fonts in `vendor/fonts/`. Confirm `vendor/` is already covered by the `static/vendor/` line in `.gitignore`.
+
+Expected: seven files in `src/armoire/static/vendor/`, seven fonts in
+`vendor/fonts/`. Confirm they are **not** ignored — `git status --short` must show
+them as untracked. They get committed in Step 9; the wheel is broken without them.
 
 - [ ] **Step 3: Write the page shell**
 
@@ -1801,63 +1811,187 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 }
 ```
 
-- [ ] **Step 5: Write the failing test**
+- [ ] **Step 5: Write the shared test fixtures**
 
-Create `tests/test_static.py`:
+Create `tests/conftest.py`. Every Playwright test in Tasks 9–11 runs against this
+sample folder and this live server.
 
 ```python
-from pathlib import Path
+"""A small sample folder, and a live server in front of it."""
+
+import json
+import socket
+import threading
+import time
+
+import polars as pl
+import pytest
+import uvicorn
+
+from armoire.app import create_app
+
+MINIMAL_PDF = b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj
+trailer<</Root 1 0 R>>
+%%EOF
+"""
+
+ROOT_README = """# Sample Folder
+
+Inline math $E = mc^2$ and a display equation:
+
+$$\\int_0^1 x^2 dx = \\frac{1}{3}$$
+
+```mermaid
+flowchart LR
+  A[Start] --> B[End]
+```
+
+See [notes/](notes/) for the nested folder.
+"""
+
+NOTEBOOK = {
+    "cells": [
+        {"cell_type": "markdown", "metadata": {}, "source": ["# Notebook Heading\n"]},
+        {
+            "cell_type": "code",
+            "execution_count": 1,
+            "metadata": {},
+            "source": ["print('notebook output')\n"],
+            "outputs": [
+                {"output_type": "stream", "name": "stdout", "text": ["notebook output\n"]}
+            ],
+        },
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
+
+
+@pytest.fixture(scope="session")
+def sample_root(tmp_path_factory):
+    root = tmp_path_factory.mktemp("sample")
+    (root / "README.md").write_text(ROOT_README, encoding="utf-8")
+    (root / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (root / "doc.pdf").write_bytes(MINIMAL_PDF)
+    (root / "blob.dat").write_bytes(b"\x00\x01\x02\x03")
+    (root / "nb.ipynb").write_text(json.dumps(NOTEBOOK), encoding="utf-8")
+    pl.DataFrame(
+        {"i": range(250), "label": [f"r{n}" for n in range(250)]}
+    ).write_parquet(root / "data.parquet")
+
+    notes = root / "notes"
+    notes.mkdir()
+    (notes / "README.md").write_text("# Notes\n\nNested folder readme.\n", encoding="utf-8")
+    (notes / "deep").mkdir()
+    (notes / "deep" / "buried.md").write_text("# Buried\n", encoding="utf-8")
+
+    ignored = root / ".venv"
+    ignored.mkdir()
+    (ignored / "junk.py").write_text("noise\n", encoding="utf-8")
+    return root
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture(scope="session")
+def live_server(sample_root):
+    app = create_app(sample_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("server did not start within 10s")
+        time.sleep(0.05)
+
+    yield f"http://127.0.0.1:{port}"
+
+    server.should_exit = True
+    thread.join(timeout=5)
+```
+
+- [ ] **Step 6: Write the failing shell test**
+
+Create `tests/test_shell.py`:
+
+```python
+"""The page shell: does it load, and does it match the spec's visual tokens."""
 
 import pytest
 
-# Derived from this file, not the working directory, so the suite passes
-# whatever directory pytest is invoked from.
-STATIC = Path(__file__).resolve().parent.parent / "src" / "armoire" / "static"
 REQUIRED_IDS = ["tree", "filter", "filter-results", "breadcrumb", "content", "status"]
 
 
-def test_index_html_exists():
-    assert (STATIC / "index.html").is_file()
-
-
 @pytest.mark.parametrize("element_id", REQUIRED_IDS)
-def test_shell_declares_the_dom_contract(element_id):
-    assert f'id="{element_id}"' in (STATIC / "index.html").read_text(encoding="utf-8")
+def test_shell_provides_the_dom_contract(page, live_server, element_id):
+    page.goto(live_server)
+    assert page.locator(f"#{element_id}").count() == 1
 
 
-def test_shell_loads_the_module_entry_point():
-    html = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert 'type="module" src="/app.js"' in html
+def test_page_makes_no_external_requests(page, live_server):
+    external = []
+    page.on(
+        "request",
+        lambda request: external.append(request.url)
+        if not request.url.startswith(live_server)
+        else None,
+    )
+    page.goto(live_server)
+    page.wait_for_load_state("networkidle")
+    assert external == []
 
 
-def test_no_external_urls_in_the_shell():
-    html = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert "http://" not in html
-    assert "https://" not in html
+def test_background_and_text_use_the_specified_colours(page, live_server):
+    page.goto(live_server)
+    body = page.locator("body")
+    assert body.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 255, 255)"
+    assert body.evaluate("el => getComputedStyle(el).color") == "rgb(31, 35, 40)"
 
 
-def test_stylesheet_uses_the_specified_tokens():
-    css = (STATIC / "app.css").read_text(encoding="utf-8")
-    for token in ["#ffffff", "#1f2328", "#0969da", "#d1d9e0", "#f6f8fa"]:
-        assert token in css
+def test_filter_input_is_present_and_empty(page, live_server):
+    page.goto(live_server)
+    assert page.locator("#filter").input_value() == ""
+    assert page.locator("#filter-results").is_hidden()
 ```
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [ ] **Step 7: Run the test to verify it fails, then passes**
 
-Run: `uv run pytest tests/test_static.py -v`
-Expected: PASS
+First install the browser once: `uv run playwright install chromium`
 
-- [ ] **Step 7: Verify the shell renders**
+Run: `uv run pytest tests/test_shell.py -v`
+
+Expected before `index.html` and `app.css` exist in their Step 3/4 form: FAIL on the
+DOM contract. After: PASS. The console will show a 404 for `/app.js` — that module
+arrives in Task 10 and the console-error assertion lands there with it.
+
+- [ ] **Step 8: Verify the shell by eye**
 
 Run: `uv run armoire serve .` and open `http://127.0.0.1:8420`
-Expected: white page, bordered header with a "Filter files…" input, empty left rail with a right border, grey status bar pinned at the bottom. Browser devtools Network tab shows zero external requests.
+Expected: white page, bordered header with a "Filter files…" input, empty left rail with a right border, grey status bar pinned at the bottom.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit, vendored libraries included**
 
 ```bash
-git add scripts/vendor.py src/armoire/static/index.html src/armoire/static/app.css tests/test_static.py
-git commit -m "feat: page shell, design tokens and vendor script"
+git add scripts/vendor.py src/armoire/static/index.html src/armoire/static/app.css src/armoire/static/vendor tests/conftest.py tests/test_shell.py
+git commit -m "feat: page shell, design tokens and vendored libraries"
 ```
+
+Confirm `git show --stat HEAD` lists the files under `static/vendor/`. If it does
+not, they are still being ignored and the published wheel will serve a broken page.
 
 ---
 
@@ -1865,7 +1999,7 @@ git commit -m "feat: page shell, design tokens and vendor script"
 
 **Files:**
 - Create: `src/armoire/static/app.js`, `src/armoire/static/tree.js`, `src/armoire/static/filter.js`
-- Modify: `tests/test_static.py`
+- Test: `tests/test_navigation.py`
 
 **Interfaces:**
 - Consumes: `/api/tree`, `/api/index`, the DOM ids from Task 9
@@ -2184,34 +2318,89 @@ tree.ready.then(() => {
 });
 ```
 
-- [ ] **Step 4: Add the module wiring test**
+- [ ] **Step 4: Write the navigation tests**
 
-Append to `tests/test_static.py`:
+Create `tests/test_navigation.py`. These drive a real browser — they fail if a
+module throws at runtime, which source-text assertions cannot catch.
 
 ```python
-def test_frontend_modules_exist():
-    for name in ["app.js", "tree.js", "filter.js"]:
-        assert (STATIC / name).is_file()
+"""Tree, filter and routing, exercised in a real browser."""
 
 
-def test_app_imports_its_modules_not_reimplements_them():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert "from './tree.js'" in js
-    assert "from './filter.js'" in js
-    assert "from './preview.js'" in js
+def test_tree_lists_the_root_folder(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    names = page.locator("#tree .row").all_inner_texts()
+    assert any("notes" in name for name in names)
+    assert any("README.md" in name for name in names)
 
 
-def test_frontend_makes_no_external_requests():
-    for name in ["app.js", "tree.js", "filter.js"]:
-        js = (STATIC / name).read_text(encoding="utf-8")
-        assert "//cdn" not in js
-        assert "https://" not in js
+def test_tree_hides_ignored_directories(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    assert all(".venv" not in name for name in page.locator("#tree .row").all_inner_texts())
+
+
+def test_expanding_a_directory_reveals_its_children(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    assert page.locator('#tree [data-path="notes/deep"]').count() == 0
+    page.locator('#tree [data-path="notes"]').click()
+    page.wait_for_selector('#tree [data-path="notes/deep"]')
+    assert page.locator('#tree [data-path="notes/deep"]').count() == 1
+
+
+def test_clicking_a_file_updates_the_url(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    page.locator('#tree [data-path="code.py"]').click()
+    page.wait_for_function("() => location.hash === '#/code.py'")
+
+
+def test_filter_finds_a_deeply_nested_file(page, live_server):
+    page.goto(live_server)
+    page.wait_for_function("() => document.querySelector('#filter').placeholder.includes('Filter')")
+    page.locator("#filter").fill("buried")
+    page.wait_for_selector("#filter-results li")
+    assert "notes/deep/buried.md" in page.locator("#filter-results li").first.inner_text()
+
+
+def test_filter_enter_navigates_to_the_match(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    page.locator("#filter").fill("buried")
+    page.wait_for_selector("#filter-results li")
+    page.locator("#filter").press("Enter")
+    page.wait_for_function("() => location.hash === '#/notes/deep/buried.md'")
+
+
+def test_deep_link_reload_expands_the_tree_to_the_file(page, live_server):
+    page.goto(f"{live_server}/#/notes/deep/buried.md")
+    page.wait_for_selector('#tree [data-path="notes/deep/buried.md"]')
+    assert page.locator('#tree [data-path="notes/deep/buried.md"]').count() == 1
+
+
+def test_breadcrumb_reflects_the_current_path(page, live_server):
+    page.goto(f"{live_server}/#/notes/deep/buried.md")
+    page.wait_for_selector("#breadcrumb a")
+    text = page.locator("#breadcrumb").inner_text()
+    assert "notes" in text and "deep" in text and "buried.md" in text
+
+
+def test_no_console_errors_during_navigation(page, live_server):
+    errors = []
+    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{live_server}/#/notes/deep/buried.md")
+    page.wait_for_selector("#content")
+    page.wait_for_load_state("networkidle")
+    assert errors == []
 ```
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `uv run pytest tests/test_static.py -v`
-Expected: PASS
+Run: `uv run pytest tests/test_navigation.py tests/test_shell.py -v`
+Expected: PASS. `test_deep_link_reload_expands_the_tree_to_the_file` is the one that catches an un-awaited `revealPath` — if it flakes, the expander promises are not being awaited.
 
 - [ ] **Step 6: Verify manually**
 
@@ -2241,7 +2430,8 @@ git commit -m "feat: lazy tree, fuzzy filter and hash router"
 
 **Files:**
 - Create: `src/armoire/static/format.js`, `src/armoire/static/preview.js`, `src/armoire/static/renderers/{listing,markdown,code,pdf,table,notebook}.js`
-- Modify: `tests/test_static.py`, `README.md`
+- Test: `tests/test_renderers.py`
+- Modify: `README.md`
 
 **Interfaces:**
 - Consumes: `/api/preview`, `/api/tree`, `/api/raw`; the `size` and `mtime` keys present on every preview payload from Task 7
@@ -2542,7 +2732,9 @@ async function getJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(body.detail || `HTTP ${response.status}`);
+    const error = new Error(body.detail || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -2599,13 +2791,14 @@ export async function renderPreview(container, path, page = 0) {
   // The root and any directory come back from /api/tree, not /api/preview.
   if (path === '') return renderDirectory(container, path);
 
-  const data = await getJson(
-    `/api/preview?path=${encodeURIComponent(path)}&page=${page}`,
-  ).catch(async (error) => {
-    if (String(error.message).includes('no such file')) return renderDirectory(container, path);
+  let data;
+  try {
+    data = await getJson(`/api/preview?path=${encodeURIComponent(path)}&page=${page}`);
+  } catch (error) {
+    // /api/preview refuses directories with a 404; /api/tree serves them.
+    if (error.status === 404) return renderDirectory(container, path);
     throw error;
-  });
-  if (typeof data === 'string') return data;
+  }
 
   const reload = (nextPage) => renderPreview(container, path, nextPage);
 
@@ -2646,41 +2839,126 @@ export async function renderPreview(container, path, page = 0) {
 }
 ```
 
-- [ ] **Step 6: Add the renderer wiring test**
+- [ ] **Step 6: Write the renderer tests**
 
-Append to `tests/test_static.py`:
+Create `tests/test_renderers.py`. Each asserts the rendered output in a real
+browser, so a renderer that throws fails its test.
 
 ```python
-RENDERERS = ["listing", "markdown", "code", "pdf", "table", "notebook"]
+"""Every renderer, exercised against the sample folder in a real browser."""
 
 
-@pytest.mark.parametrize("name", RENDERERS)
-def test_renderer_module_exists(name):
-    assert (STATIC / "renderers" / f"{name}.js").is_file()
+def open_path(page, live_server, path):
+    page.goto(f"{live_server}/#/{path}")
+    page.wait_for_selector("#content *")
 
 
-def test_status_line_reports_size_and_age():
-    js = (STATIC / "preview.js").read_text(encoding="utf-8")
-    assert "formatSize(data.size)" in js
-    assert "formatAge(data.mtime)" in js
+def test_directory_shows_a_listing(page, live_server):
+    open_path(page, live_server, "notes")
+    assert page.locator(".listing").count() == 1
+    assert "buried" not in page.locator(".listing").inner_text()
+    assert "deep" in page.locator(".listing").inner_text()
 
 
-@pytest.mark.parametrize("name", RENDERERS)
-def test_preview_imports_every_renderer(name):
-    js = (STATIC / "preview.js").read_text(encoding="utf-8")
-    assert f"./renderers/{name}.js" in js
+def test_directory_renders_its_readme_below_the_listing(page, live_server):
+    open_path(page, live_server, "notes")
+    page.wait_for_selector(".markdown-body")
+    assert "Nested folder readme" in page.locator(".markdown-body").inner_text()
 
 
-def test_every_preview_kind_has_a_branch():
-    js = (STATIC / "preview.js").read_text(encoding="utf-8")
-    for kind in ["markdown", "code", "notebook", "table", "pdf", "image", "error"]:
-        assert f"case '{kind}'" in js
+def test_markdown_renders_headings(page, live_server):
+    open_path(page, live_server, "README.md")
+    assert page.locator(".markdown-body h1").inner_text() == "Sample Folder"
 
 
-def test_renderers_make_no_external_requests():
-    for name in RENDERERS:
-        js = (STATIC / "renderers" / f"{name}.js").read_text(encoding="utf-8")
-        assert "https://" not in js
+def test_markdown_renders_math_through_katex(page, live_server):
+    open_path(page, live_server, "README.md")
+    page.wait_for_selector(".katex")
+    assert page.locator(".katex").count() >= 2
+
+
+def test_markdown_renders_mermaid_as_svg(page, live_server):
+    open_path(page, live_server, "README.md")
+    page.wait_for_selector(".mermaid-slot svg")
+    assert page.locator(".mermaid-slot svg").count() == 1
+
+
+def test_markdown_rewrites_relative_links_to_in_app_routes(page, live_server):
+    open_path(page, live_server, "README.md")
+    link = page.locator('.markdown-body a[href="#/notes"]')
+    assert link.count() == 1
+    link.click()
+    page.wait_for_selector(".listing")
+
+
+def test_code_is_syntax_highlighted(page, live_server):
+    open_path(page, live_server, "code.py")
+    page.wait_for_selector("pre.code code.hljs")
+    assert "return" in page.locator("pre.code").inner_text()
+
+
+def test_notebook_renders_cells_and_outputs(page, live_server):
+    open_path(page, live_server, "nb.ipynb")
+    page.wait_for_selector(".notebook-body")
+    body = page.locator(".notebook-body").inner_text()
+    assert "Notebook Heading" in body
+    assert "notebook output" in body
+
+
+def test_pdf_is_embedded(page, live_server):
+    open_path(page, live_server, "doc.pdf")
+    frame = page.locator("iframe.pdf")
+    assert frame.count() == 1
+    assert "doc.pdf" in frame.get_attribute("src")
+
+
+def test_table_shows_schema_and_first_page(page, live_server):
+    open_path(page, live_server, "data.parquet")
+    page.wait_for_selector(".datatable")
+    assert "250 rows" in page.locator(".card-head").inner_text()
+    assert page.locator(".datatable tr").count() == 101  # header + 100 rows
+
+
+def test_table_pager_advances(page, live_server):
+    open_path(page, live_server, "data.parquet")
+    page.wait_for_selector(".datatable")
+    assert page.locator(".datatable tr").nth(1).inner_text().startswith("0")
+    page.get_by_role("button", name="Next").click()
+    page.wait_for_function(
+        "() => document.querySelector('.pager span').textContent.includes('Page 2')"
+    )
+    assert page.locator(".datatable tr").nth(1).inner_text().startswith("100")
+
+
+def test_table_previous_is_disabled_on_the_first_page(page, live_server):
+    open_path(page, live_server, "data.parquet")
+    page.wait_for_selector(".pager")
+    assert page.get_by_role("button", name="Previous").is_disabled()
+
+
+def test_unsupported_type_offers_a_download(page, live_server):
+    open_path(page, live_server, "blob.dat")
+    assert "No preview" in page.locator("#content").inner_text()
+    assert page.get_by_role("link", name="Download").count() == 1
+
+
+def test_status_bar_reports_type_size_and_age(page, live_server):
+    open_path(page, live_server, "code.py")
+    page.wait_for_function("() => document.querySelector('#status').textContent.includes('·')")
+    status = page.locator("#status").inner_text()
+    assert "python" in status
+    assert "B" in status
+    assert "modified" in status
+
+
+def test_no_console_errors_across_every_renderer(page, live_server):
+    errors = []
+    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    for path in ["", "notes", "README.md", "code.py", "nb.ipynb", "data.parquet", "blob.dat"]:
+        open_path(page, live_server, path)
+    page.wait_for_load_state("networkidle")
+    assert errors == []
 ```
 
 - [ ] **Step 7: Run the full suite**
@@ -2723,14 +3001,13 @@ Install from source until the first release:
     git clone https://github.com/dafu-zhu/armoire
     cd armoire
     uv sync
-    uv run python scripts/vendor.py
     uv run armoire serve /path/to/folder
 ```
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add src/armoire/static/preview.js src/armoire/static/format.js src/armoire/static/renderers tests/test_static.py README.md
+git add src/armoire/static/preview.js src/armoire/static/format.js src/armoire/static/renderers tests/test_renderers.py README.md
 git commit -m "feat: markdown, code, pdf, table and notebook renderers"
 ```
 
