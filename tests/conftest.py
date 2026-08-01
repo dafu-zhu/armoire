@@ -61,24 +61,29 @@ NOTEBOOK = {
 @pytest.fixture(scope="session")
 def sample_root(tmp_path_factory):
     root = tmp_path_factory.mktemp("sample")
-    (root / "README.md").write_text(ROOT_README, encoding="utf-8")
-    (root / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    # newline="" avoids Windows' universal-newline translation on write, so
+    # the markdown renderer's exact `\n`-anchored mermaid-fence regex sees
+    # the same bytes on every platform.
+    (root / "README.md").write_text(ROOT_README, encoding="utf-8", newline="")
+    (root / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8", newline="")
     (root / "doc.pdf").write_bytes(MINIMAL_PDF)
     (root / "blob.dat").write_bytes(b"\x00\x01\x02\x03")
-    (root / "nb.ipynb").write_text(json.dumps(NOTEBOOK), encoding="utf-8")
+    (root / "nb.ipynb").write_text(json.dumps(NOTEBOOK), encoding="utf-8", newline="")
     pl.DataFrame({"i": range(250), "label": [f"r{n}" for n in range(250)]}).write_parquet(
         root / "data.parquet"
     )
 
     notes = root / "notes"
     notes.mkdir()
-    (notes / "README.md").write_text("# Notes\n\nNested folder readme.\n", encoding="utf-8")
+    (notes / "README.md").write_text(
+        "# Notes\n\nNested folder readme.\n", encoding="utf-8", newline=""
+    )
     (notes / "deep").mkdir()
-    (notes / "deep" / "buried.md").write_text("# Buried\n", encoding="utf-8")
+    (notes / "deep" / "buried.md").write_text("# Buried\n", encoding="utf-8", newline="")
 
     ignored = root / ".venv"
     ignored.mkdir()
-    (ignored / "junk.py").write_text("noise\n", encoding="utf-8")
+    (ignored / "junk.py").write_text("noise\n", encoding="utf-8", newline="")
     return root
 
 
