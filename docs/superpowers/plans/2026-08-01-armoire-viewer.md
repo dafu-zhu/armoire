@@ -940,7 +940,8 @@ def test_reports_total_rows_not_page_length(parquet):
 
 
 def test_second_page_starts_where_first_ended(parquet):
-    assert preview_table(parquet, page=1, page_size=100)["rows"][0][0] == 100
+    # "100", not 100 — every cell is str()-ed for JSON safety.
+    assert preview_table(parquet, page=1, page_size=100)["rows"][0][0] == "100"
 
 
 def test_final_partial_page(parquet):
