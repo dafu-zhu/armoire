@@ -1936,11 +1936,19 @@ flowchart LR
 See [notes/](notes/) for the nested folder.
 """
 
+# Every cell carries an "id": nbformat_minor 5 requires it, and a fixture
+# without one is not shaped like anything Jupyter would actually write.
 NOTEBOOK = {
     "cells": [
-        {"cell_type": "markdown", "metadata": {}, "source": ["# Notebook Heading\n"]},
+        {
+            "cell_type": "markdown",
+            "id": "intro",
+            "metadata": {},
+            "source": ["# Notebook Heading\n"],
+        },
         {
             "cell_type": "code",
+            "id": "emit",
             "execution_count": 1,
             "metadata": {},
             "source": ["print('notebook output')\n"],
