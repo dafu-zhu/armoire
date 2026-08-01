@@ -1,5 +1,6 @@
 """HTTP surface. Routing and error translation only — no logic lives here."""
 
+import logging
 import mimetypes
 from dataclasses import asdict
 from pathlib import Path
@@ -15,6 +16,8 @@ from armoire.previews.notebook import preview_notebook
 from armoire.previews.table import preview_table
 from armoire.previews.text import preview_text
 from armoire.scanner import list_dir
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -37,11 +40,10 @@ def create_app(root: Path) -> FastAPI:
 
     @app.get("/api/tree")
     def tree(path: str = Query("")) -> dict:
-        _resolve(root, path)
         try:
             dirs, files = list_dir(root, path)
         except PathOutsideRoot:
-            raise HTTPException(status_code=403, detail="outside root") from None
+            raise HTTPException(status_code=403, detail="path is outside the served root") from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="no such directory") from None
         return {
@@ -78,6 +80,7 @@ def create_app(root: Path) -> FastAPI:
         except Exception as exc:
             # A corrupt file is a rendering problem, not a server fault. The
             # client shows an error card; the server stays up.
+            logger.exception("preview failed for %s", path)
             return envelope | {"kind": "error", "message": str(exc)}
 
         # pdf, image and binary are fetched from /api/raw by the client.
@@ -89,7 +92,20 @@ def create_app(root: Path) -> FastAPI:
         if not target.is_file():
             raise HTTPException(status_code=404, detail="no such file")
         media_type, _ = mimetypes.guess_type(target.name)
-        return FileResponse(target, media_type=media_type or "application/octet-stream")
+        kind = kind_for(extension_of(target))
+        # Only the kinds the client embeds are served inline. Anything else —
+        # notably .html and .svg — downloads instead of executing in armoire's
+        # own origin, where it could read any file under the served root.
+        inline = kind in ("pdf", "image")
+        disposition = "inline" if inline else "attachment"
+        return FileResponse(
+            target,
+            media_type=media_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'{disposition}; filename="{target.name}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

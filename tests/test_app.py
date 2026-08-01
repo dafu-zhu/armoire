@@ -1,3 +1,5 @@
+import hashlib
+
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +19,7 @@ def root(tmp_path):
     pl.DataFrame({"i": [1, 2, 3]}).write_parquet(tmp_path / "d.parquet")
     (tmp_path / ".venv").mkdir()
     (tmp_path / "bad.ipynb").write_text("{not json", encoding="utf-8")
+    (tmp_path / "evil.html").write_bytes(b"<script>alert(document.cookie)</script>")
     return tmp_path
 
 
@@ -103,6 +106,21 @@ def test_raw_outside_root_is_403(client):
     assert client.get("/api/raw", params={"path": "../secret"}).status_code == 403
 
 
+def test_raw_pdf_is_served_inline(client):
+    response = client.get("/api/raw", params={"path": "doc.pdf"})
+    assert response.headers["content-disposition"].startswith("inline")
+
+
+def test_raw_html_is_forced_to_download(client):
+    response = client.get("/api/raw", params={"path": "evil.html"})
+    assert response.headers["content-disposition"].startswith("attachment")
+
+
+def test_raw_responses_are_nosniff(client):
+    response = client.get("/api/raw", params={"path": "doc.pdf"})
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
 def test_index_html_is_served_at_root(client):
     assert client.get("/").status_code == 200
 
@@ -110,7 +128,10 @@ def test_index_html_is_served_at_root(client):
 def test_serving_never_writes_to_disk(root, client):
     def snapshot():
         return {
-            p.relative_to(root).as_posix(): p.stat().st_mtime_ns
+            p.relative_to(root).as_posix(): (
+                p.stat().st_mtime_ns,
+                hashlib.sha256(p.read_bytes()).hexdigest(),
+            )
             for p in sorted(root.rglob("*"))
             if p.is_file()
         }
@@ -118,7 +139,7 @@ def test_serving_never_writes_to_disk(root, client):
     before = snapshot()
     client.get("/api/tree", params={"path": ""})
     client.get("/api/index")
-    for name in ["docs/readme.md", "code.py", "d.parquet", "doc.pdf", "blob.dat"]:
+    for name in ["docs/readme.md", "code.py", "d.parquet", "doc.pdf", "blob.dat", "bad.ipynb"]:
         client.get("/api/preview", params={"path": name})
         client.get("/api/raw", params={"path": name})
     assert snapshot() == before
