@@ -44,6 +44,24 @@ def test_markdown_rewrites_relative_links_to_in_app_routes(page, live_server):
     page.wait_for_selector(".listing")
 
 
+def test_markdown_links_to_a_percent_named_file_navigate(page, live_server):
+    """rewriteLinks (renderers/markdown.js) is a third hash write site,
+    distinct from navigate() and the breadcrumb links: an unencoded href
+    there yields a hash currentPath() cannot decode, which is a dead link."""
+    open_path(page, live_server, "links.md")
+    link = page.locator('.markdown-body a[href="#/100%25.md"]')
+    assert link.count() == 1
+    link.click()
+    # The source page already has its own .markdown-body, so wait for the
+    # *content* to change rather than for the selector to merely exist --
+    # otherwise the wait would pass immediately against the stale element.
+    page.wait_for_function(
+        "() => document.querySelector('.markdown-body')?.innerText.includes('Percent Only')",
+        timeout=5000,
+    )
+    assert page.locator("#content .error").count() == 0
+
+
 def test_markdown_strips_inline_event_handlers(page, live_server):
     """Untrusted file content must not execute on render."""
     open_path(page, live_server, "hostile.md")

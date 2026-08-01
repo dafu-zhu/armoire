@@ -1,26 +1,21 @@
 import { initTree } from './tree.js';
 import { initFilter } from './filter.js';
 import { renderPreview } from './preview.js';
+import { encodeHashPath } from './format.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
 const status = document.getElementById('status');
 
-function encodeHashPath(path) {
-  return path
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/');
-}
-
 function currentPath() {
   const raw = window.location.hash.replace(/^#\/?/, '');
   // decodeURIComponent throws on a malformed percent-escape -- e.g. a literal
-  // "%" that was never encoded, from a hand-typed or hand-edited hash. Every
-  // write site (navigate(), the breadcrumb links) encodes with
-  // encodeHashPath(), so a well-formed hash always round-trips; a malformed
-  // one must surface as a visible error rather than an uncaught exception
-  // that freezes the page.
+  // "%" that was never encoded. format.js's encodeHashPath is the single
+  // write path every producer of location.hash is expected to route
+  // through, so a well-formed hash always round-trips; a malformed one
+  // (hand-typed, hand-edited, or from a write site that skipped it) must
+  // surface as a visible error rather than an uncaught exception that
+  // freezes the page.
   return raw
     .split('/')
     .map((segment) => decodeURIComponent(segment))

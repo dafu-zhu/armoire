@@ -104,7 +104,14 @@ def create_app(root: Path) -> FastAPI:
         # RFC 6266. Starlette latin-1 encodes header values, so the bare
         # filename= must be ASCII; filename*= carries the real name. Without
         # this, any non-Latin-1 filename raises inside the handler and 500s.
-        ascii_name = target.name.encode("ascii", "replace").decode("ascii").replace('"', "")
+        # encode("ascii", "replace") only maps non-ASCII code points to "?";
+        # it leaves ASCII control bytes (e.g. CR/LF, illegal on Windows but
+        # legal on Linux ext4) intact, so isprintable() also filters those.
+        ascii_name = "".join(
+            c
+            for c in target.name.encode("ascii", "replace").decode("ascii")
+            if c.isprintable() and c != '"'
+        )
         content_disposition = (
             f'{disposition}; filename="{ascii_name}"; '
             f"filename*=UTF-8''{quote(target.name, safe='')}"

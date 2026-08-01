@@ -95,6 +95,20 @@ def sample_root(tmp_path_factory):
     (root / "50% off.md").write_text(
         "# Percent\n\nA name with a literal percent sign.\n", encoding="utf-8", newline=""
     )
+    # rewriteLinks (renderers/markdown.js) is a third hash-write site, distinct
+    # from navigate() and the breadcrumb: a relative link to a percent-named
+    # file must round-trip through the same encoding as the other two. Named
+    # "100%.md" rather than reusing "50% off.md" -- marked itself partially
+    # encodes a raw space in a link destination (leaves "%" untouched but
+    # turns " " into "%20"), which would confound this test with marked's own
+    # quirk rather than isolating rewriteLinks's. A bare "%" with no adjacent
+    # space passes through marked unmodified, verified empirically.
+    (root / "100%.md").write_text(
+        "# Percent Only\n\nA name with a literal percent sign and no space.\n",
+        encoding="utf-8",
+        newline="",
+    )
+    (root / "links.md").write_text("# Links\n\n[percent](100%.md)\n", encoding="utf-8", newline="")
 
     notes = root / "notes"
     notes.mkdir()

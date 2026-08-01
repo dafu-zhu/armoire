@@ -1,5 +1,7 @@
 // Markdown with math and diagrams, and relative links rewired to in-app routes.
 
+import { encodeHashPath } from '../format.js';
+
 let mermaidReady = false;
 
 function dirnameOf(path) {
@@ -22,7 +24,7 @@ function rewriteLinks(root, basePath) {
     const href = anchor.getAttribute('href');
     // Absolute URLs, anchors and mailto: are left exactly as the author wrote them.
     if (/^([a-z]+:|#|\/\/)/i.test(href)) continue;
-    anchor.setAttribute('href', `#/${normalise(`${basePath}/${href}`)}`);
+    anchor.setAttribute('href', `#/${encodeHashPath(normalise(`${basePath}/${href}`))}`);
   }
   for (const img of root.querySelectorAll('img[src]')) {
     const src = img.getAttribute('src');
