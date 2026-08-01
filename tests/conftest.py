@@ -75,6 +75,7 @@ def sample_root(tmp_path_factory):
         encoding="utf-8",
         newline="",
     )
+    (root / "config.toml").write_text('[section]\nkey = "value"\n', encoding="utf-8", newline="")
     pl.DataFrame({"i": range(250), "label": [f"r{n}" for n in range(250)]}).write_parquet(
         root / "data.parquet"
     )

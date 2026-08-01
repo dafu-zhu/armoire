@@ -62,6 +62,23 @@ def test_tex_is_highlighted_not_just_monospaced(page, live_server):
     )
 
 
+def test_toml_is_highlighted_via_the_ini_grammar(page, live_server):
+    """highlight.js registers no "toml" name; TOML is handled by the ini grammar."""
+    open_path(page, live_server, "config.toml")
+    page.wait_for_selector("pre.code code.hljs")
+    assert page.locator("pre.code span[class^='hljs-']").count() > 0
+    # The line above alone does not discriminate a correct "ini" mapping from
+    # a broken one: hljs falls back to its own auto-detection for an
+    # unrecognised language class, and for this ini-shaped content it happens
+    # to guess "ini" anyway. code.js sets the code element's class from the
+    # backend's declared language before hljs ever runs, and hljs's
+    # auto-detect augments that class rather than replacing it -- so the
+    # class name still tells the two cases apart.
+    code_class = page.locator("pre.code code").get_attribute("class")
+    assert "language-ini" in code_class
+    assert "language-toml" not in code_class
+
+
 def test_notebook_renders_cells_and_outputs(page, live_server):
     open_path(page, live_server, "nb.ipynb")
     page.wait_for_selector(".notebook-body")

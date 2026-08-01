@@ -53,7 +53,8 @@ LANGUAGES = {
     # alternative is no highlighting at all.
     "bib": "latex",
     "json": "json",
-    "toml": "toml",
+    # highlight.js has no separate toml grammar; it treats TOML as ini.
+    "toml": "ini",
     "yaml": "yaml",
     "yml": "yaml",
     "js": "javascript",
