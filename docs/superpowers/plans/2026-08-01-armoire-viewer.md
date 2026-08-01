@@ -455,6 +455,17 @@ def _entry(path: Path) -> Entry | None:
     )
 
 
+def _sort_key(entry: Entry) -> tuple[str, str]:
+    """Case-insensitive, with the exact name as tiebreaker.
+
+    The secondary key matters: lower() alone ties for names differing only by
+    case, and stability then falls through to iterdir()'s filesystem-defined
+    order, which varies across runs and platforms. Named rather than inline so
+    tests exercise the production key instead of a copy of it.
+    """
+    return (entry.name.lower(), entry.name)
+
+
 def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
     """Return (dirs, files) for one directory, each sorted case-insensitively."""
     target = resolve_in_root(root, relative)
@@ -471,11 +482,8 @@ def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
             continue
         (dirs if entry.is_dir else files).append(entry)
 
-    # The secondary key matters: lower() alone ties for names differing only by
-    # case, and stability then falls through to iterdir()'s filesystem-defined
-    # order, which varies across runs and platforms.
-    dirs.sort(key=lambda e: (e.name.lower(), e.name))
-    files.sort(key=lambda e: (e.name.lower(), e.name))
+    dirs.sort(key=_sort_key)
+    files.sort(key=_sort_key)
     return dirs, files
 ```
 
