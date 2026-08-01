@@ -32,6 +32,15 @@ function renderBreadcrumb(path) {
   }
 }
 
+function showError(error) {
+  content.replaceChildren();
+  const box = document.createElement('div');
+  box.className = 'error';
+  box.textContent = String(error.message || error);
+  content.append(box);
+  status.textContent = 'Error';
+}
+
 async function show(path) {
   renderBreadcrumb(path);
   status.textContent = 'Loading…';
@@ -45,12 +54,7 @@ async function show(path) {
     const meta = await renderPreview(content, path);
     status.textContent = meta || path || '/';
   } catch (error) {
-    content.replaceChildren();
-    const box = document.createElement('div');
-    box.className = 'error';
-    box.textContent = String(error.message || error);
-    content.append(box);
-    status.textContent = 'Error';
+    showError(error);
   }
 }
 
@@ -67,8 +71,12 @@ window.addEventListener('hashchange', () => {
   tree.revealPath(path);
 });
 
-tree.ready.then(() => {
-  const path = currentPath();
-  show(path);
-  if (path) tree.revealPath(path);
-});
+tree.ready
+  .then(() => {
+    const path = currentPath();
+    show(path);
+    if (path) tree.revealPath(path);
+  })
+  // A backend error on the initial listing would otherwise leave the tree
+  // permanently empty with nothing but an unhandled rejection in the console.
+  .catch(showError);
