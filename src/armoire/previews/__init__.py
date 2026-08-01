@@ -48,7 +48,10 @@ CODE_EXTS = frozenset(
 LANGUAGES = {
     "py": "python",
     "tex": "latex",
-    "bib": "bibtex",
+    # hljs has no standalone bibtex grammar; its syntax is close enough to
+    # LaTeX's that the latex grammar is a reasonable approximation, and the
+    # alternative is no highlighting at all.
+    "bib": "latex",
     "json": "json",
     "toml": "toml",
     "yaml": "yaml",

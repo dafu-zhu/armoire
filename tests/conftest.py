@@ -69,6 +69,12 @@ def sample_root(tmp_path_factory):
     (root / "doc.pdf").write_bytes(MINIMAL_PDF)
     (root / "blob.dat").write_bytes(b"\x00\x01\x02\x03")
     (root / "nb.ipynb").write_text(json.dumps(NOTEBOOK), encoding="utf-8", newline="")
+    (root / "paper.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n\\section{Intro}\n"
+        "Some text.\n\\end{document}\n",
+        encoding="utf-8",
+        newline="",
+    )
     pl.DataFrame({"i": range(250), "label": [f"r{n}" for n in range(250)]}).write_parquet(
         root / "data.parquet"
     )

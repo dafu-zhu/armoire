@@ -20,6 +20,13 @@ FILES = {
     "mermaid.js": "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js",
     "highlight.js": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/highlight.min.js",
     "highlight.css": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/styles/github.min.css",
+    # The "common" build above omits these three languages that armoire's own
+    # LANGUAGES map routes .tex/.jl/.m files to. Fetched separately and loaded
+    # after highlight.js in index.html, since each registers itself against
+    # the global hljs rather than exporting anything.
+    "hljs-latex.js": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/latex.min.js",
+    "hljs-julia.js": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/julia.min.js",
+    "hljs-matlab.js": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/matlab.min.js",
 }
 
 FONTS_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
@@ -48,12 +55,28 @@ def fetch_katex_fonts() -> int:
     return len(faces)
 
 
+def write_pygments_css() -> int:
+    """nbconvert's basic template emits Pygments markup but no stylesheet.
+
+    Generated from the installed Pygments rather than downloaded: it then
+    matches whatever version nbconvert actually renders with.
+    """
+    from pygments.formatters import HtmlFormatter
+
+    css = HtmlFormatter(style="default").get_style_defs(".highlight")
+    dest = VENDOR / "pygments.css"
+    dest.write_text(css, encoding="utf-8")
+    return len(css)
+
+
 def main() -> None:
     print(f"vendoring into {VENDOR}")
     for name, url in FILES.items():
         fetch(url, VENDOR / name)
     count = fetch_katex_fonts()
     print(f"vendored {count} KaTeX font faces")
+    size = write_pygments_css()
+    print(f"generated pygments.css ({size} bytes)")
     print("done")
 
 

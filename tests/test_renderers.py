@@ -50,12 +50,39 @@ def test_code_is_syntax_highlighted(page, live_server):
     assert "return" in page.locator("pre.code").inner_text()
 
 
+def test_tex_is_highlighted_not_just_monospaced(page, live_server):
+    """The vendored common hljs build omits latex; 370 .tex files depend on it."""
+    open_path(page, live_server, "paper.tex")
+    page.wait_for_selector("pre.code code.hljs")
+    assert (
+        page.locator(
+            "pre.code .hljs-keyword, pre.code .hljs-tag, pre.code span[class^='hljs-']"
+        ).count()
+        > 0
+    )
+
+
 def test_notebook_renders_cells_and_outputs(page, live_server):
     open_path(page, live_server, "nb.ipynb")
     page.wait_for_selector(".notebook-body")
     body = page.locator(".notebook-body").inner_text()
     assert "Notebook Heading" in body
     assert "notebook output" in body
+
+
+def test_notebook_code_cells_are_coloured(page, live_server):
+    """nbconvert emits Pygments markup but no stylesheet; without it, cells are monochrome."""
+    open_path(page, live_server, "nb.ipynb")
+    page.wait_for_selector(".notebook-body .highlight")
+    coloured = page.evaluate(
+        """() => {
+            const el = document.querySelector('.notebook-body .highlight span[class]');
+            if (!el) return null;
+            return getComputedStyle(el).color;
+        }"""
+    )
+    assert coloured is not None, "no Pygments span found — template output changed"
+    assert coloured != "rgb(31, 35, 40)", "span inherits body colour: pygments.css is not applied"
 
 
 def test_pdf_is_embedded(page, live_server):
