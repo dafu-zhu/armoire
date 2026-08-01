@@ -414,11 +414,14 @@ Create `src/armoire/scanner.py`:
 ```python
 """One directory in, one listing out. Never recurses."""
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from armoire.ignore import is_ignored
 from armoire.paths import resolve_in_root
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -435,9 +438,12 @@ def _entry(path: Path) -> Entry | None:
     try:
         stat = path.stat()
         is_dir = path.is_dir()
-    except OSError:
+    except OSError as exc:
         # Permission denied, broken symlink, or a file that vanished mid-scan.
         # Skipping is correct: a folder the user cannot read is not browsable.
+        # Logged so a systemic failure is not indistinguishable from an empty
+        # directory.
+        logger.debug("skipping %s: %s", path, exc)
         return None
 
     return Entry(
@@ -465,8 +471,11 @@ def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
             continue
         (dirs if entry.is_dir else files).append(entry)
 
-    dirs.sort(key=lambda e: e.name.lower())
-    files.sort(key=lambda e: e.name.lower())
+    # The secondary key matters: lower() alone ties for names differing only by
+    # case, and stability then falls through to iterdir()'s filesystem-defined
+    # order, which varies across runs and platforms.
+    dirs.sort(key=lambda e: (e.name.lower(), e.name))
+    files.sort(key=lambda e: (e.name.lower(), e.name))
     return dirs, files
 ```
 
