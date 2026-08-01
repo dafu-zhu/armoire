@@ -64,6 +64,7 @@ LANGUAGES = {
     "m": "matlab",
     "ini": "ini",
     "cfg": "ini",
+    "conf": "ini",
 }
 
 

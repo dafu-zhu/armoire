@@ -12,7 +12,5 @@ def preview_text(path: Path, kind: str) -> dict:
     # errors="replace" because a mislabelled .txt should show its readable parts
     # rather than fail the whole preview.
     text = path.read_bytes()[:MAX_BYTES].decode("utf-8", errors="replace")
-    # Normalize CRLF to LF for cross-platform consistency
-    text = text.replace("\r\n", "\n")
     language = "markdown" if kind == "markdown" else LANGUAGES.get(ext, "plaintext")
     return {"kind": kind, "text": text, "language": language}
