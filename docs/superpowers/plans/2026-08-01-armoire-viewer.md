@@ -2317,6 +2317,13 @@ export function initFilter(input, results, onPick) {
     .then((data) => {
       paths = data.paths;
       input.placeholder = `Filter ${paths.length} files…`;
+      // The index takes seconds on a large folder — 3.1s for the 12 GB case.
+      // Anything typed before it arrived matched nothing and would never
+      // re-run on its own.
+      if (input.value.trim()) input.dispatchEvent(new Event('input'));
+    })
+    .catch(() => {
+      input.placeholder = 'Filter unavailable';
     });
 
   function close() {
