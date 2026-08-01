@@ -19,6 +19,16 @@ class Entry:
     ext: str
 
 
+def _sort_key(entry: Entry) -> tuple[str, str]:
+    """Case-insensitive, with the exact name as tiebreaker.
+
+    The secondary key matters: lower() alone ties for names differing only by
+    case, and stability then falls through to iterdir()'s filesystem-defined
+    order, which varies across runs and platforms.
+    """
+    return (entry.name.lower(), entry.name)
+
+
 def _entry(path: Path) -> Entry | None:
     """Build an Entry, or None if the OS will not tell us about it."""
     try:
@@ -42,7 +52,11 @@ def _entry(path: Path) -> Entry | None:
 
 
 def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
-    """Return (dirs, files) for one directory, each sorted case-insensitively."""
+    """Return (dirs, files) for one directory, each sorted case-insensitively.
+
+    Sorting uses _sort_key: case-insensitive primary key with exact name as
+    tiebreaker. This ensures deterministic ordering across runs and platforms.
+    """
     target = resolve_in_root(root, relative)
     if not target.is_dir():
         raise FileNotFoundError(relative)
@@ -57,6 +71,6 @@ def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
             continue
         (dirs if entry.is_dir else files).append(entry)
 
-    dirs.sort(key=lambda e: (e.name.lower(), e.name))
-    files.sort(key=lambda e: (e.name.lower(), e.name))
+    dirs.sort(key=_sort_key)
+    files.sort(key=_sort_key)
     return dirs, files

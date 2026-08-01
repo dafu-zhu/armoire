@@ -5,7 +5,7 @@ import pytest
 
 from armoire.ignore import is_ignored
 from armoire.paths import PathOutsideRoot
-from armoire.scanner import list_dir
+from armoire.scanner import Entry, _sort_key, list_dir
 
 
 @pytest.fixture
@@ -71,25 +71,15 @@ def test_missing_directory_raises(root):
         list_dir(root, "nope")
 
 
-def test_case_tie_sorts_deterministically():
-    """Sort key uses case-insensitive primary with exact name tiebreaker."""
-    # Import Entry directly to test sorting logic without filesystem
-    from armoire.scanner import Entry
-
-    # Create entries that have the same lowercase name (simulating case-tie scenario)
-    entries = [
-        Entry(name="README.txt", is_dir=False, size=0, mtime=1.0, ext="txt"),
-        Entry(name="readme.txt", is_dir=False, size=0, mtime=1.0, ext="txt"),
-        Entry(name="Readme.txt", is_dir=False, size=0, mtime=1.0, ext="txt"),
+def test_sort_key_breaks_case_ties_deterministically():
+    """A real filesystem cannot hold these three at once, so the key is tested directly."""
+    names = ["readme.txt", "Readme.txt", "README.txt"]
+    entries = [Entry(name=n, is_dir=False, size=0, mtime=1.0, ext="txt") for n in names]
+    assert [e.name for e in sorted(entries, key=_sort_key)] == [
+        "README.txt",
+        "Readme.txt",
+        "readme.txt",
     ]
-
-    # Sort using the same key as list_dir
-    sorted_entries = sorted(entries, key=lambda e: (e.name.lower(), e.name))
-    sorted_names = [e.name for e in sorted_entries]
-
-    # With tiebreaker, order is deterministic: sorted by exact name when lowercase matches
-    # "README.txt" < "Readme.txt" < "readme.txt" (ASCII/Unicode order)
-    assert sorted_names == ["README.txt", "Readme.txt", "readme.txt"]
 
 
 def test_oserror_skips_inaccessible_entries(root):
@@ -112,3 +102,33 @@ def test_oserror_skips_inaccessible_entries(root):
     file_names = [f.name for f in files]
     assert "accessible.txt" in file_names
     assert "inaccessible.txt" not in file_names
+
+
+def test_list_dir_does_not_inherit_iterdir_order(root):
+    """list_dir sorts results instead of passing through iterdir's order."""
+    # Create a subdirectory for this test to avoid fixture files
+    test_dir = root / "sorttest"
+    test_dir.mkdir()
+    (test_dir / "z.txt").write_text("z")
+    (test_dir / "y.txt").write_text("y")
+    (test_dir / "x.txt").write_text("x")
+
+    # Monkeypatch iterdir to yield them in reverse-sorted order (z, y, x)
+    original_iterdir = Path.iterdir
+
+    def iterdir_reverse(self):
+        """Yield entries in reverse-sorted order."""
+        if self == test_dir:
+            # Get all real children and reverse-sort them
+            children = sorted(original_iterdir(self), key=lambda p: p.name, reverse=True)
+            yield from children
+        else:
+            yield from original_iterdir(self)
+
+    with patch.object(Path, "iterdir", iterdir_reverse):
+        _, files = list_dir(root, "sorttest")
+
+    # Despite iterdir returning them in reverse order (z, y, x),
+    # list_dir must sort them (x, y, z)
+    file_names = [f.name for f in files]
+    assert file_names == ["x.txt", "y.txt", "z.txt"]
