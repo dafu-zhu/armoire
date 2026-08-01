@@ -270,6 +270,9 @@ jobs:
 The vendored frontend libraries are committed to the repository, so no fetch step
 is needed here — see Task 9.
 
+`index.html` must open with `<!doctype html>`. Without it the browser renders in
+quirks mode, which breaks KaTeX and Mermaid layout.
+
 - [ ] **Step 8: Verify lint and the full suite pass locally**
 
 Run: `uv run ruff format . && uv run ruff check . && uv run pytest -v`
@@ -1711,17 +1714,24 @@ them as untracked. They get committed in Step 9; the wheel is broken without the
 Replace `src/armoire/static/index.html` with:
 
 ```html
+<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>armoire</title>
 <link rel="stylesheet" href="/vendor/katex.css">
 <link rel="stylesheet" href="/vendor/highlight.css">
+<link rel="stylesheet" href="/vendor/pygments.css">
 <link rel="stylesheet" href="/app.css">
 <script src="/vendor/marked.js"></script>
 <script src="/vendor/katex.js"></script>
 <script src="/vendor/katex-auto-render.js"></script>
 <script src="/vendor/mermaid.js"></script>
 <script src="/vendor/highlight.js"></script>
+<!-- After highlight.js: these register themselves against the global hljs.
+     The common build omits latex, julia and matlab. -->
+<script src="/vendor/hljs-latex.js"></script>
+<script src="/vendor/hljs-julia.js"></script>
+<script src="/vendor/hljs-matlab.js"></script>
 
 <header id="header">
   <span id="root-name">armoire</span>
