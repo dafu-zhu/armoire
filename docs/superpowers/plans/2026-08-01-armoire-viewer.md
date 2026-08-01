@@ -2420,7 +2420,7 @@ Confirm only the console error naming `preview.js` appears, nothing else.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/armoire/static/app.js src/armoire/static/tree.js src/armoire/static/filter.js tests/test_static.py
+git add src/armoire/static/app.js src/armoire/static/tree.js src/armoire/static/filter.js tests/test_navigation.py
 git commit -m "feat: lazy tree, fuzzy filter and hash router"
 ```
 
