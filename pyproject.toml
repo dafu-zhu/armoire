@@ -43,3 +43,9 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # nbconvert prefers an IPython-specific pygments lexer and warns when it
+    # falls back. armoire does not depend on IPython and the fallback
+    # highlighting is correct. Scoped to this exact warning and module.
+    "ignore:IPython3 lexer unavailable:UserWarning:nbconvert.filters.highlight",
+]
