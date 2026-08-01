@@ -1196,6 +1196,8 @@ Errors are `{"detail": str}` with status 403 (outside root) or 404 (missing).
 Create `tests/test_app.py`:
 
 ```python
+import hashlib
+
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
@@ -1305,8 +1307,13 @@ def test_index_html_is_served_at_root(client):
 
 def test_serving_never_writes_to_disk(root, client):
     def snapshot():
+        # Hash as well as mtime: the test's name promises the bytes did not
+        # change, and a write that restores the timestamp would pass on mtime.
         return {
-            p.relative_to(root).as_posix(): p.stat().st_mtime_ns
+            p.relative_to(root).as_posix(): (
+                p.stat().st_mtime_ns,
+                hashlib.sha256(p.read_bytes()).hexdigest(),
+            )
             for p in sorted(root.rglob("*"))
             if p.is_file()
         }
@@ -1314,7 +1321,9 @@ def test_serving_never_writes_to_disk(root, client):
     before = snapshot()
     client.get("/api/tree", params={"path": ""})
     client.get("/api/index")
-    for name in ["docs/readme.md", "code.py", "d.parquet", "doc.pdf", "blob.dat"]:
+    # bad.ipynb is included deliberately: it is the only fixture that drives
+    # preview's exception branch, which is where a stray write is most likely.
+    for name in ["docs/readme.md", "code.py", "d.parquet", "doc.pdf", "blob.dat", "bad.ipynb"]:
         client.get("/api/preview", params={"path": name})
         client.get("/api/raw", params={"path": name})
     assert snapshot() == before
@@ -1332,6 +1341,7 @@ Create `src/armoire/app.py`:
 ```python
 """HTTP surface. Routing and error translation only — no logic lives here."""
 
+import logging
 import mimetypes
 from dataclasses import asdict
 from pathlib import Path
@@ -1349,6 +1359,8 @@ from armoire.previews.text import preview_text
 from armoire.scanner import list_dir
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve(root: Path, path: str) -> Path:
@@ -1369,11 +1381,14 @@ def create_app(root: Path) -> FastAPI:
 
     @app.get("/api/tree")
     def tree(path: str = Query("")) -> dict:
-        _resolve(root, path)
+        # list_dir resolves through the same jail, so no separate _resolve call
+        # here: a second one would be redundant and make this except unreachable.
         try:
             dirs, files = list_dir(root, path)
         except PathOutsideRoot:
-            raise HTTPException(status_code=403, detail="outside root") from None
+            raise HTTPException(
+                status_code=403, detail="path is outside the served root"
+            ) from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="no such directory") from None
         return {"path": path, "dirs": [asdict(d) for d in dirs], "files": [asdict(f) for f in files]}
@@ -1405,7 +1420,10 @@ def create_app(root: Path) -> FastAPI:
                 return envelope | preview_notebook(target)
         except Exception as exc:
             # A corrupt file is a rendering problem, not a server fault. The
-            # client shows an error card; the server stays up.
+            # client shows an error card; the server stays up. Logged because
+            # otherwise a bug in this file is indistinguishable, to the user,
+            # from a corrupt file — and leaves no trace anywhere.
+            logger.exception("preview failed for %s", path)
             return envelope | {"kind": "error", "message": str(exc)}
 
         # pdf, image and binary are fetched from /api/raw by the client.
@@ -1417,7 +1435,19 @@ def create_app(root: Path) -> FastAPI:
         if not target.is_file():
             raise HTTPException(status_code=404, detail="no such file")
         media_type, _ = mimetypes.guess_type(target.name)
-        return FileResponse(target, media_type=media_type or "application/octet-stream")
+        kind = kind_for(extension_of(target))
+        # Only the kinds the client embeds are served inline. Anything else —
+        # notably .html and .svg — downloads instead of executing in armoire's
+        # own origin, where it could read any file under the served root.
+        inline = kind in ("pdf", "image")
+        return FileResponse(
+            target,
+            media_type=media_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename=\"{target.name}\"",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
