@@ -1,1 +1,31 @@
-<main id="app">armoire</main>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>armoire</title>
+<link rel="stylesheet" href="/vendor/katex.css">
+<link rel="stylesheet" href="/vendor/highlight.css">
+<link rel="stylesheet" href="/app.css">
+<script src="/vendor/marked.js"></script>
+<script src="/vendor/katex.js"></script>
+<script src="/vendor/katex-auto-render.js"></script>
+<script src="/vendor/mermaid.js"></script>
+<script src="/vendor/highlight.js"></script>
+
+<header id="header">
+  <span id="root-name">armoire</span>
+  <div id="filter-wrap">
+    <input id="filter" type="search" placeholder="Filter files…" autocomplete="off" spellcheck="false">
+    <ul id="filter-results" hidden></ul>
+  </div>
+</header>
+
+<div id="body">
+  <nav id="tree" aria-label="Folder tree"></nav>
+  <main id="main">
+    <div id="breadcrumb"></div>
+    <div id="content"></div>
+  </main>
+</div>
+
+<footer id="status"></footer>
+
+<script type="module" src="/app.js"></script>
