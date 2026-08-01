@@ -793,6 +793,8 @@ Create `src/armoire/previews/__init__.py`:
 ```python
 """Extension to preview kind. The client switches on `kind`, never on extension."""
 
+from pathlib import Path
+
 MARKDOWN_EXTS = frozenset({"md", "markdown"})
 NOTEBOOK_EXTS = frozenset({"ipynb"})
 TABLE_EXTS = frozenset({"parquet", "csv"})
@@ -802,7 +804,10 @@ CODE_EXTS = frozenset(
     {
         "py", "tex", "bib", "json", "toml", "yaml", "yml", "txt", "js", "ts",
         "html", "css", "sh", "sql", "r", "cpp", "c", "h", "hpp", "rs", "go",
-        "java", "jl", "m", "ini", "cfg", "conf", "gitignore",
+        "java", "jl", "m", "ini", "cfg", "conf",
+        # Dotfiles, reachable only via extension_of below.
+        "gitignore", "gitattributes", "gitmodules", "editorconfig", "env",
+        "python-version",
     }
 )
 
@@ -814,6 +819,20 @@ LANGUAGES = {
     "rs": "rust", "go": "go", "java": "java", "jl": "julia", "m": "matlab",
     "ini": "ini", "cfg": "ini", "conf": "ini",
 }
+
+
+def extension_of(path: Path) -> str:
+    """The extension used for dispatch: no leading dot, lowercased.
+
+    Dotfiles are the reason this is not just `path.suffix`. Path(".gitignore")
+    has an empty suffix, so dispatching on suffix alone renders every dotfile
+    as an unpreviewable binary.
+    """
+    if path.suffix:
+        return path.suffix.removeprefix(".").lower()
+    if path.name.startswith("."):
+        return path.name.removeprefix(".").lower()
+    return ""
 
 
 def kind_for(ext: str) -> str:
@@ -1152,7 +1171,7 @@ git commit -m "feat: notebook preview via nbconvert"
 - Test: `tests/test_app.py`
 
 **Interfaces:**
-- Consumes: `resolve_in_root`, `PathOutsideRoot`, `list_dir`, `Entry`, `PathIndex`, `kind_for`, `preview_text`, `preview_table`, `preview_notebook`
+- Consumes: `resolve_in_root`, `PathOutsideRoot`, `list_dir`, `Entry`, `PathIndex`, `extension_of`, `kind_for`, `preview_text`, `preview_table`, `preview_notebook`. Dispatch on `kind_for(extension_of(target))` — never on `target.suffix`, which is empty for dotfiles.
 - Produces: `armoire.app.create_app(root: Path) -> fastapi.FastAPI`
 
 Response shapes, fixed here and consumed verbatim by the frontend:
@@ -1317,7 +1336,7 @@ from fastapi.staticfiles import StaticFiles
 
 from armoire.index import PathIndex
 from armoire.paths import PathOutsideRoot, resolve_in_root
-from armoire.previews import kind_for
+from armoire.previews import extension_of, kind_for
 from armoire.previews.notebook import preview_notebook
 from armoire.previews.table import preview_table
 from armoire.previews.text import preview_text
@@ -1370,7 +1389,7 @@ def create_app(root: Path) -> FastAPI:
         # without a second request, whatever the kind turns out to be.
         envelope = {"size": stat.st_size, "mtime": stat.st_mtime}
 
-        kind = kind_for(target.suffix.removeprefix(".").lower())
+        kind = kind_for(extension_of(target))
         try:
             if kind in ("markdown", "code"):
                 return envelope | preview_text(target, kind)
