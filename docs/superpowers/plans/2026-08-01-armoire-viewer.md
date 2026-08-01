@@ -467,7 +467,7 @@ def _sort_key(entry: Entry) -> tuple[str, str]:
 
 
 def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
-    """Return (dirs, files) for one directory, each sorted case-insensitively."""
+    """Return (dirs, files) for one directory, each sorted by _sort_key."""
     target = resolve_in_root(root, relative)
     if not target.is_dir():
         raise FileNotFoundError(relative)
