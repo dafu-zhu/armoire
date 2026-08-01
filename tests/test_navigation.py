@@ -1,7 +1,5 @@
 """Tree, filter and routing, exercised in a real browser."""
 
-import pytest
-
 
 def test_tree_lists_the_root_folder(page, live_server):
     page.goto(live_server)
@@ -118,7 +116,6 @@ def test_breadcrumb_reflects_the_current_path(page, live_server):
     assert "notes" in text and "deep" in text and "buried.md" in text
 
 
-@pytest.mark.xfail(reason="preview.js arrives in Task 11", strict=True)
 def test_no_console_errors_during_navigation(page, live_server):
     errors = []
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)

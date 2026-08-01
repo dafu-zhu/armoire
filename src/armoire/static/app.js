@@ -1,5 +1,6 @@
 import { initTree } from './tree.js';
 import { initFilter } from './filter.js';
+import { renderPreview } from './preview.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -45,12 +46,6 @@ async function show(path) {
   renderBreadcrumb(path);
   status.textContent = 'Loading…';
   try {
-    // Deferred (rather than a static top-level import): a static import of a
-    // module that doesn't exist fails the whole ES module graph, so nothing
-    // in this file — tree, filter, router — would run at all. Task 11 has
-    // not created preview.js yet; until it does, this rejects and the
-    // catch below reports it, without taking the rest of the page down.
-    const { renderPreview } = await import('./preview.js');
     const meta = await renderPreview(content, path);
     status.textContent = meta || path || '/';
   } catch (error) {
