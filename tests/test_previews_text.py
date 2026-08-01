@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from armoire.previews import kind_for
+from armoire.previews import extension_of, kind_for
 from armoire.previews.text import preview_text
 
 
@@ -66,3 +68,24 @@ def test_conf_files_are_highlighted_as_ini(tmp_path):
     f = tmp_path / "app.conf"
     f.write_bytes(b"[section]\nkey = value\n")
     assert preview_text(f, "code")["language"] == "ini"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (".gitignore", "gitignore"),
+        (".python-version", "python-version"),
+        ("README.md", "md"),
+        ("archive.TAR", "tar"),
+        ("Makefile", ""),
+        (".hidden.md", "md"),
+    ],
+)
+def test_extension_of(name, expected):
+    assert extension_of(Path(name)) == expected
+
+
+@pytest.mark.parametrize("name", [".gitignore", ".gitattributes", ".python-version"])
+def test_dotfiles_dispatch_as_code_not_binary(name):
+    """Path.suffix is empty for these, so dispatching on suffix alone hid them."""
+    assert kind_for(extension_of(Path(name))) == "code"

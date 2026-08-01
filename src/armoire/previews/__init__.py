@@ -1,5 +1,7 @@
 """Extension to preview kind. The client switches on `kind`, never on extension."""
 
+from pathlib import Path
+
 MARKDOWN_EXTS = frozenset({"md", "markdown"})
 NOTEBOOK_EXTS = frozenset({"ipynb"})
 TABLE_EXTS = frozenset({"parquet", "csv"})
@@ -35,6 +37,11 @@ CODE_EXTS = frozenset(
         "cfg",
         "conf",
         "gitignore",
+        "gitattributes",
+        "gitmodules",
+        "editorconfig",
+        "env",
+        "python-version",
     }
 )
 
@@ -66,6 +73,20 @@ LANGUAGES = {
     "cfg": "ini",
     "conf": "ini",
 }
+
+
+def extension_of(path: Path) -> str:
+    """The extension used for dispatch: no leading dot, lowercased.
+
+    Dotfiles are the reason this is not just `path.suffix`. Path(".gitignore")
+    has an empty suffix, so dispatching on suffix alone renders every dotfile
+    as an unpreviewable binary.
+    """
+    if path.suffix:
+        return path.suffix.removeprefix(".").lower()
+    if path.name.startswith("."):
+        return path.name.removeprefix(".").lower()
+    return ""
 
 
 def kind_for(ext: str) -> str:
