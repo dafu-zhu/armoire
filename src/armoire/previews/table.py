@@ -8,14 +8,16 @@ from pathlib import Path
 
 import polars as pl
 
+from armoire.previews import extension_of
+
 MAX_PAGE_SIZE = 500
 
 
 def _scan(path: Path) -> pl.LazyFrame:
-    suffix = path.suffix.lower()
-    if suffix == ".parquet":
+    ext = extension_of(path)
+    if ext == "parquet":
         return pl.scan_parquet(path)
-    if suffix == ".csv":
+    if ext == "csv":
         return pl.scan_csv(path)
     raise ValueError(f"unsupported table format: {path.suffix or path.name}")
 

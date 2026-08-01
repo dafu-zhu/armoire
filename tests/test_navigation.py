@@ -84,6 +84,71 @@ def test_filter_recovers_when_typing_before_the_index_is_ready(page, live_server
     assert "buried.md" in page.locator("#filter-results li").first.inner_text()
 
 
+def test_filter_becomes_usable_once_indexing_finishes_even_if_it_was_not_ready_on_load(
+    page, live_server
+):
+    """/api/index answers immediately with {"ready": false, "paths": []}
+    while the background walk runs -- 3+ seconds on a large folder. The
+    fixture's own index is already built before live_server starts
+    (conftest.py calls index.wait() first), so ready:false is otherwise
+    unreachable in this suite: reproduce it by answering not-ready on the
+    first poll only, then letting every later poll through to the real,
+    by-then-ready handler."""
+    calls = {"n": 0}
+
+    def handle(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"ready": false, "paths": []}',
+            )
+        else:
+            route.continue_()
+
+    page.route("**/api/index", handle)
+    page.goto(live_server)
+    page.wait_for_function(
+        "() => document.querySelector('#filter').placeholder.startsWith('Indexing')"
+    )
+    page.wait_for_function(
+        "() => document.querySelector('#filter').placeholder.startsWith('Filter')",
+        timeout=5000,
+    )
+    page.locator("#filter").fill("buried")
+    page.wait_for_selector("#filter-results li")
+    assert "notes/deep/buried.md" in page.locator("#filter-results li").first.inner_text()
+
+
+def test_navigating_to_a_percent_named_file_renders_rather_than_hangs(page, live_server):
+    """navigate() must encode each hash segment: a raw, unencoded "%" is not
+    a valid percent-escape, and currentPath()'s decodeURIComponent would
+    throw on it. The root's own README already renders a .markdown-body on
+    load, so this waits for its *content* to change rather than for the
+    selector to merely exist -- otherwise the wait would pass immediately
+    against the stale element and never observe the navigation at all."""
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    page.locator('#tree [data-path="50% off.md"]').click()
+    page.wait_for_function(
+        "() => document.querySelector('.markdown-body')?.innerText.includes('Percent')",
+        timeout=5000,
+    )
+    assert page.locator("#content .error").count() == 0
+
+
+def test_malformed_hash_surfaces_an_error_instead_of_freezing(page, live_server):
+    """A hand-edited hash with a bare "%" (not a valid percent-escape) must
+    not freeze the page: the hashchange listener is not inside a promise
+    chain, so an uncaught decodeURIComponent throw there has no error card
+    and nothing else in the console shows for it either."""
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    page.evaluate("() => { window.location.hash = '/50%zz.md'; }")
+    page.wait_for_selector("#content .error", timeout=5000)
+
+
 def test_filter_placeholder_reports_index_failure(page, live_server):
     """A backend error on /api/index must not leave the filter silently
     stuck on its initial placeholder forever, with only an unhandled

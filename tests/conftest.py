@@ -90,6 +90,11 @@ def sample_root(tmp_path_factory):
     pl.DataFrame({"i": range(250), "label": [f"r{n}" for n in range(250)]}).write_parquet(
         root / "data.parquet"
     )
+    # "%" is not a valid percent-escape by itself; decodeURIComponent throws
+    # on it unless every write to location.hash first encodes the segment.
+    (root / "50% off.md").write_text(
+        "# Percent\n\nA name with a literal percent sign.\n", encoding="utf-8", newline=""
+    )
 
     notes = root / "notes"
     notes.mkdir()

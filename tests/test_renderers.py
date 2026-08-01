@@ -172,17 +172,28 @@ def test_status_bar_reports_type_size_and_age(page, live_server):
 
 
 def test_no_console_errors_across_every_renderer(page, live_server):
+    # Chromium's console message text for a failed resource load is a fixed,
+    # generic string -- "Failed to load resource: the server responded with a
+    # status of 404 (Not Found)" -- with no URL in it at all. The failing
+    # request's URL only shows up on the message's `location`. A substring
+    # check against `.text` therefore cannot discriminate one URL's 404 from
+    # another's; it can only match "404" itself, which swallows every 404.
     errors = []
-    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
-    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.on(
+        "console",
+        lambda m: errors.append((m.text, m.location.get("url", ""))) if m.type == "error" else None,
+    )
+    page.on("pageerror", lambda e: errors.append((str(e), "")))
     for path in ["", "notes", "README.md", "code.py", "nb.ipynb", "data.parquet", "blob.dat"]:
         open_path(page, live_server, path)
     page.wait_for_load_state("networkidle")
-    # Chromium logs a "Failed to load resource: ... 404" console error for any
-    # fetch() response with a non-2xx status, even one the application catches.
     # renderPreview deliberately probes /api/preview on "notes" (a directory)
-    # and catches its 404 to fall back to /api/tree -- that expected, handled
-    # 404 is not a bug, so it is excluded here; any other console or page
-    # error still fails the test.
-    errors = [e for e in errors if "404" not in e]
+    # and catches its 404 to fall back to /api/tree -- that is the single
+    # expected, handled 404 among the paths opened above ("" is the root and
+    # goes straight to /api/tree, never hitting /api/preview at all). Matching
+    # the specific failing URL, rather than the shared substring "404", means
+    # any other 404 -- a missing pygments.css, a mistyped <script src>, a
+    # dropped vendored asset -- still fails the test instead of being
+    # swallowed alongside the deliberate one.
+    errors = [(text, url) for text, url in errors if "/api/preview?path=notes" not in url]
     assert errors == []

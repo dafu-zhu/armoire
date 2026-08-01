@@ -22,18 +22,32 @@ export function initFilter(input, results, onPick) {
   let matches = [];
   let cursor = 0;
 
-  fetch('/api/index')
-    .then((r) => r.json())
-    .then((data) => {
-      paths = data.paths;
-      input.placeholder = `Filter ${paths.length} files…`;
-      // The index takes seconds on a large folder. Anything typed before it
-      // arrived matched nothing and would never re-run on its own.
-      if (input.value.trim()) input.dispatchEvent(new Event('input'));
-    })
-    .catch(() => {
-      input.placeholder = 'Filter unavailable';
-    });
+  function loadIndex() {
+    fetch('/api/index')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.ready) {
+          // /api/index answers immediately with ready:false while the walk
+          // runs — several seconds on a large folder. A single fetch on page
+          // load would leave the filter permanently empty: the Task-10 fix
+          // (re-dispatch on late arrival) only helps once the index is
+          // actually populated, and this response never populates it.
+          input.placeholder = 'Indexing…';
+          setTimeout(loadIndex, 500);
+          return;
+        }
+        paths = data.paths;
+        input.placeholder = `Filter ${paths.length} files…`;
+        // The index takes seconds on a large folder. Anything typed before it
+        // arrived matched nothing and would never re-run on its own.
+        if (input.value.trim()) input.dispatchEvent(new Event('input'));
+      })
+      .catch(() => {
+        input.placeholder = 'Filter unavailable';
+      });
+  }
+
+  loadIndex();
 
   function close() {
     results.hidden = true;

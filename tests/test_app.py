@@ -1,10 +1,33 @@
 import hashlib
+import json
+import sys
 
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
 from armoire.app import create_app
+
+# A minimal but valid notebook: nbformat_minor 5 requires every cell to carry
+# an "id". Deliberately distinct from bad.ipynb (which fails at nbformat.read
+# and never reaches nbconvert) -- this one reaches HTMLExporter, the one
+# dependency in the preview path that plausibly touches a filesystem cache
+# such as ~/.jupyter.
+GOOD_NOTEBOOK = {
+    "cells": [
+        {
+            "cell_type": "code",
+            "id": "only-cell",
+            "execution_count": 1,
+            "metadata": {},
+            "source": ["1 + 1\n"],
+            "outputs": [],
+        }
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
 
 
 @pytest.fixture
@@ -19,6 +42,7 @@ def root(tmp_path):
     pl.DataFrame({"i": [1, 2, 3]}).write_parquet(tmp_path / "d.parquet")
     (tmp_path / ".venv").mkdir()
     (tmp_path / "bad.ipynb").write_text("{not json", encoding="utf-8")
+    (tmp_path / "good.ipynb").write_text(json.dumps(GOOD_NOTEBOOK), encoding="utf-8")
     (tmp_path / "evil.html").write_bytes(b"<script>alert(document.cookie)</script>")
     (tmp_path / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (tmp_path / "pic.svg").write_bytes(b'<svg onload="alert(document.cookie)"></svg>')
@@ -136,11 +160,46 @@ def test_raw_responses_are_nosniff(client):
     assert response.headers["x-content-type-options"] == "nosniff"
 
 
+def test_raw_cjk_filename_does_not_500(root):
+    """Starlette latin-1 encodes header values; a bare filename= with a CJK
+    name used to raise UnicodeEncodeError inside the handler and 500."""
+    (root / "报告.pdf").write_bytes(b"%PDF-1.4\n")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/raw", params={"path": "报告.pdf"})
+    assert response.status_code == 200
+    assert "filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf" in response.headers["content-disposition"]
+
+
+def test_raw_accented_latin_filename_does_not_500(root):
+    (root / "résumé.pdf").write_bytes(b"%PDF-1.4\n")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/raw", params={"path": "résumé.pdf"})
+    assert response.status_code == 200
+    assert "filename*=UTF-8''r%C3%A9sum%C3%A9.pdf" in response.headers["content-disposition"]
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="double quote is not a legal Windows filename character"
+)
+def test_raw_filename_with_a_quote_produces_a_well_formed_header(root):
+    (root / 'a"b.pdf').write_bytes(b"%PDF-1.4\n")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/raw", params={"path": 'a"b.pdf'})
+    assert response.status_code == 200
+    disposition = response.headers["content-disposition"]
+    # Exactly the two quotes bounding filename="..."; an embedded, unescaped
+    # quote in the name would otherwise break out of the quoted-string.
+    assert disposition.count('"') == 2
+
+
 def test_index_html_is_served_at_root(client):
     assert client.get("/").status_code == 200
 
 
-def test_serving_never_writes_to_disk(root, client):
+def test_serving_never_writes_to_disk(root):
     def snapshot():
         return {
             p.relative_to(root).as_posix(): (
@@ -151,10 +210,30 @@ def test_serving_never_writes_to_disk(root, client):
             if p.is_file()
         }
 
+    # Deliberately does not depend on the `client` fixture: that fixture
+    # already calls create_app() and index.wait() before the test body runs,
+    # which would put the background index build -- the walk most likely to
+    # touch the filesystem -- outside the measured window. Snapshotting
+    # first and only then creating the app keeps the whole build inside it.
     before = snapshot()
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    client = TestClient(app)
+
     client.get("/api/tree", params={"path": ""})
     client.get("/api/index")
-    for name in ["docs/readme.md", "code.py", "d.parquet", "doc.pdf", "blob.dat", "bad.ipynb"]:
+    for name in [
+        "docs/readme.md",
+        "code.py",
+        "d.parquet",
+        "doc.pdf",
+        "blob.dat",
+        "bad.ipynb",
+        "good.ipynb",  # the only fixture file that reaches nbconvert's HTMLExporter
+        "evil.html",
+        "pic.png",
+        "pic.svg",
+    ]:
         client.get("/api/preview", params={"path": name})
         client.get("/api/raw", params={"path": name})
     assert snapshot() == before

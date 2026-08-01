@@ -4,6 +4,7 @@ import logging
 import mimetypes
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -100,11 +101,19 @@ def create_app(root: Path) -> FastAPI:
         # loads, so the image renderer is unaffected.
         inline = kind == "pdf" or (kind == "image" and extension_of(target) != "svg")
         disposition = "inline" if inline else "attachment"
+        # RFC 6266. Starlette latin-1 encodes header values, so the bare
+        # filename= must be ASCII; filename*= carries the real name. Without
+        # this, any non-Latin-1 filename raises inside the handler and 500s.
+        ascii_name = target.name.encode("ascii", "replace").decode("ascii").replace('"', "")
+        content_disposition = (
+            f'{disposition}; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(target.name, safe='')}"
+        )
         return FileResponse(
             target,
             media_type=media_type or "application/octet-stream",
             headers={
-                "Content-Disposition": f'{disposition}; filename="{target.name}"',
+                "Content-Disposition": content_disposition,
                 "X-Content-Type-Options": "nosniff",
             },
         )

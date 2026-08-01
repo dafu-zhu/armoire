@@ -94,3 +94,13 @@ def test_unsupported_file_format_raises(tmp_path):
     path.write_text("a\tb\n1\t2\n")
     with pytest.raises(ValueError, match="unsupported table format"):
         preview_table(path)
+
+
+def test_a_file_named_exactly_dot_csv_previews_as_a_table(tmp_path):
+    """Path(".csv").suffix is "" -- dispatching on .suffix directly (rather
+    than the dotfile-aware extension_of) makes a file named exactly ".csv"
+    dispatch to kind == "table" in app.py, then die here with "unsupported
+    table format" because _scan sees no suffix at all."""
+    path = tmp_path / ".csv"
+    pl.DataFrame({"i": [1, 2, 3]}).write_csv(path)
+    assert preview_table(path)["total_rows"] == 3

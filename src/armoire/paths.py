@@ -1,8 +1,12 @@
 """The single gate for turning a request path into a filesystem path.
 
-Every filesystem access in armoire goes through resolve_in_root. The server
-streams arbitrary bytes from the root, so an escape here is the whole security
-boundary failing.
+Every *request-derived* path in armoire goes through resolve_in_root, which
+also rejects a null byte in the path outright. `index.py`'s background walk
+(os.walk, no request input, followlinks=False by default) and app.py's
+StaticFiles mount (its own traversal check) are the two filesystem accesses
+that do not go through it -- both are safe, but neither takes a request path
+as input. The server streams arbitrary bytes from the root for anything that
+does, so an escape here is the whole security boundary failing.
 """
 
 from pathlib import Path

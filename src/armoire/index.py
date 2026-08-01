@@ -1,7 +1,8 @@
 """A flat list of every non-ignored file, for the filter box.
 
 Built once at startup on a background thread. The server serves requests while
-the walk runs; the filter box reports "indexing" until it finishes.
+the walk runs; the filter box polls /api/index and reports "Indexing…" until
+it finishes.
 """
 
 import logging
@@ -62,6 +63,9 @@ class PathIndex:
             # forever with no error visible anywhere.
             logger.exception("index build failed for %s", self._root)
             paths = []
+        # _paths before _ready: /api/index reads ready then paths with no
+        # lock, so a reader seeing ready is True must be guaranteed to see the
+        # populated list. Do not reorder these two lines.
         self._paths = paths
         self._ready = True
 

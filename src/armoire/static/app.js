@@ -6,13 +6,29 @@ const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
 const status = document.getElementById('status');
 
+function encodeHashPath(path) {
+  return path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
 function currentPath() {
-  const hash = decodeURIComponent(window.location.hash.replace(/^#\/?/, ''));
-  return hash;
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  // decodeURIComponent throws on a malformed percent-escape -- e.g. a literal
+  // "%" that was never encoded, from a hand-typed or hand-edited hash. Every
+  // write site (navigate(), the breadcrumb links) encodes with
+  // encodeHashPath(), so a well-formed hash always round-trips; a malformed
+  // one must surface as a visible error rather than an uncaught exception
+  // that freezes the page.
+  return raw
+    .split('/')
+    .map((segment) => decodeURIComponent(segment))
+    .join('/');
 }
 
 export function navigate(path) {
-  window.location.hash = `/${path}`;
+  window.location.hash = `/${encodeHashPath(path)}`;
 }
 
 function renderBreadcrumb(path) {
@@ -27,7 +43,7 @@ function renderBreadcrumb(path) {
     accumulated = accumulated ? `${accumulated}/${part}` : part;
     breadcrumb.append(document.createTextNode(' / '));
     const link = document.createElement('a');
-    link.href = `#/${accumulated}`;
+    link.href = `#/${encodeHashPath(accumulated)}`;
     link.textContent = part;
     breadcrumb.append(link);
   }
@@ -61,7 +77,15 @@ initFilter(
 );
 
 window.addEventListener('hashchange', () => {
-  const path = currentPath();
+  let path;
+  try {
+    path = currentPath();
+  } catch (error) {
+    // Not inside a promise chain, so an uncaught decode error here would be
+    // an unhandled exception with no error card -- the page just freezes.
+    showError(error);
+    return;
+  }
   show(path);
   tree.revealPath(path);
 });
