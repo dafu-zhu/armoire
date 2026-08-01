@@ -14,11 +14,13 @@ def notebook(tmp_path):
                 "cells": [
                     {
                         "cell_type": "markdown",
+                        "id": "intro",
                         "metadata": {},
                         "source": ["# Heading\n"],
                     },
                     {
                         "cell_type": "code",
+                        "id": "greet",
                         "execution_count": 1,
                         "metadata": {},
                         "source": ["print('hello')\n"],
