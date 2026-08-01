@@ -581,11 +581,19 @@ Built once at startup on a background thread. The server serves requests while
 the walk runs; the filter box reports "indexing" until it finishes.
 """
 
+import logging
 import os
 import threading
 from pathlib import Path
 
 from armoire.ignore import is_ignored
+
+logger = logging.getLogger(__name__)
+
+
+def _on_walk_error(error: OSError) -> None:
+    """os.walk swallows scandir errors by default, dropping whole subtrees silently."""
+    logger.debug("skipping unreadable directory: %s", error)
 
 
 def build_index(root: Path) -> list[str]:
@@ -593,7 +601,7 @@ def build_index(root: Path) -> list[str]:
     root = root.resolve()
     found: list[str] = []
 
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_walk_error):
         # Mutating dirnames in place is what stops os.walk descending into
         # the ignored trees at all, rather than filtering them afterwards.
         dirnames[:] = [d for d in dirnames if not is_ignored(d)]
@@ -617,11 +625,24 @@ class PathIndex:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        # Idempotent: a second thread would race the first, and wait() only
+        # joins the most recent one.
+        if self._thread is not None:
+            return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
-        paths = build_index(self._root)
+        try:
+            paths = build_index(self._root)
+        except Exception:
+            # A stranded index is worse than an empty one: app.py serves
+            # `ready` straight to clients, which would report "indexing"
+            # forever with no error visible anywhere.
+            logger.exception("index build failed for %s", self._root)
+            paths = []
+        # _paths before _ready: a reader seeing ready is True must be
+        # guaranteed to see the populated list.
         self._paths = paths
         self._ready = True
 
