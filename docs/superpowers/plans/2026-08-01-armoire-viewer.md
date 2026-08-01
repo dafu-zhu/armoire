@@ -2983,6 +2983,46 @@ export async function renderPreview(container, path, page = 0) {
 }
 ```
 
+- [ ] **Step 5b: Restore the static import of `preview.js`**
+
+Task 10 could not statically import `preview.js` because it did not exist yet, and
+a static import of a missing module fails the whole ES module graph — `app.js`
+would not have executed at all, taking the tree and filter down with it. It used a
+dynamic `import()` inside `show()` as a temporary measure. Now that `preview.js`
+exists, put it back.
+
+In `src/armoire/static/app.js`, restore the top-level import:
+
+```js
+import { renderPreview } from './preview.js';
+```
+
+and in `show()` replace
+
+```js
+    const { renderPreview } = await import('./preview.js');
+    const meta = await renderPreview(content, path);
+```
+
+with
+
+```js
+    const meta = await renderPreview(content, path);
+```
+
+A missing renderer is a packaging bug; it should fail loudly at load rather than
+surface as a per-file error card on every navigation.
+
+Then delete this marker from `test_no_console_errors_during_navigation` in
+`tests/test_navigation.py`:
+
+```python
+@pytest.mark.xfail(reason="preview.js arrives in Task 11", strict=True)
+```
+
+It is `strict=True`, so leaving it in place fails the suite once the test starts
+passing — it cannot be silently inherited.
+
 - [ ] **Step 6: Write the renderer tests**
 
 Create `tests/test_renderers.py`. Each asserts the rendered output in a real
