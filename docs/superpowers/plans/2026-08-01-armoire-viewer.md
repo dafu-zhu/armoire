@@ -1436,10 +1436,13 @@ def create_app(root: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such file")
         media_type, _ = mimetypes.guess_type(target.name)
         kind = kind_for(extension_of(target))
-        # Only the kinds the client embeds are served inline. Anything else —
-        # notably .html and .svg — downloads instead of executing in armoire's
-        # own origin, where it could read any file under the served root.
-        inline = kind in ("pdf", "image")
+        # Only the kinds the client embeds are served inline, and SVG is
+        # excluded even though its kind is "image": browsers execute scripts in
+        # an SVG opened as a top-level document, which would run in armoire's
+        # own origin and could read any file under the served root. Content-
+        # Disposition is ignored for <img> subresource loads, so the image
+        # renderer is unaffected.
+        inline = kind == "pdf" or (kind == "image" and extension_of(target) != "svg")
         return FileResponse(
             target,
             media_type=media_type or "application/octet-stream",
