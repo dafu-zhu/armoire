@@ -20,6 +20,8 @@ def root(tmp_path):
     (tmp_path / ".venv").mkdir()
     (tmp_path / "bad.ipynb").write_text("{not json", encoding="utf-8")
     (tmp_path / "evil.html").write_bytes(b"<script>alert(document.cookie)</script>")
+    (tmp_path / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (tmp_path / "pic.svg").write_bytes(b'<svg onload="alert(document.cookie)"></svg>')
     return tmp_path
 
 
@@ -113,6 +115,19 @@ def test_raw_pdf_is_served_inline(client):
 
 def test_raw_html_is_forced_to_download(client):
     response = client.get("/api/raw", params={"path": "evil.html"})
+    assert response.headers["content-disposition"].startswith("attachment")
+
+
+def test_raw_raster_image_is_served_inline(client):
+    response = client.get("/api/raw", params={"path": "pic.png"})
+    assert response.headers["content-disposition"].startswith("inline")
+
+
+def test_raw_svg_is_forced_to_download(client):
+    """Direct navigation to /api/raw?path=x.svg executes <script> in an SVG as a
+    top-level document, in armoire's own origin. <img> subresource loads ignore
+    Content-Disposition, so the image preview renderer is unaffected."""
+    response = client.get("/api/raw", params={"path": "pic.svg"})
     assert response.headers["content-disposition"].startswith("attachment")
 
 
