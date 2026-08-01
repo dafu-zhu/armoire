@@ -1643,6 +1643,7 @@ the wheel has to be self-contained or `uvx armoire serve` installs a broken
 page. Re-run this only to bump a version.
 """
 
+import re
 import urllib.request
 from pathlib import Path
 
@@ -1658,16 +1659,23 @@ FILES = {
     "highlight.css": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/styles/github.min.css",
 }
 
-FONTS_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/"
-FONTS = [
-    "KaTeX_Main-Regular.woff2",
-    "KaTeX_Main-Bold.woff2",
-    "KaTeX_Main-Italic.woff2",
-    "KaTeX_Math-Italic.woff2",
-    "KaTeX_Size1-Regular.woff2",
-    "KaTeX_Size2-Regular.woff2",
-    "KaTeX_AMS-Regular.woff2",
-]
+FONTS_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+
+
+def fetch_katex_fonts() -> int:
+    """Download every woff2 face katex.css actually references.
+
+    Derived from the stylesheet rather than hardcoded: a hand-maintained list
+    silently drifts on upgrade, and a missing face never fails loudly — the
+    maths just renders in a fallback font. Only woff2 is fetched; every browser
+    that can run this app supports it, and the .woff/.ttf fallbacks in the
+    stylesheet would triple the payload for no benefit.
+    """
+    css = (VENDOR / "katex.css").read_text(encoding="utf-8")
+    faces = sorted(set(re.findall(r"url\((fonts/[^)]+\.woff2)\)", css)))
+    for face in faces:
+        fetch(FONTS_BASE + face, VENDOR / face)
+    return len(faces)
 
 
 def fetch(url: str, dest: Path) -> None:
@@ -1681,9 +1689,9 @@ def main() -> None:
     print(f"vendoring into {VENDOR}")
     for name, url in FILES.items():
         fetch(url, VENDOR / name)
-    for font in FONTS:
-        fetch(FONTS_BASE + font, VENDOR / "fonts" / font)
-    print("done")
+    # After katex.css exists, since the font list is read out of it.
+    count = fetch_katex_fonts()
+    print(f"done ({count} KaTeX faces)")
 
 
 if __name__ == "__main__":
