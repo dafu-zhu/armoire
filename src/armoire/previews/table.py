@@ -12,9 +12,12 @@ MAX_PAGE_SIZE = 500
 
 
 def _scan(path: Path) -> pl.LazyFrame:
-    if path.suffix.lower() == ".parquet":
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
         return pl.scan_parquet(path)
-    return pl.scan_csv(path)
+    if suffix == ".csv":
+        return pl.scan_csv(path)
+    raise ValueError(f"unsupported table format: {path.suffix or path.name}")
 
 
 def preview_table(path: Path, page: int = 0, page_size: int = 100) -> dict:
