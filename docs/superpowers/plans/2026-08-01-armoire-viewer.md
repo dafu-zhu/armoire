@@ -1722,6 +1722,7 @@ Replace `src/armoire/static/index.html` with:
 <link rel="stylesheet" href="/vendor/highlight.css">
 <link rel="stylesheet" href="/vendor/pygments.css">
 <link rel="stylesheet" href="/app.css">
+<script src="/vendor/purify.js"></script>
 <script src="/vendor/marked.js"></script>
 <script src="/vendor/katex.js"></script>
 <script src="/vendor/katex-auto-render.js"></script>
@@ -2731,7 +2732,12 @@ export function renderMarkdown(container, data, path) {
     return `<div class="mermaid-slot" data-index="${diagrams.length - 1}"></div>`;
   });
 
-  body.innerHTML = marked.parse(source);
+  // marked does not sanitize, and this renders files the user may not have
+  // written. Sanitize before injection, and before rewriteLinks — which
+  // deliberately leaves absolute schemes alone, `javascript:` among them.
+  // KaTeX and Mermaid run afterwards, inserting their own markup into the
+  // already-cleaned DOM.
+  body.innerHTML = DOMPurify.sanitize(marked.parse(source));
   rewriteLinks(body, base);
 
   body.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));
@@ -2869,7 +2875,8 @@ Create `src/armoire/static/renderers/notebook.js`:
 export function renderNotebook(container, data) {
   const body = document.createElement('div');
   body.className = 'notebook-body';
-  body.innerHTML = data.html;
+  // nbconvert output is derived from an untrusted file, same as markdown.
+  body.innerHTML = DOMPurify.sanitize(data.html);
   body.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));
   container.append(body);
   return 'notebook';
