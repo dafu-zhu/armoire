@@ -33,6 +33,10 @@ packages = ["src/armoire"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# Plans and specs contain illustrative Python fences. Ruff formats fenced code
+# inside markdown, and reformatting them would desynchronise the task briefs
+# extracted from those documents.
+exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
