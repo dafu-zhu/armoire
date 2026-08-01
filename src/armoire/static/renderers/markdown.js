@@ -43,7 +43,10 @@ export function renderMarkdown(container, data, path) {
     return `<div class="mermaid-slot" data-index="${diagrams.length - 1}"></div>`;
   });
 
-  body.innerHTML = marked.parse(source);
+  // marked does not sanitize, and this renders files the user may not have
+  // written. Sanitize before injection: KaTeX and Mermaid run afterwards and
+  // insert their own markup into the already-cleaned DOM.
+  body.innerHTML = DOMPurify.sanitize(marked.parse(source));
   rewriteLinks(body, base);
 
   body.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));

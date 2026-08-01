@@ -44,6 +44,24 @@ def test_markdown_rewrites_relative_links_to_in_app_routes(page, live_server):
     page.wait_for_selector(".listing")
 
 
+def test_markdown_strips_inline_event_handlers(page, live_server):
+    """Untrusted file content must not execute on render."""
+    open_path(page, live_server, "hostile.md")
+    page.wait_for_selector(".markdown-body")
+    assert page.evaluate("() => window.__pwned") is None
+    assert page.locator(".markdown-body img[onerror]").count() == 0
+
+
+def test_markdown_neutralises_javascript_hrefs(page, live_server):
+    """rewriteLinks deliberately leaves absolute schemes alone; the sanitizer removes this one."""
+    open_path(page, live_server, "hostile.md")
+    page.wait_for_selector(".markdown-body")
+    hrefs = page.eval_on_selector_all(
+        ".markdown-body a", "els => els.map(e => e.getAttribute('href'))"
+    )
+    assert not any(h and h.lower().startswith("javascript:") for h in hrefs)
+
+
 def test_code_is_syntax_highlighted(page, live_server):
     open_path(page, live_server, "code.py")
     page.wait_for_selector("pre.code code.hljs")

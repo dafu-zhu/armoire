@@ -27,6 +27,7 @@ FILES = {
     "hljs-latex.js": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/latex.min.js",
     "hljs-julia.js": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/julia.min.js",
     "hljs-matlab.js": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/matlab.min.js",
+    "purify.js": "https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js",
 }
 
 FONTS_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"

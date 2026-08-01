@@ -76,6 +76,17 @@ def sample_root(tmp_path_factory):
         newline="",
     )
     (root / "config.toml").write_text('[section]\nkey = "value"\n', encoding="utf-8", newline="")
+    (root / "hostile.md").write_text(
+        "# Hostile\n\n"
+        '<img src=x onerror="window.__pwned = true">\n\n'
+        # No spaces in the destination: marked's CommonMark-compliant link
+        # parser rejects an unenclosed space in a link destination and never
+        # emits an <a> tag at all for one, which would make this vector
+        # untestable for reasons that have nothing to do with the sanitizer.
+        "[click me](javascript:window.__pwned=true)\n",
+        encoding="utf-8",
+        newline="",
+    )
     pl.DataFrame({"i": range(250), "label": [f"r{n}" for n in range(250)]}).write_parquet(
         root / "data.parquet"
     )
