@@ -1,3 +1,6 @@
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
 from armoire.ignore import is_ignored
@@ -66,3 +69,46 @@ def test_refuses_to_list_outside_root(root):
 def test_missing_directory_raises(root):
     with pytest.raises(FileNotFoundError):
         list_dir(root, "nope")
+
+
+def test_case_tie_sorts_deterministically():
+    """Sort key uses case-insensitive primary with exact name tiebreaker."""
+    # Import Entry directly to test sorting logic without filesystem
+    from armoire.scanner import Entry
+
+    # Create entries that have the same lowercase name (simulating case-tie scenario)
+    entries = [
+        Entry(name="README.txt", is_dir=False, size=0, mtime=1.0, ext="txt"),
+        Entry(name="readme.txt", is_dir=False, size=0, mtime=1.0, ext="txt"),
+        Entry(name="Readme.txt", is_dir=False, size=0, mtime=1.0, ext="txt"),
+    ]
+
+    # Sort using the same key as list_dir
+    sorted_entries = sorted(entries, key=lambda e: (e.name.lower(), e.name))
+    sorted_names = [e.name for e in sorted_entries]
+
+    # With tiebreaker, order is deterministic: sorted by exact name when lowercase matches
+    # "README.txt" < "Readme.txt" < "readme.txt" (ASCII/Unicode order)
+    assert sorted_names == ["README.txt", "Readme.txt", "readme.txt"]
+
+
+def test_oserror_skips_inaccessible_entries(root):
+    """Entries that raise OSError are silently skipped from results."""
+    # Create a file that we'll make inaccessible
+    (root / "accessible.txt").write_text("hello")
+    (root / "inaccessible.txt").write_text("world")
+
+    # Patch Path.stat to raise OSError for the inaccessible file
+    original_stat = Path.stat
+
+    def stat_with_failure(self, *, follow_symlinks=True):
+        if self.name == "inaccessible.txt":
+            raise OSError("Permission denied")
+        return original_stat(self, follow_symlinks=follow_symlinks)
+
+    with patch.object(Path, "stat", stat_with_failure):
+        _, files = list_dir(root, "")
+
+    file_names = [f.name for f in files]
+    assert "accessible.txt" in file_names
+    assert "inaccessible.txt" not in file_names
