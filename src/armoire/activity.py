@@ -16,7 +16,6 @@ being read belongs to a repository that may sit outside the served folder.
 
 import logging
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from armoire.paths import PathOutsideRoot, resolve_in_root
@@ -24,12 +23,6 @@ from armoire.paths import PathOutsideRoot, resolve_in_root
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 10
-
-
-@dataclass(frozen=True)
-class Activity:
-    commits: int
-    last: float | None
 
 
 def _run(directory: Path, args: list[str]) -> str | None:
@@ -72,48 +65,6 @@ def _resolve(root: Path, relative: str) -> Path | None:
         return resolve_in_root(root, relative)
     except PathOutsideRoot:
         return None
-
-
-MAX_SCAN_FILES = 5000
-
-
-def _newest_mtime(directory: Path) -> float | None:
-    """Fallback for folders outside git, or with no commits in the window.
-
-    Bounded so a huge tree cannot stall the startup thread. When the bound is
-    hit the answer is None, not the newest-so-far: rglob order has nothing to
-    do with mtime, so a truncated scan can report an older file as the newest
-    one, and a wrong "last touched" is worse than an absent one.
-    """
-    newest: float | None = None
-    seen = 0
-    for path in directory.rglob("*"):
-        try:
-            if not path.is_file():
-                continue
-            stamp = path.stat().st_mtime
-        except OSError:
-            continue
-        seen += 1
-        if seen > MAX_SCAN_FILES:
-            return None
-        if newest is None or stamp > newest:
-            newest = stamp
-    return newest
-
-
-def activity_for(root: Path, relative: str, days: int = 30) -> Activity:
-    directory = _resolve(root, relative)
-    if directory is None:
-        return Activity(commits=0, last=None)
-    out = _run(directory, ["log", f"--since={days}.days", "--format=%ct", "--", "."])
-    stamps = [float(line) for line in (out or "").split() if line.strip()]
-    if stamps:
-        return Activity(commits=len(stamps), last=max(stamps))
-    # No git history, or no repository at all. A commit count of zero is
-    # honest, but "last touched" is still knowable from the filesystem, and a
-    # folder outside git would otherwise look permanently dead.
-    return Activity(commits=0, last=_newest_mtime(directory))
 
 
 def recent_commits(root: Path, relative: str, limit: int = 10) -> list[dict]:

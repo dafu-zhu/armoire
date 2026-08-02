@@ -8,25 +8,34 @@ thing that would otherwise accrete inside a route handler.
 from dataclasses import asdict
 from pathlib import Path
 
-from armoire.activity import activity_for, recent_commits
+from armoire import store
+from armoire.activity import recent_commits
 from armoire.paths import PathOutsideRoot
-from armoire.projects import Registry
+from armoire.projects import STATUSES, Registry
 from armoire.scanner import list_dir
 
 
 def project_rows(root: Path, registry: Registry) -> list[dict]:
+    known = {p.name for p in registry.projects}
+    # Only edges that will actually be drawn count. An edge naming a project
+    # that does not exist is reported as an issue and never rendered, so the
+    # node still stands alone and belongs in a category container.
+    blocks = {b for p in registry.projects for b in p.blocked_by if b in known}
+    stored = store.read_state(root).get("status", {})
+    if not isinstance(stored, dict):
+        stored = {}
+
     listed = []
     for project in registry.projects:
-        merged = {"commits": 0, "last": None}
-        for relative in project.paths:
-            found = activity_for(root, relative)
-            merged["commits"] += found.commits
-            if found.last is not None:
-                merged["last"] = max(merged["last"] or 0.0, found.last)
+        connected = project.name in blocks or any(b in known for b in project.blocked_by)
+        override = stored.get(project.name)
         listed.append(
             asdict(project)
             | {"paths": list(project.paths), "blocked_by": list(project.blocked_by)}
-            | merged
+            | {
+                "isolated": not connected,
+                "status": override if override in STATUSES else project.status,
+            }
         )
     return listed
 

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from armoire import store
 from armoire.app import create_app
+from armoire.projects import STATUSES
 
 # A minimal but valid notebook: nbformat_minor 5 requires every cell to carry
 # an "id". Deliberately distinct from bad.ipynb (which fails at nbformat.read
@@ -208,8 +209,8 @@ def test_serving_never_writes_to_disk(root):
     # false` and a 404 -- load_registry never parses, dashboard never
     # composes, activity never invokes git -- so the only write-capable
     # surface Phase 2 added would sit outside the checksum window entirely.
-    # "docs" is a real directory in the fixture, so activity_for and list_dir
-    # both do real work against it.
+    # "docs" is a real directory in the fixture, so recent_commits and list_dir
+    # both do real work against it, via project_detail below.
     registry_file = store.registry_path(root)
     registry_file.parent.mkdir(parents=True, exist_ok=True)
     registry_file.write_text(
@@ -312,9 +313,13 @@ def test_projects_endpoint_carries_optional_fields(registry_client):
     assert downstream["note"] == "a note"
 
 
-def test_projects_endpoint_includes_activity_so_the_graph_needs_one_call(registry_client):
+def test_projects_endpoint_reports_isolation_and_status_so_the_graph_needs_one_call(
+    registry_client,
+):
     body = registry_client.get("/api/projects").json()
-    assert all("commits" in p and "last" in p for p in body["projects"])
+    assert all(isinstance(p["isolated"], bool) for p in body["projects"])
+    assert all(p["status"] in STATUSES for p in body["projects"])
+    assert all("commits" not in p and "last" not in p for p in body["projects"])
 
 
 def test_no_registry_reports_that_rather_than_erroring(client):
