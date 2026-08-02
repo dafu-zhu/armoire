@@ -284,6 +284,15 @@ def _git(cwd, *args):
 
     The four identity variables stay explicit so the isolation intent survives:
     commits must not be attributed to whoever is running the suite.
+
+    Inheriting the environment inherits the runner's git configuration too,
+    which is the same blast radius from the other side: `commit.gpgsign = true`
+    in someone's ~/.gitconfig would fail every commit here, and a
+    `core.hooksPath` or `commit.template` would be just as fatal. CI images
+    carry no global config, so this bites a developer rather than the matrix.
+    Pointing both config scopes at os.devnull keeps the real environment
+    without the ambient settings -- git reads the file, finds nothing, and
+    falls back to the identity above.
     """
     subprocess.run(
         ["git", *args],
@@ -296,6 +305,8 @@ def _git(cwd, *args):
             "GIT_AUTHOR_EMAIL": "t@t",
             "GIT_COMMITTER_NAME": "t",
             "GIT_COMMITTER_EMAIL": "t@t",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
         },
     )
 

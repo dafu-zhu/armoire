@@ -255,6 +255,10 @@ def test_serving_never_writes_to_disk(root):
     # checksumming a `registry: false` and a 404 the way it used to.
     assert projects.json()["projects"], projects.json()
     assert detail.status_code == 200, detail.text
+    # 200 alone proves the registry parsed and the project resolved; it does
+    # not prove list_dir walked anything. The files are what put the scan
+    # inside the window.
+    assert detail.json()["files"], detail.json()
     assert snapshot() == before
 
 

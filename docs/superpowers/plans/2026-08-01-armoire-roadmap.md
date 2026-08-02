@@ -412,14 +412,22 @@ import pytest
 from armoire.activity import activity_for, recent_commits
 
 
+# Superseded during the final review: this sketch was transcribed into three
+# files, and its replacement environment drops HOME and SYSTEMROOT, which the
+# six-way CI matrix would eventually mind. What shipped is the single
+# `tests/conftest.py::_git`, merging the identity over os.environ and pinning
+# both git config scopes at os.devnull. Import that; do not copy this.
 def git(cwd, *args):
     subprocess.run(
         ["git", *args],
         cwd=cwd,
         check=True,
         capture_output=True,
-        env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-             "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"]},
+        env=os.environ | {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+        },
     )
 
 

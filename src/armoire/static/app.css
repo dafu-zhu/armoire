@@ -334,7 +334,14 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
    `.when` (margin-left: auto) still inside a row that `.project-detail ul`
    clips. Take `overflow: hidden` away and both jobs go with it: the subject
    widens to its full intrinsic 3398px and pushes the timestamp ~2.5k past the
-   clip edge, where it is simply gone. */
+   clip edge, where it is simply gone.
+
+   `overflow: clip` is the trap in that sentence -- it still gives
+   text-overflow something to clip, so the ellipsis survives the swap, but a
+   clipped box is not a scroll container and the automatic minimum size goes
+   back to being content-based. The subject stops shrinking, the timestamp
+   leaves the row, and the ellipsis keeps working the whole time, which is
+   what makes it look safe. The test asserts both halves for that reason. */
 .project-detail .commit .subject {
   overflow: hidden;
   text-overflow: ellipsis;
