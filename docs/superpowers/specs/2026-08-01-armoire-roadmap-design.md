@@ -125,6 +125,21 @@ Submodules need their own `git -C <path> log` — the parent repository's log do
 not see inside them, and the corpus has four. Paths with no git history fall
 back to file mtimes.
 
+**What shipped is not this.** `dashboard.project_rows` calls `activity_for`
+synchronously, once per declared path, on every `/api/projects` request; the
+background index thread computes nothing about activity. `app.js` re-fetches
+`/api/projects` on every entry to `#/`, including back-navigation, so the cost
+is paid again each time. Task 2 measured 3.37s for seven paths, and the
+originating registry has 17 projects.
+
+The background-thread design was not carried forward and no task in the plan
+ever adopted it — recorded here as a deviation rather than repaired, because
+choosing between caching, precomputation and a streaming response is a design
+decision in its own right and not something to settle inside a fix wave. What
+this note buys is that the next person to profile a slow roadmap finds the
+measurement already made instead of re-deriving it, and knows the spec's
+"computed once" sentence above describes an intention, not the code.
+
 ## Modules
 
 ### Backend — `src/armoire/`

@@ -39,9 +39,18 @@ All file browsing moves under `#/browse/`:
 | `#/project/0DTE` | Project detail |
 
 This removes the collision rather than special-casing it — a folder named
-`browse` is `#/browse/browse`. Bookmarks made under the old scheme break; the
-tool has been installable for under a day, so that cost is accepted rather than
-carrying a redirect layer forever.
+`browse` is `#/browse/browse`.
+
+**Revised during Task 4 — this section originally said the opposite.** As
+first written it accepted that bookmarks made under the old scheme would
+break, on the grounds that the tool had been installable for under a day and a
+redirect layer was not worth carrying forever. Task 4's review reversed that,
+and the migration shipped: `currentRoute()` classifies a hash whose first
+segment is neither `browse` nor `project` as `kind: 'unknown'`, and both entry
+points — the `hashchange` listener and the initial `tree.ready` resolution —
+rewrite it to `#/browse/<path>`. Old bookmarks keep working. Proven by
+`test_a_stale_phase_one_url_migrates_to_the_browse_route` and
+`test_a_stale_nested_url_migrates` in `tests/test_navigation.py`.
 
 ## File Structure
 
