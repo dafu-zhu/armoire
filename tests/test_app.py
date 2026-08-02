@@ -230,7 +230,9 @@ def test_serving_never_writes_to_disk(root):
     before = folder_snapshot(root)
     app = create_app(root)
     app.state.index.wait(timeout=10)
-    client = TestClient(app)
+    # base_url so the PUT below clears the Host allowlist -- the default
+    # TestClient host ("testserver") is not a loopback address.
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     client.get("/api/tree", params={"path": ""})
     client.get("/api/index")
@@ -455,7 +457,10 @@ def _client_with_registry(tmp_path):
     (tmp_path / "docs").mkdir(exist_ok=True)
     store.registry_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
     store.registry_path(tmp_path).write_text(REGISTRY, encoding="utf-8")
-    return TestClient(create_app(tmp_path))
+    # base_url, not the TestClient default of "http://testserver": the Host
+    # allowlist in set_status must see a real loopback address, and Starlette
+    # derives both the request's Host header and request.base_url from it.
+    return TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
 
 
 def test_a_status_edit_is_stored(tmp_path):
@@ -514,13 +519,80 @@ def test_a_request_from_our_own_origin_is_allowed(tmp_path):
     response = client.put(
         "/api/status",
         json={"name": "Downstream", "status": "done"},
-        headers=HEADERS | {"Origin": "http://testserver"},
+        headers=HEADERS | {"Origin": "http://127.0.0.1"},
     )
     assert response.status_code == 200
 
 
+def test_a_rebound_host_is_refused_even_when_origin_matches_it(tmp_path):
+    """DNS rebinding: request.base_url is derived from this same request's own
+    Host header, so an attacker whose hostname resolves to 127.0.0.1 can send
+    Origin equal to that same hostname and "Origin == base_url" holds
+    tautologically -- the same-origin check alone would let it through. The
+    Host header itself must name a real loopback address."""
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status",
+        json={"name": "Downstream", "status": "done"},
+        headers=HEADERS | {"Host": "evil.example", "Origin": "http://evil.example"},
+    )
+    assert response.status_code == 403
+    assert store.read_state(tmp_path) == {}
+
+
+def test_a_store_inside_the_served_folder_refuses_the_status_write(tmp_path, monkeypatch):
+    """Endpoint-level analogue of store.writes_inside's own unit tests and
+    cli.prepare_store's refusal. store_is_inside(root) would miss this: it
+    only asks whether config_root() sits inside root, which is False here --
+    root is a *descendant* of config_root(), the other way around -- so a
+    regression back to that predicate would let the write through and land
+    state.json inside the served tree, exactly the hole Task 3's review
+    found for the registry write."""
+    config_root = tmp_path / "store"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    registry_file = store.registry_path(served)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(REGISTRY, encoding="utf-8")
+
+    client = TestClient(create_app(served), base_url="http://127.0.0.1")
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    assert response.status_code == 403
+    assert not store.state_path(served).exists()
+
+
+def test_a_status_edit_preserves_other_stored_data(tmp_path):
+    """ "kept, not pruned": an existing status for a project this request does
+    not name -- renamed away, or never in the registry to begin with -- must
+    survive, and so must any sibling top-level key store.read_state returns
+    that this endpoint has no business touching (a future "layout" key, most
+    likely)."""
+    client = _client_with_registry(tmp_path)
+    store.write_state(tmp_path, {"status": {"Ghost": "done"}, "layout": {"Downstream": [1, 2]}})
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "paused"}, headers=HEADERS
+    )
+    assert response.status_code == 200
+    state = store.read_state(tmp_path)
+    assert state["status"] == {"Ghost": "done", "Downstream": "paused"}
+    assert state["layout"] == {"Downstream": [1, 2]}
+
+
 def test_a_status_edit_does_not_write_to_the_served_folder(tmp_path):
     client = _client_with_registry(tmp_path)
+    # A real file, not just the empty "docs" directory _client_with_registry
+    # creates: folder_snapshot({}) == folder_snapshot({}) can only ever prove
+    # a file was not *created*, never that one already there was left alone.
+    (tmp_path / "docs" / "readme.md").write_text("hello\n", encoding="utf-8")
     before = folder_snapshot(tmp_path)
-    client.put("/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS)
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    # The snapshot equality is only as strong as what happened before it was
+    # taken again: assert the edit actually went through, so this test cannot
+    # quietly pass on a rejected write it never noticed.
+    assert response.status_code == 200, response.text
     assert folder_snapshot(tmp_path) == before

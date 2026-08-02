@@ -174,13 +174,30 @@ def create_app(root: Path) -> FastAPI:
     @app.put("/api/status")
     def set_status(payload: dict, request: Request) -> dict:
         # The bind address stops other machines, not other tabs: any page in
-        # any browser on this machine can reach 127.0.0.1. A custom header
-        # cannot be set cross-origin without a CORS preflight, and armoire
-        # answers none and installs no CORS middleware, so the browser refuses
-        # the request before it is sent. HTML form posts cannot set headers at
-        # all, which closes the other route in.
+        # any browser on this machine can reach 127.0.0.1. What actually keeps
+        # a script on a foreign origin from reaching this handler through the
+        # browser is that PUT is not a CORS "simple method": the browser
+        # refuses to send it cross-origin without first sending an OPTIONS
+        # preflight, armoire answers no CORS headers and installs no CORS
+        # middleware, so the preflight fails closed and the real PUT is never
+        # sent. X-Armoire is belt-and-braces on top of that, not the sole
+        # barrier -- it also closes the HTML-form-post route in, since a form
+        # cannot set a custom header at all.
+        #
+        # The Origin check below is a same-origin *self-consistency* check,
+        # not an allowlist: request.base_url is derived from this same
+        # request's own Host header, so "Origin equals base_url" holds
+        # tautologically for a request whose Host has been DNS-rebound to
+        # 127.0.0.1 -- the browser considers that request same-origin, sends
+        # no preflight, and lets script set X-Armoire freely. That is a real
+        # bypass of both checks above at once, so the Host header itself is
+        # pinned to a fixed loopback allowlist here, independent of anything
+        # the request claims about its own Origin or Host.
         if request.headers.get("X-Armoire") != "1":
             raise HTTPException(status_code=403, detail="missing X-Armoire header")
+        host = request.headers.get("host", "").split(":")[0]
+        if host not in ("127.0.0.1", "localhost", "[::1]", "::1"):
+            raise HTTPException(status_code=403, detail="foreign host")
         origin = request.headers.get("Origin")
         if origin is not None and origin != str(request.base_url).rstrip("/"):
             raise HTTPException(status_code=403, detail="foreign origin")
