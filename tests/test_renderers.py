@@ -2,7 +2,7 @@
 
 
 def open_path(page, live_server, path):
-    page.goto(f"{live_server}/#/{path}")
+    page.goto(f"{live_server}/#/browse/{path}")
     page.wait_for_selector("#content *")
 
 
@@ -38,7 +38,7 @@ def test_markdown_renders_mermaid_as_svg(page, live_server):
 
 def test_markdown_rewrites_relative_links_to_in_app_routes(page, live_server):
     open_path(page, live_server, "README.md")
-    link = page.locator('.markdown-body a[href="#/notes"]')
+    link = page.locator('.markdown-body a[href="#/browse/notes"]')
     assert link.count() == 1
     link.click()
     page.wait_for_selector(".listing")
@@ -47,9 +47,9 @@ def test_markdown_rewrites_relative_links_to_in_app_routes(page, live_server):
 def test_markdown_links_to_a_percent_named_file_navigate(page, live_server):
     """rewriteLinks (renderers/markdown.js) is a third hash write site,
     distinct from navigate() and the breadcrumb links: an unencoded href
-    there yields a hash currentPath() cannot decode, which is a dead link."""
+    there yields a hash currentRoute() cannot decode, which is a dead link."""
     open_path(page, live_server, "links.md")
-    link = page.locator('.markdown-body a[href="#/100%25.md"]')
+    link = page.locator('.markdown-body a[href="#/browse/100%25.md"]')
     assert link.count() == 1
     link.click()
     # The source page already has its own .markdown-body, so wait for the

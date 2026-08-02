@@ -7,29 +7,42 @@ const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
 const status = document.getElementById('status');
 
-function currentPath() {
-  const raw = window.location.hash.replace(/^#\/?/, '');
-  // decodeURIComponent throws on a malformed percent-escape -- e.g. a literal
-  // "%" that was never encoded. format.js's encodeHashPath is the single
-  // write path every producer of location.hash is expected to route
-  // through, so a well-formed hash always round-trips; a malformed one
-  // (hand-typed, hand-edited, or from a write site that skipped it) must
-  // surface as a visible error rather than an uncaught exception that
-  // freezes the page.
+const BROWSE = 'browse';
+const PROJECT = 'project';
+
+function decodeSegments(raw) {
   return raw
     .split('/')
     .map((segment) => decodeURIComponent(segment))
     .join('/');
 }
 
+// Everything that is not a file lives behind a reserved first segment, and
+// every file lives behind `browse`. That removes the collision entirely: a
+// folder actually named "browse" is #/browse/browse.
+function currentRoute() {
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  if (raw === '') return { kind: 'home' };
+  const slash = raw.indexOf('/');
+  const head = slash === -1 ? raw : raw.slice(0, slash);
+  const rest = slash === -1 ? '' : raw.slice(slash + 1);
+  if (head === PROJECT) return { kind: 'project', name: decodeURIComponent(rest) };
+  if (head === BROWSE) return { kind: 'browse', path: decodeSegments(rest) };
+  return { kind: 'unknown', raw };
+}
+
 export function navigate(path) {
-  window.location.hash = `/${encodeHashPath(path)}`;
+  window.location.hash = `/${BROWSE}/${encodeHashPath(path)}`;
+}
+
+export function navigateProject(name) {
+  window.location.hash = `/${PROJECT}/${encodeURIComponent(name)}`;
 }
 
 function renderBreadcrumb(path) {
   breadcrumb.replaceChildren();
   const rootLink = document.createElement('a');
-  rootLink.href = '#/';
+  rootLink.href = `#/${BROWSE}/`;
   rootLink.textContent = document.getElementById('root-name').textContent;
   breadcrumb.append(rootLink);
 
@@ -38,7 +51,7 @@ function renderBreadcrumb(path) {
     accumulated = accumulated ? `${accumulated}/${part}` : part;
     breadcrumb.append(document.createTextNode(' / '));
     const link = document.createElement('a');
-    link.href = `#/${encodeHashPath(accumulated)}`;
+    link.href = `#/${BROWSE}/${encodeHashPath(accumulated)}`;
     link.textContent = part;
     breadcrumb.append(link);
   }
@@ -53,7 +66,14 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
-async function show(path) {
+async function showRoute(route) {
+  if (route.kind === 'project') {
+    status.textContent = 'Loading…';
+    // Task 8 replaces this with the real detail view.
+    content.replaceChildren();
+    return;
+  }
+  const path = route.kind === 'browse' ? route.path : '';
   renderBreadcrumb(path);
   status.textContent = 'Loading…';
   try {
@@ -62,6 +82,7 @@ async function show(path) {
   } catch (error) {
     showError(error);
   }
+  tree.revealPath(path);
 }
 
 const tree = initTree(document.getElementById('tree'), navigate);
@@ -72,25 +93,27 @@ initFilter(
 );
 
 window.addEventListener('hashchange', () => {
-  let path;
+  let route;
   try {
-    path = currentPath();
+    route = currentRoute();
   } catch (error) {
-    // Not inside a promise chain, so an uncaught decode error here would be
-    // an unhandled exception with no error card -- the page just freezes.
     showError(error);
     return;
   }
-  show(path);
-  tree.revealPath(path);
+  if (route.kind === 'home') {
+    window.location.hash = `/${BROWSE}/`;
+    return;
+  }
+  showRoute(route);
 });
 
 tree.ready
   .then(() => {
-    const path = currentPath();
-    show(path);
-    if (path) tree.revealPath(path);
+    const route = currentRoute();
+    if (route.kind === 'home') {
+      window.location.hash = `/${BROWSE}/`;
+      return;
+    }
+    showRoute(route);
   })
-  // A backend error on the initial listing would otherwise leave the tree
-  // permanently empty with nothing but an unhandled rejection in the console.
   .catch(showError);
