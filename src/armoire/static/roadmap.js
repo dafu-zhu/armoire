@@ -2,6 +2,8 @@
 // click targets, drag and styling stay under our control -- mermaid would emit
 // a static picture we would then have to fight.
 
+import { nextStatus, glyphFor, setStatus } from './status.js';
+
 const NODE_W = 168;
 const CATEGORIES = 6;
 const NODE_PAD_X = 12;
@@ -66,6 +68,15 @@ function nodeHeight(lineCount) {
 // and every caller -- height computation and rendering both read this same
 // result -- picks it up for free.
 function buildSubtitle(canvas, project) {
+  // A done project's subtitle collapses to nothing, in both the height pass
+  // and the render pass, because both read this one return value -- see the
+  // comment above this function. This reads `project.status` (the payload's
+  // status as it was when renderRoadmap was called), never the live
+  // `statuses` Map a click mutates: collapsing mid-gesture would re-lay out
+  // the whole graph and move every node under the pointer, so the collapse
+  // is deliberately one render behind a click. Do not "fix" this into a
+  // reflow.
+  if (project.status === 'done') return { dueLine: null, noteLines: [] };
   const dueLine = project.due ? `Due ${project.due}` : null;
   const noteLines = project.note ? wrapLines(canvas, project.note, NODE_W - NODE_PAD_X * 2) : [];
   return { dueLine, noteLines };
@@ -114,11 +125,10 @@ function svgEl(name, attrs = {}) {
   return el;
 }
 
-function layout(projects, heights) {
+function layout(projects, heights, known) {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: 'LR', align: 'UL', nodesep: 28, ranksep: 72, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
-  const known = new Set(projects.map((p) => p.name));
   for (const project of projects) {
     g.setNode(project.name, { width: NODE_W, height: heights.get(project.name) });
   }
@@ -137,6 +147,7 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   const projects = data.projects || [];
   const order = new Map();
   const positions = new Map();
+  const known = new Set(projects.map((p) => p.name));
 
   canvas.replaceChildren();
   const subtitles = new Map();
@@ -146,7 +157,7 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     subtitles.set(project.name, subtitle);
     heights.set(project.name, nodeHeight(subtitleLineCount(subtitle)));
   }
-  const g = layout(projects, heights);
+  const g = layout(projects, heights, known);
   const defs = svgEl('defs');
   const marker = svgEl('marker', {
     id: 'arrow', markerWidth: '9', markerHeight: '9',
@@ -191,9 +202,14 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     for (const edge of edges) edge.path.setAttribute('d', edgePath(edge.from, edge.to));
   }
 
-  const blockedNames = new Set(
-    projects.filter((p) => p.blocked_by.length > 0).map((p) => p.name),
-  );
+  const statuses = new Map(projects.map((p) => [p.name, p.status]));
+
+  function isBlocked(project) {
+    // Blocked means "waiting on something unfinished", not "has a blocker".
+    // A done project is waiting on nothing by definition.
+    if (statuses.get(project.name) === 'done') return false;
+    return project.blocked_by.some((b) => known.has(b) && statuses.get(b) !== 'done');
+  }
 
   // Match each project against the issues rather than splitting the issue on
   // ":", which loses any project whose own name contains one. This is the same
@@ -216,8 +232,8 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     if (!pos) continue;
     const height = heights.get(project.name);
     const group = svgEl('g', {
-      class: `node ${categoryClass(project.category, order)}${
-        blockedNames.has(project.name) ? ' blocked' : ''
+      class: `node ${categoryClass(project.category, order)} status-${statuses.get(project.name)}${
+        isBlocked(project) ? ' blocked' : ''
       }`,
       'data-name': project.name,
       transform: `translate(${pos.x - NODE_W / 2},${pos.y - height / 2})`,
@@ -261,6 +277,36 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
       group.append(warn);
     }
 
+    const chip = svgEl('text', {
+      x: NODE_W - NODE_PAD_X, y: TITLE_Y, class: 'status-chip',
+      'text-anchor': 'end', tabindex: '0', role: 'button',
+    });
+    chip.textContent = glyphFor(statuses.get(project.name));
+    chip.setAttribute('aria-label', `Status: ${statuses.get(project.name)}. Click to change.`);
+    const cycle = async (event) => {
+      // The chip lives inside the node group, whose own click handler opens
+      // the detail view. Without stopPropagation every status change would
+      // also navigate away from the screen showing it.
+      event.stopPropagation();
+      event.preventDefault();
+      const previous = statuses.get(project.name);
+      const wanted = nextStatus(previous);
+      statuses.set(project.name, wanted);
+      applyStatus(project.name);
+      try {
+        await setStatus(project.name, wanted);
+      } catch {
+        // The write failed; the screen must not keep claiming it succeeded.
+        statuses.set(project.name, previous);
+        applyStatus(project.name);
+      }
+    };
+    chip.addEventListener('click', cycle);
+    chip.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') cycle(event);
+    });
+    group.append(chip);
+
     group.addEventListener('click', () => {
       if (suppressClick) return;
       onOpen(project.name);
@@ -270,6 +316,37 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     });
     nodeLayer.append(group);
   }
+
+  // Unblocking is transitive through one hop only -- a dependent's class
+  // depends on its blockers' statuses, not on the whole chain -- but a
+  // change to any one project can still flip any number of others' `blocked`
+  // class, so every node is recomputed rather than tracking a dependency
+  // graph for it. Seventeen nodes is nothing; do the simple thing.
+  function applyStatus(changed) {
+    for (const project of projects) {
+      const group = nodeLayer.querySelector(`[data-name="${CSS.escape(project.name)}"]`);
+      if (!group) continue;
+      const status = statuses.get(project.name);
+      group.setAttribute(
+        'class',
+        `node ${categoryClass(project.category, order)} status-${status}${
+          isBlocked(project) ? ' blocked' : ''
+        }`,
+      );
+      const chip = group.querySelector('.status-chip');
+      if (chip) {
+        chip.textContent = glyphFor(status);
+        chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
+      }
+    }
+    for (const edge of edges) {
+      edge.path.classList.toggle('from-done', statuses.get(edge.from) === 'done');
+    }
+  }
+  // Called once here, unconditionally, so the initial edge classes (e.g. a
+  // project whose payload already carries status "done") are right before
+  // any click ever happens -- not just after the first one.
+  applyStatus();
 
   const graph = g.graph();
   // Number.isFinite, not `||`: dagre leaves width at -Infinity for an empty

@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from conftest import folder_snapshot
 
 
@@ -675,6 +677,130 @@ def test_the_wrap_probe_measures_at_the_rendered_subtitles_font_size(live_server
     )
     assert probe_sizes, "expected wrapLines to measure at least one candidate"
     assert probe_sizes == {rendered_size}, (probe_sizes, rendered_size)
+
+
+@pytest.fixture
+def reset_upstream_status(live_server, page):
+    """Restore Upstream's server-side status after a test that changes it.
+
+    live_server and sample_root are both session-scoped (conftest.py), so a
+    status PUT from one test is visible to every test that runs afterward in
+    this file: state.json is keyed by sample_root's own path and lives on
+    disk under the session-scoped store, independent of which live_server
+    request happened to write it.
+
+    A dedicated function-scoped *server* fixture would not actually fix this
+    -- store.write_state(root, state) is keyed by `root`, not by server/app
+    instance, so a fresh app pointed at the same sample_root would read and
+    write the exact same state.json a previous server already wrote to. Only
+    a fresh *root* (its own folder plus its own registry) would truly
+    isolate the write, and building one per test would either duplicate
+    sample_root's Upstream/Downstream/blocked_by arrangement or cost an
+    index-wait plus a new server thread on every one of these tests, for a
+    fixture the ~30 other tests in this file already share for free.
+
+    Restoring in a fixture teardown instead -- functionally a `finally`
+    block, shared here rather than pasted into all four mutating tests --
+    reads Upstream's actual pre-test status from the server itself, rather
+    than assuming the registry's default ("active"), so the restore is
+    correct even if a test runs alone, out of order, or a prior run in this
+    session already left Upstream on some other status.
+    """
+    before = page.request.get(f"{live_server}/api/projects").json()
+    original = next(p["status"] for p in before["projects"] if p["name"] == "Upstream")
+    yield
+    page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Upstream", "status": original},
+    )
+
+
+def test_the_four_statuses_render_four_distinct_borders(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    seen = set()
+    for status in ["not-started", "active", "paused", "done"]:
+        page.evaluate(
+            "s => document.querySelector('.node').setAttribute('class', 'node cat-0 status-' + s)",
+            status,
+        )
+        seen.add(
+            page.locator(".node rect").first.evaluate(
+                "r => getComputedStyle(r).strokeWidth + '|' + getComputedStyle(r).strokeDasharray"
+            )
+        )
+    assert len(seen) == 4, seen
+
+
+def test_clicking_the_chip_cycles_the_status(live_server, page, reset_upstream_status):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Upstream"]')
+    before = node.get_attribute("class")
+    node.locator(".status-chip").click()
+    # Unquoted attribute value in the CSS selector: "Upstream" needs no
+    # quoting, and quoting it here would require escaping a `"` inside a
+    # Python string that is itself embedded in another string -- the
+    # brief's literal snippet (`\\"Upstream\\"`) is not valid Python (the
+    # first `\\` is a complete escape for one backslash, so the very next
+    # `"` closes the outer string early); confirmed by running it verbatim
+    # and getting `SyntaxError: unexpected character after line
+    # continuation character` at this exact line.
+    page.wait_for_function(
+        "cls => document.querySelector('.node[data-name=Upstream]').className.baseVal !== cls",
+        arg=before,
+    )
+    assert node.get_attribute("class") != before
+
+
+def test_clicking_the_chip_does_not_open_the_detail_view(live_server, page, reset_upstream_status):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.locator('.node[data-name="Upstream"] .status-chip').click()
+    page.wait_for_timeout(300)
+    assert "#/project/" not in page.url
+
+
+def test_a_status_edit_survives_a_fresh_browser_context(
+    live_server, page, browser, reset_upstream_status
+):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    chip = page.locator('.node[data-name="Upstream"] .status-chip')
+    for _ in range(3):
+        chip.click()
+        page.wait_for_timeout(150)
+    after = page.locator('.node[data-name="Upstream"]').get_attribute("class")
+
+    # A fresh context shares no localStorage. If status survives this, it is
+    # server state -- which is the whole point of moving it out of the browser.
+    context = browser.new_context()
+    try:
+        fresh = context.new_page()
+        fresh.goto(f"{live_server}/#/")
+        fresh.wait_for_selector(".node")
+        assert fresh.locator('.node[data-name="Upstream"]').get_attribute("class") == after
+    finally:
+        context.close()
+
+
+def test_marking_the_last_blocker_done_unblocks_its_dependent(
+    live_server, page, reset_upstream_status
+):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    dependent = page.locator('.node[data-name="Downstream"]')
+    assert "blocked" in dependent.get_attribute("class")
+    blocker = page.locator('.node[data-name="Upstream"] .status-chip')
+    while "status-done" not in page.locator('.node[data-name="Upstream"]').get_attribute("class"):
+        blocker.click()
+        page.wait_for_timeout(150)
+    # Same unquoted-attribute-value fix as above, for the same reason.
+    page.wait_for_function(
+        "() => !document.querySelector('.node[data-name=Downstream]')"
+        ".className.baseVal.includes('blocked')"
+    )
 
 
 def test_a_project_with_both_a_due_date_and_a_note_shows_both(live_server, page):
