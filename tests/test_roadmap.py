@@ -63,11 +63,6 @@ def test_the_blocker_is_laid_out_before_the_blocked(page, live_server):
     assert boxes["Upstream"] < boxes["Downstream"]
 
 
-def test_a_node_shows_its_commit_badge(page, live_server):
-    open_roadmap(page, live_server)
-    assert page.locator("#roadmap .node-badge").count() >= 1
-
-
 def test_a_due_date_appears_on_its_node(page, live_server):
     open_roadmap(page, live_server)
     assert "2026-08-17" in page.locator("#roadmap").inner_text()
@@ -608,3 +603,34 @@ def test_project_detail_commit_rows_have_sha_subject_and_when(page, committed_se
     assert first.locator(".subject").count() == 1
     assert first.locator(".when").count() == 1
     assert first.locator(".subject").inner_text() == "second worked commit"
+
+
+def test_a_long_note_stays_inside_its_node(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    for name in page.locator(".node").evaluate_all("nodes => nodes.map(n => n.dataset.name)"):
+        node = page.locator(f'.node[data-name="{name}"]')
+        rect = node.locator("rect").bounding_box()
+        for i in range(node.locator("text").count()):
+            text = node.locator("text").nth(i).bounding_box()
+            if text is None:
+                continue
+            assert text["x"] >= rect["x"] - 1, name
+            assert text["x"] + text["width"] <= rect["x"] + rect["width"] + 1, name
+            assert text["y"] + text["height"] <= rect["y"] + rect["height"] + 1, name
+
+
+def test_a_long_note_wraps_onto_several_lines(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    # Scoped to the one node with the long note. Counting tspans across every
+    # node would pass with two nodes of one line each, which proves nothing
+    # about wrapping.
+    lines = page.locator('.node[data-name="Downstream"] .node-sub tspan').count()
+    assert lines >= 2, lines
+
+
+def test_nodes_no_longer_show_a_commit_count(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    assert page.locator(".node .node-badge").count() == 0

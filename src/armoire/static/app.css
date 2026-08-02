@@ -231,7 +231,6 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 .node.blocked rect { stroke: #bc4c00; stroke-width: 2; }
 .node text { font-family: var(--sans); font-size: 13px; fill: var(--fg); }
 .node .node-sub { font-size: 11px; fill: var(--muted); }
-.node .node-badge { font-size: 11px; fill: var(--muted); }
 .node .node-warn { font-size: 14px; font-weight: 700; fill: #bc4c00; cursor: help; }
 .node:hover rect { stroke: var(--link); }
 

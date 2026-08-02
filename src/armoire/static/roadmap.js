@@ -3,8 +3,46 @@
 // a static picture we would then have to fight.
 
 const NODE_W = 168;
-const NODE_H = 62;
 const CATEGORIES = 6;
+const NODE_PAD_X = 12;
+const TITLE_Y = 24;
+const LINE_H = 15;
+const NODE_MIN_H = 40;
+
+// SVG <text> does not wrap. Measure in the live SVG rather than guessing from
+// character counts: font metrics are not knowable ahead of time, and the
+// previous fixed-height node let every long note render outside its own box.
+function wrapLines(canvas, text, maxWidth) {
+  const probe = svgEl('text', { class: 'node-sub', visibility: 'hidden' });
+  canvas.append(probe);
+  const lines = [];
+  let current = '';
+  const push = () => { if (current) lines.push(current); current = ''; };
+  for (const word of String(text).split(/\s+/).filter(Boolean)) {
+    const candidate = current ? `${current} ${word}` : word;
+    probe.textContent = candidate;
+    if (probe.getComputedTextLength() <= maxWidth) { current = candidate; continue; }
+    push();
+    probe.textContent = word;
+    if (probe.getComputedTextLength() <= maxWidth) { current = word; continue; }
+    // A single word wider than the box -- a long path or an unbroken token.
+    // Break it rather than let it escape the rect.
+    let chunk = '';
+    for (const ch of word) {
+      probe.textContent = chunk + ch;
+      if (probe.getComputedTextLength() > maxWidth && chunk) { lines.push(chunk); chunk = ch; }
+      else chunk += ch;
+    }
+    current = chunk;
+  }
+  push();
+  probe.remove();
+  return lines;
+}
+
+function nodeHeight(lineCount) {
+  return Math.max(NODE_MIN_H, TITLE_Y + 6 + lineCount * LINE_H + 8);
+}
 
 function storageKey(root) {
   return `armoire:layout:${root}`;
@@ -45,13 +83,13 @@ function svgEl(name, attrs = {}) {
   return el;
 }
 
-function layout(projects) {
+function layout(projects, heights) {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: 'LR', nodesep: 28, ranksep: 72, marginx: 24, marginy: 24 });
+  g.setGraph({ rankdir: 'LR', align: 'UL', nodesep: 28, ranksep: 72, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
   const known = new Set(projects.map((p) => p.name));
   for (const project of projects) {
-    g.setNode(project.name, { width: NODE_W, height: NODE_H });
+    g.setNode(project.name, { width: NODE_W, height: heights.get(project.name) });
   }
   for (const project of projects) {
     for (const blocker of project.blocked_by) {
@@ -66,11 +104,18 @@ function layout(projects) {
 
 export function renderRoadmap(canvas, data, onOpen, signal) {
   const projects = data.projects || [];
-  const g = layout(projects);
   const order = new Map();
   const positions = new Map();
 
   canvas.replaceChildren();
+  const wrapped = new Map();
+  const heights = new Map();
+  for (const project of projects) {
+    const lines = wrapLines(canvas, project.due || project.note || '', NODE_W - NODE_PAD_X * 2);
+    wrapped.set(project.name, lines);
+    heights.set(project.name, nodeHeight(lines.length));
+  }
+  const g = layout(projects, heights);
   const defs = svgEl('defs');
   const marker = svgEl('marker', {
     id: 'arrow', markerWidth: '9', markerHeight: '9',
@@ -138,37 +183,36 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   for (const project of projects) {
     const pos = positions.get(project.name);
     if (!pos) continue;
+    const height = heights.get(project.name);
     const group = svgEl('g', {
       class: `node ${categoryClass(project.category, order)}${
         blockedNames.has(project.name) ? ' blocked' : ''
       }`,
       'data-name': project.name,
-      transform: `translate(${pos.x - NODE_W / 2},${pos.y - NODE_H / 2})`,
+      transform: `translate(${pos.x - NODE_W / 2},${pos.y - height / 2})`,
       tabindex: '0',
       role: 'button',
     });
-    group.append(svgEl('rect', { width: NODE_W, height: NODE_H }));
+    group.append(svgEl('rect', { width: NODE_W, height }));
 
-    const title = svgEl('text', { x: 12, y: 24 });
+    const title = svgEl('text', { x: NODE_PAD_X, y: TITLE_Y });
     title.textContent = project.name;
     group.append(title);
 
-    const subtitle = project.due || project.note || '';
-    if (subtitle) {
-      const sub = svgEl('text', { x: 12, y: 42, class: 'node-sub' });
-      sub.textContent = subtitle;
+    const lines = wrapped.get(project.name);
+    if (lines.length) {
+      const sub = svgEl('text', { x: NODE_PAD_X, y: TITLE_Y + 18, class: 'node-sub' });
+      for (const [i, line] of lines.entries()) {
+        const span = svgEl('tspan', { x: NODE_PAD_X, dy: i === 0 ? 0 : LINE_H });
+        span.textContent = line;
+        sub.append(span);
+      }
       group.append(sub);
     }
 
-    const badge = svgEl('text', {
-      x: NODE_W - 12, y: 24, class: 'node-badge', 'text-anchor': 'end',
-    });
-    badge.textContent = `${project.commits}`;
-    group.append(badge);
-
     if (flagged.has(project.name)) {
       const warn = svgEl('text', {
-        x: NODE_W - 12, y: NODE_H - 12, class: 'node-warn', 'text-anchor': 'end',
+        x: NODE_W - 12, y: height - 10, class: 'node-warn', 'text-anchor': 'end',
       });
       warn.textContent = '!';
       const reason = svgEl('title');
@@ -209,7 +253,10 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     const pos = positions.get(name);
     const group = nodeLayer.querySelector(`[data-name="${CSS.escape(name)}"]`);
     if (group) {
-      group.setAttribute('transform', `translate(${pos.x - NODE_W / 2},${pos.y - NODE_H / 2})`);
+      group.setAttribute(
+        'transform',
+        `translate(${pos.x - NODE_W / 2},${pos.y - heights.get(name) / 2})`,
+      );
     }
   }
 
