@@ -2,6 +2,7 @@ import { initTree } from './tree.js';
 import { initFilter } from './filter.js';
 import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
+import { renderRoadmap } from './roadmap.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -9,6 +10,12 @@ const status = document.getElementById('status');
 
 const BROWSE = 'browse';
 const PROJECT = 'project';
+
+const roadmap = document.getElementById('roadmap');
+const canvas = document.getElementById('roadmap-canvas');
+const body = document.getElementById('body');
+
+let roadmapView = null;
 
 function decodeSegments(raw) {
   return raw
@@ -72,7 +79,40 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
+async function showRoadmap() {
+  const response = await fetch('/api/projects');
+  const data = await response.json();
+  if (data.registry === false) {
+    window.location.hash = `/${BROWSE}/`;
+    return;
+  }
+  document.getElementById('tree').hidden = true;
+  document.getElementById('main').hidden = true;
+  roadmap.hidden = false;
+  if (data.error) {
+    canvas.replaceChildren();
+    const box = document.createElement('div');
+    box.className = 'error';
+    box.textContent = data.error;
+    roadmap.append(box);
+    return;
+  }
+  roadmapView = renderRoadmap(canvas, data, navigateProject);
+  status.textContent = `${data.projects.length} projects`;
+}
+
+function hideRoadmap() {
+  roadmap.hidden = true;
+  document.getElementById('tree').hidden = false;
+  document.getElementById('main').hidden = false;
+}
+
 async function showRoute(route) {
+  if (route.kind === 'home') {
+    showRoadmap();
+    return;
+  }
+  hideRoadmap();
   if (route.kind === 'project') {
     status.textContent = 'Loading…';
     // Task 8 replaces this with the real detail view.
@@ -106,10 +146,6 @@ window.addEventListener('hashchange', () => {
     showError(error);
     return;
   }
-  if (route.kind === 'home') {
-    window.location.hash = `/${BROWSE}/`;
-    return;
-  }
   if (route.kind === 'unknown') {
     // A hash from before file browsing moved under #/browse/. It is a browse
     // path missing its prefix, so migrate it rather than rendering the root
@@ -123,10 +159,6 @@ window.addEventListener('hashchange', () => {
 tree.ready
   .then(() => {
     const route = currentRoute();
-    if (route.kind === 'home') {
-      window.location.hash = `/${BROWSE}/`;
-      return;
-    }
     if (route.kind === 'unknown') {
       window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;
       return;

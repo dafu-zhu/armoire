@@ -2,7 +2,9 @@
 
 
 def test_tree_lists_the_root_folder(page, live_server):
-    page.goto(live_server)
+    # A registry exists in the fixture, so "#/" is now the roadmap; the tree
+    # only renders (and is only visible) under the browse route.
+    page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#tree .row")
     names = page.locator("#tree .row").all_inner_texts()
     assert any("notes" in name for name in names)
@@ -10,13 +12,13 @@ def test_tree_lists_the_root_folder(page, live_server):
 
 
 def test_tree_hides_ignored_directories(page, live_server):
-    page.goto(live_server)
+    page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#tree .row")
     assert all(".venv" not in name for name in page.locator("#tree .row").all_inner_texts())
 
 
 def test_expanding_a_directory_reveals_its_children(page, live_server):
-    page.goto(live_server)
+    page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#tree .row")
     assert page.locator('#tree [data-path="notes/deep"]').count() == 0
     page.locator('#tree [data-path="notes"]').click()
@@ -25,7 +27,7 @@ def test_expanding_a_directory_reveals_its_children(page, live_server):
 
 
 def test_clicking_a_file_updates_the_url(page, live_server):
-    page.goto(live_server)
+    page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#tree .row")
     page.locator('#tree [data-path="code.py"]').click()
     page.wait_for_function("() => location.hash === '#/browse/code.py'", timeout=5000)
@@ -131,7 +133,7 @@ def test_navigating_to_a_percent_named_file_renders_rather_than_hangs(page, live
     load, so this waits for its *content* to change rather than for the
     selector to merely exist -- otherwise the wait would pass immediately
     against the stale element and never observe the navigation at all."""
-    page.goto(live_server)
+    page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#tree .row")
     page.locator('#tree [data-path="50% off.md"]').click()
     page.wait_for_function(
@@ -146,7 +148,7 @@ def test_malformed_hash_surfaces_an_error_instead_of_freezing(page, live_server)
     not freeze the page: the hashchange listener is not inside a promise
     chain, so an uncaught decodeURIComponent throw there has no error card
     and nothing else in the console shows for it either."""
-    page.goto(live_server)
+    page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#tree .row")
     page.evaluate("() => { window.location.hash = '/browse/50%zz.md'; }")
     page.wait_for_selector("#content .error", timeout=5000)
@@ -213,12 +215,6 @@ def test_no_console_errors_during_navigation(page, live_server):
     assert errors == []
 
 
-def test_root_shows_the_file_listing_when_there_is_no_registry(page, live_server):
-    page.goto(live_server)
-    page.wait_for_selector(".listing", timeout=10000)
-    assert page.locator(".listing").count() == 1
-
-
 def test_files_live_under_the_browse_prefix(page, live_server):
     page.goto(f"{live_server}/#/browse/code.py")
     page.wait_for_selector("pre.code", timeout=10000)
@@ -226,7 +222,7 @@ def test_files_live_under_the_browse_prefix(page, live_server):
 
 
 def test_clicking_a_file_in_the_tree_writes_a_browse_url(page, live_server):
-    page.goto(live_server)
+    page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#tree .row")
     page.locator('#tree [data-path="code.py"]').click()
     page.wait_for_function("() => location.hash === '#/browse/code.py'", timeout=5000)

@@ -131,6 +131,24 @@ def sample_root(tmp_path_factory):
     collide = root / "browse"
     collide.mkdir()
     (collide / "inside.md").write_bytes(b"# Inside a folder named browse\n")
+
+    # A registry makes the roadmap appear. Two nodes and one edge is the
+    # smallest graph that exercises layout, an edge, and a blocked node.
+    (root / "armoire.toml").write_text(
+        "[[project]]\n"
+        'name = "Downstream"\n'
+        'paths = ["notes"]\n'
+        'blocked_by = ["Upstream"]\n'
+        'category = "research"\n'
+        "due = 2026-08-17\n"
+        "\n"
+        "[[project]]\n"
+        'name = "Upstream"\n'
+        'paths = ["notes/deep"]\n'
+        'category = "learning"\n',
+        encoding="utf-8",
+        newline="",
+    )
     return root
 
 
@@ -157,5 +175,31 @@ def live_server(sample_root):
 
     yield f"http://127.0.0.1:{port}"
 
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def bare_root(tmp_path_factory):
+    """A folder with no armoire.toml -- the state every folder starts in."""
+    root = tmp_path_factory.mktemp("bare")
+    (root / "README.md").write_bytes(b"# Bare\n\nNo registry here.\n")
+    return root
+
+
+@pytest.fixture(scope="session")
+def bare_server(bare_root):
+    app = create_app(bare_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("bare server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=5)
