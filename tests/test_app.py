@@ -209,7 +209,7 @@ def test_serving_never_writes_to_disk(root):
     # window entirely. "docs" is a real directory in the fixture, so
     # activity_for and list_dir both do real work against it.
     (root / "armoire.toml").write_text(
-        '[[project]]\nname = "Docs"\npaths = ["docs"]\n', encoding="utf-8"
+        '[[project]]\nname = "Docs"\npaths = ["docs"]\ncategory = "docs"\n', encoding="utf-8"
     )
 
     def snapshot():
@@ -274,6 +274,7 @@ note = "a note"
 [[project]]
 name = "Upstream"
 paths = ["docs"]
+category = "core"
 """
 
 

@@ -7,13 +7,15 @@ admits it does not know, so no registry means no roadmap.
 """
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
 from armoire.paths import PathOutsideRoot, resolve_in_root
 
 REGISTRY_NAME = "armoire.toml"
+STATUSES = ("not-started", "active", "paused", "done")
+DEFAULT_STATUS = "active"
 
 
 class RegistryError(Exception):
@@ -28,6 +30,7 @@ class Project:
     category: str | None = None
     due: str | None = None
     note: str | None = None
+    status: str = DEFAULT_STATUS
 
 
 @dataclass
@@ -90,6 +93,7 @@ def _parse_project(entry, position: int) -> Project:
         category=entry.get("category"),
         due=due,
         note=entry.get("note"),
+        status=entry.get("status", DEFAULT_STATUS),
     )
 
 
@@ -127,8 +131,12 @@ def _find_cycle(projects: list[Project]) -> list[str] | None:
     return None
 
 
-def load_registry(root: Path) -> Registry | None:
+def load_registry(root: Path, registry_file: Path | None = None) -> Registry | None:
     """Load armoire.toml, or None when there is none.
+
+    The registry is read from `registry_file` when given, or from
+    `root / armoire.toml` otherwise. Either way, `root` is what `paths`
+    resolve against.
 
     Structural problems raise: a malformed file, an entry or field of the wrong
     shape, or a duplicate name means the graph cannot be trusted at all. Every
@@ -138,7 +146,7 @@ def load_registry(root: Path) -> Registry | None:
     unknown blocker or a missing folder still leaves a drawable graph, and
     reporting them beats refusing to render.
     """
-    path = root / REGISTRY_NAME
+    path = registry_file if registry_file is not None else root / REGISTRY_NAME
     if not path.is_file():
         return None
 
@@ -161,7 +169,20 @@ def load_registry(root: Path) -> Registry | None:
 
     issues: list[str] = []
     known = {p.name for p in projects}
-    for project in projects:
+    for position, project in enumerate(projects):
+        if project.status not in STATUSES:
+            # An issue, not a raise: a typo in one optional field must not
+            # remove the project from the graph.
+            issues.append(
+                f"{project.name}: unknown status {project.status!r}, using {DEFAULT_STATUS!r}"
+            )
+            projects[position] = replace(project, status=DEFAULT_STATUS)
+        if not project.blocked_by and not project.category:
+            # With neither, the project is in no graph and in no container:
+            # there is nowhere on screen for it to be.
+            issues.append(
+                f"{project.name}: declares neither blocked_by nor category, so it cannot be placed"
+            )
         for blocker in project.blocked_by:
             if blocker not in known:
                 issues.append(f"{project.name}: blocked_by names unknown project {blocker!r}")
