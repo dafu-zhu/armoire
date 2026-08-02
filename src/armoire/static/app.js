@@ -28,7 +28,13 @@ function currentRoute() {
   const rest = slash === -1 ? '' : raw.slice(slash + 1);
   if (head === PROJECT) return { kind: 'project', name: decodeURIComponent(rest) };
   if (head === BROWSE) return { kind: 'browse', path: decodeSegments(rest) };
-  return { kind: 'unknown', raw };
+  // A hash from before file browsing moved under #/browse/ -- e.g. a bookmark
+  // made under Phase 1's #/<path> scheme. It is a browse path missing its
+  // prefix, so decode it the same way a browse route would be: doing that
+  // here, rather than at the redirect call site, means an uncaught decode
+  // error still surfaces through the same try/catch that already wraps every
+  // currentRoute() call instead of escaping from inside a redirect.
+  return { kind: 'unknown', path: decodeSegments(raw) };
 }
 
 export function navigate(path) {
@@ -104,6 +110,13 @@ window.addEventListener('hashchange', () => {
     window.location.hash = `/${BROWSE}/`;
     return;
   }
+  if (route.kind === 'unknown') {
+    // A hash from before file browsing moved under #/browse/. It is a browse
+    // path missing its prefix, so migrate it rather than rendering the root
+    // listing under a stale URL and silently showing unrelated content.
+    window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;
+    return;
+  }
   showRoute(route);
 });
 
@@ -112,6 +125,10 @@ tree.ready
     const route = currentRoute();
     if (route.kind === 'home') {
       window.location.hash = `/${BROWSE}/`;
+      return;
+    }
+    if (route.kind === 'unknown') {
+      window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;
       return;
     }
     showRoute(route);

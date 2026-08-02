@@ -41,16 +41,19 @@ def test_filter_finds_a_deeply_nested_file(page, live_server):
 
 
 def test_filter_ranks_tighter_matches_first(page, live_server):
-    """Pins the ranking, not just membership: several fixture paths match "de"."""
+    """Pins the ranking, not just membership: several fixture paths match "de".
+    "code.py" ties "browse/inside.md" for tightest match on this query (both
+    put "d" immediately before "e"), so this checks code.py ranks ahead of
+    the much looser "buried.md" rather than assuming it is uniquely first."""
     page.goto(live_server)
     page.wait_for_function("() => document.querySelector('#filter').placeholder.includes('Filter')")
     page.locator("#filter").fill("de")
     page.wait_for_selector("#filter-results li")
     results = page.locator("#filter-results li").all_inner_texts()
     assert len(results) > 1, "need multiple matches or this proves nothing"
-    assert "code.py" in results[0]
-    assert any("buried.md" in r for r in results)
-    assert results.index(next(r for r in results if "buried.md" in r)) > 0
+    code_index = next(i for i, r in enumerate(results) if "code.py" in r)
+    buried_index = next(i for i, r in enumerate(results) if "buried.md" in r)
+    assert code_index < buried_index
 
 
 def test_filter_enter_navigates_to_the_match(page, live_server):
@@ -181,6 +184,25 @@ def test_breadcrumb_reflects_the_current_path(page, live_server):
     assert "notes" in text and "deep" in text and "buried.md" in text
 
 
+def test_breadcrumb_links_point_into_the_browse_route(page, live_server):
+    """inner_text alone cannot catch a breadcrumb whose href never migrated."""
+    page.goto(f"{live_server}/#/browse/notes/deep/buried.md")
+    page.wait_for_selector("#breadcrumb a")
+    hrefs = page.eval_on_selector_all(
+        "#breadcrumb a", "els => els.map(e => e.getAttribute('href'))"
+    )
+    assert hrefs, "no breadcrumb links rendered"
+    assert all(h.startswith("#/browse/") for h in hrefs), hrefs
+
+
+def test_clicking_a_breadcrumb_link_navigates(page, live_server):
+    page.goto(f"{live_server}/#/browse/notes/deep/buried.md")
+    page.wait_for_selector("#breadcrumb a")
+    page.locator("#breadcrumb a", has_text="notes").first.click()
+    page.wait_for_selector(".listing", timeout=5000)
+    assert page.evaluate("location.hash").startswith("#/browse/notes")
+
+
 def test_no_console_errors_during_navigation(page, live_server):
     errors = []
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
@@ -226,6 +248,20 @@ def test_a_listing_link_writes_a_browse_url(page, live_server):
 
 
 def test_a_folder_named_browse_does_not_collide(page, live_server):
-    page.goto(f"{live_server}/#/browse/notes/deep/buried.md")
+    page.goto(f"{live_server}/#/browse/browse/inside.md")
     page.wait_for_selector(".markdown-body h1", timeout=10000)
-    assert page.locator(".markdown-body h1").inner_text() == "Buried"
+    assert page.locator(".markdown-body h1").inner_text() == "Inside a folder named browse"
+
+
+def test_a_stale_phase_one_url_migrates_to_the_browse_route(page, live_server):
+    """Bookmarks made before the prefix existed must keep working."""
+    page.goto(f"{live_server}/#/code.py")
+    page.wait_for_selector("pre.code", timeout=10000)
+    assert page.evaluate("location.hash") == "#/browse/code.py"
+    assert "return" in page.locator("pre.code").inner_text()
+
+
+def test_a_stale_nested_url_migrates(page, live_server):
+    page.goto(f"{live_server}/#/notes/deep/buried.md")
+    page.wait_for_selector(".markdown-body h1", timeout=10000)
+    assert page.evaluate("location.hash") == "#/browse/notes/deep/buried.md"

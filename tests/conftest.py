@@ -125,6 +125,12 @@ def sample_root(tmp_path_factory):
     ignored = root / ".venv"
     ignored.mkdir()
     (ignored / "junk.py").write_text("noise\n", encoding="utf-8", newline="")
+
+    # A folder literally named "browse". The prefix scheme exists so this
+    # cannot collide with the route; without a fixture, nothing proves it.
+    collide = root / "browse"
+    collide.mkdir()
+    (collide / "inside.md").write_bytes(b"# Inside a folder named browse\n")
     return root
 
 
