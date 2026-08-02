@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from armoire.activity import activity_for, recent_commits
+from armoire.activity import Activity, activity_for, recent_commits
 
 
 def git(cwd, *args):
@@ -115,6 +115,20 @@ def test_the_mtime_scan_reports_unknown_past_the_cap(tmp_path, monkeypatch):
         (tmp_path / "many" / f"f{i}.txt").write_text("x", encoding="utf-8")
     result = activity_for(tmp_path, "many")
     assert result.last is None
+
+
+def test_activity_does_not_read_outside_the_served_root(tmp_path):
+    """A declared path that escapes must yield nothing, not another repo's history."""
+    outside = tmp_path / "secret"
+    outside.mkdir()
+    git(outside, "init", "-q", "-b", "main")
+    (outside / "f.txt").write_text("x", encoding="utf-8")
+    git(outside, "add", "-A")
+    git(outside, "commit", "-qm", "confidential subject")
+    served = tmp_path / "served"
+    served.mkdir()
+    assert activity_for(served, "../secret") == Activity(commits=0, last=None)
+    assert recent_commits(served, "../secret") == []
 
 
 def test_a_decode_failure_does_not_raise(monkeypatch, repo):

@@ -11,6 +11,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from armoire.paths import PathOutsideRoot, resolve_in_root
+
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 10
@@ -51,6 +53,19 @@ def _run(directory: Path, args: list[str]) -> str | None:
     return completed.stdout
 
 
+def _resolve(root: Path, relative: str) -> Path | None:
+    """None when the path escapes the root.
+
+    activity reads git history and returns commit subjects, so an unjailed
+    path leaks content from outside the served folder. Every other reader in
+    armoire goes through resolve_in_root; this one must too.
+    """
+    try:
+        return resolve_in_root(root, relative)
+    except PathOutsideRoot:
+        return None
+
+
 MAX_SCAN_FILES = 5000
 
 
@@ -80,7 +95,9 @@ def _newest_mtime(directory: Path) -> float | None:
 
 
 def activity_for(root: Path, relative: str, days: int = 30) -> Activity:
-    directory = root / relative
+    directory = _resolve(root, relative)
+    if directory is None:
+        return Activity(commits=0, last=None)
     out = _run(directory, ["log", f"--since={days}.days", "--format=%ct", "--", "."])
     stamps = [float(line) for line in (out or "").split() if line.strip()]
     if stamps:
@@ -92,7 +109,9 @@ def activity_for(root: Path, relative: str, days: int = 30) -> Activity:
 
 
 def recent_commits(root: Path, relative: str, limit: int = 10) -> list[dict]:
-    directory = root / relative
+    directory = _resolve(root, relative)
+    if directory is None:
+        return []
     out = _run(
         directory,
         ["log", f"-{limit}", "--format=%h%x1f%s%x1f%ct", "--", "."],
