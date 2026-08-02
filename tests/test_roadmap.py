@@ -258,8 +258,16 @@ def test_dragging_does_not_write_to_the_served_folder(page, live_server, sample_
     import hashlib
 
     def snapshot():
+        # mtime as well as sha256. This is the read-only test that reaches the
+        # git subprocess (open_roadmap fetches /api/projects, which runs
+        # activity_for over every declared path), and a pure-metadata touch --
+        # exactly what an ill-judged `os.utime` or a git operation that rewrites
+        # an index would produce -- is invisible to a content hash alone.
         return {
-            p.relative_to(sample_root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            p.relative_to(sample_root).as_posix(): (
+                p.stat().st_mtime_ns,
+                hashlib.sha256(p.read_bytes()).hexdigest(),
+            )
             for p in sorted(sample_root.rglob("*"))
             if p.is_file()
         }

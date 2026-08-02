@@ -200,6 +200,18 @@ def test_index_html_is_served_at_root(client):
 
 
 def test_serving_never_writes_to_disk(root):
+    # Written here rather than into the shared `root` fixture, which has no
+    # registry: adding one there would perturb the ~40 tree and index tests
+    # that count what is in the folder. But without one, the two Phase 2 calls
+    # below get `registry: false` and a 404 -- load_registry never parses,
+    # dashboard never composes, activity never invokes git -- so the only
+    # write-capable surface Phase 2 added would sit outside the checksum
+    # window entirely. "docs" is a real directory in the fixture, so
+    # activity_for and list_dir both do real work against it.
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Docs"\npaths = ["docs"]\n', encoding="utf-8"
+    )
+
     def snapshot():
         return {
             p.relative_to(root).as_posix(): (
@@ -236,8 +248,13 @@ def test_serving_never_writes_to_disk(root):
     ]:
         client.get("/api/preview", params={"path": name})
         client.get("/api/raw", params={"path": name})
-    client.get("/api/projects")
-    client.get("/api/project/Downstream")
+    projects = client.get("/api/projects")
+    detail = client.get("/api/project/Docs")
+    # The snapshot is only as strong as what ran inside it. Assert both calls
+    # actually reached their work, so this test cannot quietly go back to
+    # checksumming a `registry: false` and a 404 the way it used to.
+    assert projects.json()["projects"], projects.json()
+    assert detail.status_code == 200, detail.text
     assert snapshot() == before
 
 
