@@ -36,10 +36,11 @@ def _run(directory: Path, args: list[str]) -> str | None:
             ["git", "-C", str(directory), *args],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
         # git missing, or a repository so large the log times out. Activity is
         # a nice-to-have; the roadmap must still render without it.
         logger.debug("git failed in %s: %s", directory, exc)
@@ -50,13 +51,20 @@ def _run(directory: Path, args: list[str]) -> str | None:
     return completed.stdout
 
 
+MAX_SCAN_FILES = 5000
+
+
 def _newest_mtime(directory: Path) -> float | None:
-    """Fallback for folders outside git. Bounded so a huge tree cannot stall."""
+    """Fallback for folders outside git, or with no commits in the window.
+
+    Bounded so a huge tree cannot stall the startup thread. When the bound is
+    hit the answer is None, not the newest-so-far: rglob order has nothing to
+    do with mtime, so a truncated scan can report an older file as the newest
+    one, and a wrong "last touched" is worse than an absent one.
+    """
     newest: float | None = None
     seen = 0
     for path in directory.rglob("*"):
-        if seen >= 2000:
-            break
         try:
             if not path.is_file():
                 continue
@@ -64,6 +72,8 @@ def _newest_mtime(directory: Path) -> float | None:
         except OSError:
             continue
         seen += 1
+        if seen > MAX_SCAN_FILES:
+            return None
         if newest is None or stamp > newest:
             newest = stamp
     return newest
@@ -93,6 +103,6 @@ def recent_commits(root: Path, relative: str, limit: int = 10) -> list[dict]:
     for line in out.splitlines():
         if not line.strip():
             continue
-        sha, subject, when = line.split("\x1f")
+        sha, subject, when = line.split("\x1f", 2)
         entries.append({"sha": sha, "subject": subject, "when": float(when)})
     return entries

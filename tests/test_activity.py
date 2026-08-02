@@ -103,3 +103,29 @@ def test_a_submodule_is_read_from_its_own_repository(repo, tmp_path_factory):
     git(repo, "commit", "-qm", "add submodule")
 
     assert activity_for(repo, "sub").commits == 2
+
+
+def test_the_mtime_scan_reports_unknown_past_the_cap(tmp_path, monkeypatch):
+    """rglob order has nothing to do with mtime; a truncated scan cannot trust
+    the newest-so-far value, so it must admit it does not know rather than
+    reporting a possibly-wrong "last touched"."""
+    monkeypatch.setattr("armoire.activity.MAX_SCAN_FILES", 3)
+    (tmp_path / "many").mkdir()
+    for i in range(5):
+        (tmp_path / "many" / f"f{i}.txt").write_text("x", encoding="utf-8")
+    result = activity_for(tmp_path, "many")
+    assert result.last is None
+
+
+def test_a_decode_failure_does_not_raise(monkeypatch, repo):
+    """A commit subject with bytes invalid in the platform's default encoding
+    makes subprocess.run raise UnicodeDecodeError -- a ValueError -- while
+    decoding stdout under text=True. Activity is a nice-to-have; it must not
+    take the roadmap down with it."""
+
+    def boom(*args, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert activity_for(repo, "alpha").commits == 0
+    assert recent_commits(repo, "alpha") == []
