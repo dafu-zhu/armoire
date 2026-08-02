@@ -261,3 +261,38 @@ def test_a_stale_nested_url_migrates(page, live_server):
     page.goto(f"{live_server}/#/notes/deep/buried.md")
     page.wait_for_selector(".markdown-body h1", timeout=10000)
     assert page.evaluate("location.hash") == "#/browse/notes/deep/buried.md"
+
+
+def test_the_breadcrumb_root_shows_the_served_path(live_server, page, sample_root):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    shown = page.locator("#breadcrumb [data-root]").inner_text()
+    assert shown == str(sample_root).replace("\\", "/")
+
+
+def test_the_root_crumb_is_one_element_not_a_trail(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    assert page.locator("#breadcrumb [data-root]").count() == 1
+
+
+def test_clicking_the_root_crumb_goes_to_the_root_listing(live_server, page):
+    page.goto(f"{live_server}/#/browse/notes")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    page.locator("#breadcrumb [data-root]").click()
+    page.wait_for_url("**/#/browse/")
+
+
+def test_double_clicking_the_root_crumb_returns_to_the_roadmap(live_server, page):
+    page.goto(f"{live_server}/#/browse/notes")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    page.locator("#breadcrumb [data-root]").dblclick()
+    page.wait_for_selector(".node")
+    assert page.locator("#roadmap").is_visible()
+
+
+def test_a_folder_with_no_registry_says_the_gesture_is_inert(bare_server, page):
+    page.goto(f"{bare_server}/#/browse/")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    crumb = page.locator("#breadcrumb [data-root]")
+    assert "no roadmap" in (crumb.get_attribute("title") or "").lower()

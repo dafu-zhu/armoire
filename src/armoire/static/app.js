@@ -22,6 +22,28 @@ const body = document.getElementById('body');
 let roadmapView = null;
 let roadmapListeners = null;
 
+// Set once, from initTree's own first fetch (see tree.ready.then below) --
+// never refetched per navigation.
+let rootLabel = null;
+let hasRegistry = false;
+// The pending single-click navigation for the root crumb, if any. Module
+// scope, not local to renderBreadcrumb: a stale timer from a crumb that has
+// since been replaced (the user navigated elsewhere before it fired) must
+// still be reachable to cancel, or it goes off later and yanks the URL back
+// to the root listing out of nowhere.
+let rootClickTimer = null;
+// Comfortably above the gap between the two clicks of a genuine double
+// click (Playwright's included), so the second click's dblclick always has
+// a live timer left to cancel; short enough that a real single click still
+// feels immediate.
+const ROOT_CLICK_DELAY = 250;
+
+function displayRoot(path) {
+  // Forward slashes on every platform. Display only -- resolution stays
+  // pathlib's job behind resolve_in_root, and this string is never sent back.
+  return String(path).replace(/\\/g, '/');
+}
+
 function decodeSegments(raw) {
   return raw
     .split('/')
@@ -59,9 +81,47 @@ export function navigateProject(name) {
 
 function renderBreadcrumb(path) {
   breadcrumb.replaceChildren();
+  // A render in flight replaces this crumb's element outright below, so any
+  // single-click navigation still pending from it must be cancelled here --
+  // otherwise it fires later, against whatever route the user has since
+  // moved to, and silently drags them back to the root listing.
+  if (rootClickTimer) {
+    window.clearTimeout(rootClickTimer);
+    rootClickTimer = null;
+  }
   const rootLink = document.createElement('a');
   rootLink.href = `#/${BROWSE}/`;
-  rootLink.textContent = document.getElementById('root-name').textContent;
+  rootLink.setAttribute('data-root', '');
+  rootLink.textContent = rootLabel || 'armoire';
+  rootLink.title = hasRegistry
+    ? 'Click for the root listing, double-click for the roadmap'
+    : 'Click for the root listing. This folder has no roadmap.';
+  // One crumb, not a trail: "D:" and "GitHub" name places outside the served
+  // root that armoire cannot show, so they must not look clickable.
+  //
+  // Both listeners preventDefault unconditionally: a double click fires
+  // click, click, dblclick on the same target, so a click handler that
+  // navigates immediately would let the first click's own hashchange
+  // re-render (and replace) this element out from under the click/dblclick
+  // pair that follows. Deferring the single-click navigation instead keeps
+  // this element -- and its listeners -- alive for the whole gesture, so
+  // dblclick can always find and cancel it.
+  rootLink.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (rootClickTimer) return; // second click of a double click; dblclick decides
+    rootClickTimer = window.setTimeout(() => {
+      rootClickTimer = null;
+      window.location.hash = `/${BROWSE}/`;
+    }, ROOT_CLICK_DELAY);
+  });
+  rootLink.addEventListener('dblclick', (event) => {
+    event.preventDefault();
+    if (rootClickTimer) {
+      window.clearTimeout(rootClickTimer);
+      rootClickTimer = null;
+    }
+    if (hasRegistry) window.location.hash = '/';
+  });
   breadcrumb.append(rootLink);
 
   let accumulated = '';
@@ -239,7 +299,10 @@ window.addEventListener('hashchange', () => {
 });
 
 tree.ready
-  .then(() => {
+  .then((rootMeta) => {
+    rootLabel = displayRoot(rootMeta.root);
+    hasRegistry = rootMeta.hasRegistry;
+    document.getElementById('root-name').textContent = rootLabel;
     const route = currentRoute();
     if (route.kind === 'unknown') {
       window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;

@@ -33,6 +33,10 @@ export function initTree(container, onSelect) {
   // revealPath awaits these; without that it would query for grandchildren
   // before the parent's fetch had returned.
   const expanders = new WeakMap();
+  // Populated from the root directory's own fetch below -- every /api/tree
+  // response carries the same `root`/`has_registry`, so there is no reason
+  // for app.js to make a second, redundant request for them.
+  let rootMeta = { root: null, hasRegistry: false };
 
   function select(row) {
     if (selected) selected.removeAttribute('aria-current');
@@ -41,7 +45,9 @@ export function initTree(container, onSelect) {
   }
 
   async function buildList(path) {
-    const { dirs, files } = await fetchDir(path);
+    const data = await fetchDir(path);
+    const { dirs, files } = data;
+    if (path === '') rootMeta = { root: data.root, hasRegistry: data.has_registry };
     const list = document.createElement('ul');
 
     for (const dir of dirs) {
@@ -115,6 +121,7 @@ export function initTree(container, onSelect) {
 
   const ready = buildList('').then((list) => {
     container.replaceChildren(list);
+    return rootMeta;
   });
 
   return { ready, revealPath };

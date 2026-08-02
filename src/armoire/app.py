@@ -48,6 +48,25 @@ def create_app(root: Path) -> FastAPI:
     # Exposed so tests and later commands can await the background walk.
     app.state.index = index
 
+    def _has_registry() -> bool:
+        """Whether double-clicking the breadcrumb root would land on a roadmap.
+
+        Deliberately not `registry_path(root).is_file()`: app.js's showRoadmap
+        takes the "no roadmap, back to the browser" exit on `data.registry ===
+        false || !data.projects.length`, so a registry file that parses to zero
+        [[project]] entries is just as roadmap-less, from the user's seat, as no
+        file at all -- both must report False here or the double-click gesture
+        would claim a roadmap exists and then silently bounce back to /browse/.
+        A registry that fails to parse is different: /api/projects still
+        renders an error card for it instead of bouncing, so that case reports
+        True.
+        """
+        try:
+            registry = load_registry(root, registry_file)
+        except RegistryError:
+            return True
+        return registry is not None and bool(registry.projects)
+
     @app.get("/api/tree")
     def tree(path: str = Query("")) -> dict:
         try:
@@ -58,6 +77,8 @@ def create_app(root: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such directory") from None
         return {
             "path": path,
+            "root": str(root),
+            "has_registry": _has_registry(),
             "dirs": [asdict(d) for d in dirs],
             "files": [asdict(f) for f in files],
         }

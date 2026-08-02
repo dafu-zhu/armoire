@@ -47,7 +47,16 @@ a:hover { text-decoration: underline; }
   flex: 0 0 auto;
 }
 
-#root-name { font-weight: 600; }
+/* The served folder's absolute path, which can run far longer than the tool
+   name "armoire" ever did -- clipped rather than left to wrap the header or
+   crowd the filter box beside it. */
+#root-name {
+  font-weight: 600;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 #filter-wrap { position: relative; flex: 1; max-width: 420px; }
 
@@ -110,6 +119,9 @@ a:hover { text-decoration: underline; }
 
 #breadcrumb { margin-bottom: 12px; color: var(--muted); }
 #breadcrumb a { color: var(--link); }
+/* One crumb standing in for the whole served root, not a trail segment --
+   weighted like #root-name so the two read as the same thing. */
+#breadcrumb [data-root] { font-weight: 600; }
 
 .card {
   border: 1px solid var(--border);

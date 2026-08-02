@@ -83,6 +83,52 @@ def test_tree_missing_is_404(client):
     assert client.get("/api/tree", params={"path": "nope"}).status_code == 404
 
 
+def test_tree_reports_the_served_root(client, root):
+    body = client.get("/api/tree", params={"path": ""}).json()
+    assert body["root"] == str(root)
+
+
+def test_tree_reports_no_registry_when_there_is_none(client):
+    # `root` carries no registry at all -- the state every served folder
+    # starts in, and the one bare_server exercises through the browser.
+    body = client.get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is False
+
+
+def test_tree_reports_has_registry_when_the_registry_declares_a_project(registry_client):
+    body = registry_client.get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is True
+
+
+def test_tree_reports_no_registry_for_a_registry_with_zero_projects(root):
+    """Not `registry_path(root).is_file()`: showRoadmap's own fallback
+    (`data.registry === false || !data.projects.length`) treats a stub
+    registry the same as no file at all, so has_registry must agree -- a
+    double-click that lands on this folder must not claim a roadmap exists
+    and then silently bounce back to the browser."""
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("# valid TOML, no [[project]] entries\n", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is False
+
+
+def test_tree_reports_has_registry_for_a_registry_that_fails_to_parse(root):
+    """A malformed registry is not "no roadmap": /api/projects still renders
+    an error card for it (test_malformed_registry_is_200_with_an_error_field)
+    rather than taking showRoadmap's bounce-back exit, so the double-click
+    gesture must still offer to go there."""
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("[[project]\nname = ", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is True
+
+
 def test_index_reports_paths(client):
     body = client.get("/api/index").json()
     assert "docs/readme.md" in body["paths"]
