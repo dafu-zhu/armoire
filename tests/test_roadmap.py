@@ -8,6 +8,26 @@ def open_roadmap(page, live_server):
     page.wait_for_selector("#roadmap .node", timeout=15000)
 
 
+def assert_inside_viewport(page, locator):
+    """A message the user cannot read is not a message.
+
+    `is_visible()` and wait_for_selector's default `visible` state only check
+    for a non-empty box and no visibility:hidden -- neither looks at where the
+    box actually sits. Appended to #roadmap as a normal-flow block, these boxes
+    started at the bottom edge of the height:100% canvas: measured at y=689 in
+    a 720px viewport, with 38 of their 69px past the fold and only 7px of the
+    21px text row above it, on a page that had to grow a scrollbar to reach the
+    rest.
+    """
+    box = locator.bounding_box()
+    viewport = page.viewport_size
+    assert box is not None, "no box at all"
+    assert box["y"] >= 0, (box, viewport)
+    assert box["y"] + box["height"] <= viewport["height"], (box, viewport)
+    assert box["x"] >= 0, (box, viewport)
+    assert box["x"] + box["width"] <= viewport["width"], (box, viewport)
+
+
 def test_roadmap_is_the_entry_screen_when_a_registry_exists(page, live_server):
     open_roadmap(page, live_server)
     assert page.locator("#roadmap").is_visible()
@@ -97,6 +117,9 @@ def test_a_failed_projects_fetch_shows_an_error_not_a_blank_screen(page, live_se
     page.goto(live_server)
     page.wait_for_selector("#roadmap .error", timeout=15000)
     assert page.locator("#roadmap").is_visible()
+    # "not a blank screen" is a claim about what the user sees, so it has to be
+    # checked where the user is looking.
+    assert_inside_viewport(page, page.locator("#roadmap .error"))
 
 
 def test_an_empty_registry_says_so_instead_of_rendering_a_blank_canvas(page, empty_registry_server):
@@ -105,6 +128,63 @@ def test_an_empty_registry_says_so_instead_of_rendering_a_blank_canvas(page, emp
     page.wait_for_selector("#roadmap .empty", timeout=15000)
     assert page.locator("#roadmap .empty").is_visible()
     assert page.locator("#roadmap .node").count() == 0
+    assert_inside_viewport(page, page.locator("#roadmap .empty"))
+
+
+def test_revisiting_the_roadmap_leaves_exactly_one_message_box(page, empty_registry_server):
+    """showRoadmapMessage cleared the canvas but appended to #roadmap, and
+    roadmap.js clears only the canvas -- so nothing ever removed a box and each
+    return to #/ stacked another copy of the same sentence, forever."""
+    page.goto(empty_registry_server)
+    page.wait_for_selector("#roadmap .empty", timeout=15000)
+    for _ in range(2):
+        page.evaluate("window.location.hash = '/browse/'")
+        page.wait_for_function("() => location.hash === '#/browse/'")
+        page.wait_for_selector("#main:visible", timeout=5000)
+        page.evaluate("window.location.hash = '/'")
+        page.wait_for_function("() => location.hash === '#/'")
+        page.wait_for_selector("#roadmap .empty", timeout=15000)
+    assert page.locator("#roadmap .empty").count() == 1
+
+
+def test_a_stale_error_card_does_not_survive_a_successful_revisit(page, live_server):
+    """One transient fetch failure used to leave its error card sitting
+    underneath every graph rendered afterwards."""
+    failed = {"once": False}
+
+    def handler(route):
+        if failed["once"]:
+            route.continue_()
+        else:
+            failed["once"] = True
+            route.abort()
+
+    page.route("**/api/projects", handler)
+    page.goto(live_server)
+    page.wait_for_selector("#roadmap .error", timeout=15000)
+    page.evaluate("window.location.hash = '/browse/'")
+    page.wait_for_function("() => location.hash === '#/browse/'")
+    page.evaluate("window.location.hash = '/'")
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    assert page.locator("#roadmap .error").count() == 0
+
+
+def test_a_throw_inside_render_shows_an_error_not_a_stuck_loading_status(page, live_server):
+    """showRoadmap() was called unawaited and uncaught, so anything renderRoadmap
+    threw left the screen on "Loading roadmap…" with no error card at all."""
+    page.route(
+        "**/vendor/dagre.js",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/javascript",
+            body="window.dagre = { graphlib: { Graph: function () "
+            "{ throw new Error('dagre is broken'); } } };",
+        ),
+    )
+    page.goto(live_server)
+    page.wait_for_selector("#roadmap .error", timeout=15000)
+    assert "dagre is broken" in page.locator("#roadmap .error").inner_text()
+    assert_inside_viewport(page, page.locator("#roadmap .error"))
 
 
 def test_the_viewbox_stays_finite_for_an_empty_graph(page, empty_registry_server):

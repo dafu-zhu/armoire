@@ -15,6 +15,7 @@ const PROJECT = 'project';
 
 const roadmap = document.getElementById('roadmap');
 const canvas = document.getElementById('roadmap-canvas');
+const roadmapMessage = document.getElementById('roadmap-message');
 const body = document.getElementById('body');
 
 let roadmapView = null;
@@ -86,12 +87,21 @@ function showError(error) {
 // registry) or 'empty' for a valid-but-empty registry, which is not a
 // failure and should not read like one. 'empty' reuses the same neutral
 // style preview.js already uses for "no preview for this file".
+//
+// #roadmap-message is the only child of #roadmap this module writes, and
+// replaceChildren is the only way it writes to it. Appending straight to
+// #roadmap meant nothing ever removed a box: they stacked one per visit, and a
+// stale error card survived underneath a later successful render.
 function showRoadmapMessage(message, className) {
   canvas.replaceChildren();
   const box = document.createElement('div');
   box.className = className;
   box.textContent = message;
-  roadmap.append(box);
+  roadmapMessage.replaceChildren(box);
+}
+
+function clearRoadmapMessage() {
+  roadmapMessage.replaceChildren();
 }
 
 function showRoadmapError(message) {
@@ -105,6 +115,10 @@ async function showRoadmap() {
   document.getElementById('tree').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
+  // Clear on entry, not on success: every path out of here either renders a
+  // graph or writes exactly one message, so the previous visit's box never
+  // outlives the visit that wrote it.
+  clearRoadmapMessage();
   status.textContent = 'Loading roadmap…';
 
   let data;
@@ -159,12 +173,18 @@ function hideRoadmap() {
 
 async function showRoute(route) {
   if (route.kind === 'home') {
-    showRoadmap();
+    try {
+      await showRoadmap();
+    } catch (error) {
+      // Unawaited, a throw inside renderRoadmap left the screen on
+      // "Loading roadmap…" with no error card and an unhandled rejection.
+      // Same destination as a failed fetch: the user sees what went wrong.
+      showRoadmapError(String(error.message || error));
+    }
     return;
   }
   hideRoadmap();
   if (route.kind === 'project') {
-    hideRoadmap();
     renderBreadcrumb('');
     status.textContent = 'Loading…';
     try {

@@ -204,6 +204,24 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 #roadmap-canvas { width: 100%; height: 100%; display: block; cursor: grab; background: var(--bg); }
 #roadmap-canvas.dragging { cursor: grabbing; }
 
+/* The one place a roadmap message may be written. Two modules used to disagree
+   about who owned #roadmap's children: roadmap.js cleared only the canvas while
+   app.js appended message boxes to #roadmap itself, so nothing ever removed one.
+   Absolutely positioned because a normal-flow block after a height:100% SVG
+   starts at the canvas's *bottom* edge -- measured at y=689 in a 720px viewport,
+   with only 7px of its 21px text row above the fold, and it made the page scroll
+   for the first time to reach it. pointer-events:none keeps the empty layer from
+   swallowing drags on the canvas underneath. */
+#roadmap-message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+#roadmap-message > * { pointer-events: auto; }
+
 .node rect {
   fill: var(--subtle);
   stroke: var(--border);
