@@ -1489,10 +1489,13 @@ export function renderRoadmap(canvas, data, onOpen) {
   // Issues are strings of the form "<project>: <what is wrong>". A node whose
   // name leads an issue gets a marker, so a missing folder or an unknown
   // blocker is visible on the graph and not only in a rail nobody opened.
+  // Match each project against the issues rather than splitting the issue on
+  // ":", which loses any project whose own name contains one. This is the same
+  // test the per-node tooltip uses; two methods for one thing disagreed.
   const flagged = new Set(
-    (data.issues || [])
-      .map((issue) => issue.split(':')[0].trim())
-      .filter((name) => projects.some((p) => p.name === name)),
+    projects
+      .filter((project) => (data.issues || []).some((issue) => issue.startsWith(`${project.name}:`)))
+      .map((project) => project.name),
   );
 
   for (const project of projects) {
@@ -1547,7 +1550,11 @@ export function renderRoadmap(canvas, data, onOpen) {
   }
 
   const graph = g.graph();
-  canvas.setAttribute('viewBox', `0 0 ${graph.width || 800} ${graph.height || 400}`);
+  // Number.isFinite, not `||`: dagre leaves width at -Infinity for an empty
+  // graph, and -Infinity is truthy, so the fallback never fired.
+  const width = Number.isFinite(graph.width) && graph.width > 0 ? graph.width : 800;
+  const height = Number.isFinite(graph.height) && graph.height > 0 ? graph.height : 400;
+  canvas.setAttribute('viewBox', `0 0 ${width} ${height}`);
 
   return { positions, redrawEdges, viewport, nodeLayer };
 }
