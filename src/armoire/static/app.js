@@ -79,12 +79,20 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
-function showRoadmapError(message) {
+// className is 'error' for a genuine failure (fetch/network, malformed
+// registry) or 'empty' for a valid-but-empty registry, which is not a
+// failure and should not read like one. 'empty' reuses the same neutral
+// style preview.js already uses for "no preview for this file".
+function showRoadmapMessage(message, className) {
   canvas.replaceChildren();
   const box = document.createElement('div');
-  box.className = 'error';
+  box.className = className;
   box.textContent = message;
   roadmap.append(box);
+}
+
+function showRoadmapError(message) {
+  showRoadmapMessage(message, 'error');
 }
 
 async function showRoadmap() {
@@ -112,6 +120,13 @@ async function showRoadmap() {
   }
   if (data.error) {
     showRoadmapError(data.error);
+    return;
+  }
+  if (!data.projects.length) {
+    // Zero [[project]] entries is valid TOML and reaches here with neither
+    // registry: false nor error -- an empty graph, not a failure.
+    showRoadmapMessage('No projects declared in armoire.toml.', 'empty');
+    status.textContent = 'no projects';
     return;
   }
   roadmapView = renderRoadmap(canvas, data, navigateProject);

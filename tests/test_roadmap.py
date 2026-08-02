@@ -62,6 +62,7 @@ def test_a_folder_with_no_registry_opens_on_the_file_browser(page, bare_server):
     """The state every folder is in until someone writes an armoire.toml."""
     page.goto(bare_server)
     page.wait_for_selector(".listing", timeout=15000)
+    assert page.locator(".listing").count() == 1
     assert page.locator("#roadmap").is_hidden()
     assert page.evaluate("location.hash") == "#/browse/"
 
@@ -89,14 +90,6 @@ def test_the_file_browser_is_not_shown_while_the_roadmap_loads(page, live_server
     page.wait_for_selector("#roadmap .node", timeout=15000)
 
 
-def test_a_folder_with_no_registry_still_falls_back_to_the_browser(page, bare_server):
-    """The commit-first ordering must still reverse itself when there is no registry."""
-    page.goto(bare_server)
-    page.wait_for_selector(".listing", timeout=15000)
-    assert page.locator("#roadmap").is_hidden()
-    assert page.evaluate("location.hash") == "#/browse/"
-
-
 def test_a_failed_projects_fetch_shows_an_error_not_a_blank_screen(page, live_server):
     """Committing to the roadmap before the fetch must not leave a blank
     screen if the fetch itself fails outright."""
@@ -104,3 +97,39 @@ def test_a_failed_projects_fetch_shows_an_error_not_a_blank_screen(page, live_se
     page.goto(live_server)
     page.wait_for_selector("#roadmap .error", timeout=15000)
     assert page.locator("#roadmap").is_visible()
+
+
+def test_an_empty_registry_says_so_instead_of_rendering_a_blank_canvas(page, empty_registry_server):
+    """Zero [[project]] entries is valid TOML and reaches renderRoadmap."""
+    page.goto(empty_registry_server)
+    page.wait_for_selector("#roadmap .empty", timeout=15000)
+    assert page.locator("#roadmap .empty").is_visible()
+    assert page.locator("#roadmap .node").count() == 0
+
+
+def test_the_viewbox_stays_finite_for_an_empty_graph(page, empty_registry_server):
+    """app.js now never calls renderRoadmap with zero projects (it shows the
+    empty-state message first), so the above test alone cannot reach
+    roadmap.js's own fallback -- dagre leaves graph.width at -Infinity for an
+    empty graph, which `|| 800` cannot catch because -Infinity is truthy.
+    Call renderRoadmap directly, the way any other future caller could."""
+    page.goto(empty_registry_server)
+    page.wait_for_selector("#roadmap .empty", timeout=15000)
+    view_box = page.evaluate(
+        """async () => {
+            const { renderRoadmap } = await import('/roadmap.js');
+            const canvas = document.getElementById('roadmap-canvas');
+            renderRoadmap(canvas, { projects: [], issues: [] }, () => {});
+            return canvas.getAttribute('viewBox');
+        }"""
+    )
+    assert view_box == "0 0 800 400"
+
+
+def test_a_colon_in_a_project_name_does_not_drop_its_marker(page, colon_name_server):
+    """flagged must match issues the same way the per-node tooltip does
+    (issue.startsWith(`${name}:`)), or a name containing ":" loses its
+    warning marker even though it has a real issue against it."""
+    page.goto(colon_name_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    assert page.locator("#roadmap .node-warn").count() == 1

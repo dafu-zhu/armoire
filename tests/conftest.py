@@ -203,3 +203,66 @@ def bare_server(bare_root):
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def empty_registry_root(tmp_path_factory):
+    """Zero [[project]] entries -- valid TOML, no RegistryError, but nothing
+    for renderRoadmap to lay out."""
+    root = tmp_path_factory.mktemp("empty-registry")
+    (root / "armoire.toml").write_text(
+        "# No [[project]] entries -- still a valid registry.\n",
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def empty_registry_server(empty_registry_root):
+    app = create_app(empty_registry_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("empty-registry server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def colon_name_root(tmp_path_factory):
+    """A project whose name contains a colon, with a genuine issue against it
+    (a missing path) -- the fixture Finding 2's flagged-set fix needs to
+    prove itself against."""
+    root = tmp_path_factory.mktemp("colon-name")
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Foo: Bar"\npaths = ["missing"]\n',
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def colon_name_server(colon_name_root):
+    app = create_app(colon_name_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("colon-name server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
