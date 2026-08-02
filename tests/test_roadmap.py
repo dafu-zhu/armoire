@@ -323,3 +323,68 @@ def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_s
     page.add_init_script(f"window.localStorage.setItem({json.dumps(key)}, 'null')")
     open_roadmap(page, live_server)
     assert page.locator("#roadmap .node").count() >= 1
+
+
+def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server):
+    """Each visit re-runs renderRoadmap/initRail against the same persistent
+    #roadmap-canvas and #rail-toggle elements. Without aborting the previous
+    run's listeners they pile up for the lifetime of the page -- but a
+    behavioural check on the toggle's final visible state cannot catch it:
+    every surviving duplicate listener holds its own independent `open`
+    closure that starts at the same value and flips in lockstep with all the
+    others on every click, so the rendered result is coincidentally correct
+    no matter how many copies are attached (verified empirically: the
+    dispatch's own suggested assertion -- click once after three revisits
+    and require the rail's visibility to have flipped -- passes against the
+    unfixed code too). The actual, catchable symptom is duplicated *work*:
+    each surviving pointerup listener independently calls save(), so a
+    single drag after N revisits writes the layout key to localStorage N+1
+    times instead of once. Spying on Storage.prototype.setItem counts that
+    directly instead of guessing at an observable side effect.
+
+    AbortController is wrapped only to count constructions, giving the test
+    a way to wait for proof that a given revisit's abort()+render()+attach()
+    block has actually run, rather than guessing at a timeout. An earlier
+    version of this test gated each iteration on
+    page.wait_for_load_state("networkidle") alone and flaked at the end of
+    the full file: networkidle tracks network sockets, not whether the JS
+    continuation scheduled after the response body arrives has actually been
+    run, and under a loaded machine that gap was observed to widen past
+    400ms, wide enough to occasionally start the drag against a still-stale
+    render."""
+    page.add_init_script(
+        """
+        window.__acCreates = 0;
+        const OriginalAbortController = window.AbortController;
+        window.AbortController = class extends OriginalAbortController {
+            constructor() {
+                super();
+                window.__acCreates += 1;
+            }
+        };
+        """
+    )
+    open_roadmap(page, live_server)
+    for i in range(3):
+        page.evaluate("window.location.hash = '/project/Upstream'")
+        page.wait_for_function("() => location.hash === '#/project/Upstream'")
+        page.evaluate("window.location.hash = '/'")
+        page.wait_for_selector("#roadmap .node[data-name='Upstream']", timeout=15000)
+        # One showRoadmap() call makes exactly one AbortController: the
+        # initial open_roadmap() plus this being the (i+1)th revisit.
+        page.wait_for_function(f"() => window.__acCreates === {i + 2}", timeout=15000)
+
+    page.evaluate(
+        """() => {
+            window.__layoutWrites = 0;
+            const original = Storage.prototype.setItem;
+            Storage.prototype.setItem = function (key, value) {
+                if (key.startsWith('armoire:layout:')) window.__layoutWrites += 1;
+                return original.call(this, key, value);
+            };
+        }"""
+    )
+    drag_node(page, "Upstream", 80, 30)
+    page.wait_for_timeout(300)
+    writes = page.evaluate("window.__layoutWrites")
+    assert writes == 1, writes

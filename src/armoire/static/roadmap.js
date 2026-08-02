@@ -64,7 +64,7 @@ function layout(projects) {
   return g;
 }
 
-export function renderRoadmap(canvas, data, onOpen) {
+export function renderRoadmap(canvas, data, onOpen, signal) {
   const projects = data.projects || [];
   const g = layout(projects);
   const order = new Map();
@@ -213,6 +213,12 @@ export function renderRoadmap(canvas, data, onOpen) {
     }
   }
 
+  // These four listeners live on `canvas`, which persists across every call
+  // to renderRoadmap (app.js re-fetches it once via getElementById and reuses
+  // it) -- unlike the per-node listeners above, which are torn down with
+  // their nodes by the next call's canvas.replaceChildren(). Without the
+  // signal each revisit to the roadmap would add another copy on top of the
+  // last, permanently.
   canvas.addEventListener('pointerdown', (event) => {
     const group = event.target.closest('.node');
     const point = canvas.createSVGPoint();
@@ -228,7 +234,7 @@ export function renderRoadmap(canvas, data, onOpen) {
       canvas.classList.add('dragging');
       canvas.setPointerCapture(event.pointerId);
     }
-  });
+  }, { signal });
 
   canvas.addEventListener('pointermove', (event) => {
     if (!dragging) return;
@@ -249,7 +255,7 @@ export function renderRoadmap(canvas, data, onOpen) {
       pan = { x: local.x - dragging.offsetX, y: local.y - dragging.offsetY };
       applyViewport();
     }
-  });
+  }, { signal });
 
   canvas.addEventListener('pointerup', (event) => {
     canvas.classList.remove('dragging');
@@ -257,14 +263,14 @@ export function renderRoadmap(canvas, data, onOpen) {
     suppressClick = Boolean(dragging && dragging.name && dragging.moved);
     dragging = null;
     canvas.releasePointerCapture(event.pointerId);
-  });
+  }, { signal });
 
   // An interrupted gesture (e.g. the OS steals the pointer for a scroll)
   // must not leave the canvas permanently in "dragging" mode.
   canvas.addEventListener('pointercancel', () => {
     canvas.classList.remove('dragging');
     dragging = null;
-  });
+  }, { signal });
 
   applyViewport();
 

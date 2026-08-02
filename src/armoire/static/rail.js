@@ -22,7 +22,7 @@ function list(items) {
   return ul;
 }
 
-export function initRail(toggle, panel, data, onOpen) {
+export function initRail(toggle, panel, data, onOpen, signal) {
   const key = `armoire:rail:${data.root}`;
   const projects = data.projects || [];
 
@@ -75,8 +75,15 @@ export function initRail(toggle, panel, data, onOpen) {
   }
   apply(open);
 
-  toggle.addEventListener('click', () => {
-    open = !open;
-    apply(open);
-  });
+  // `toggle` persists across every showRoadmap() call; without the signal
+  // each revisit to the roadmap would stack another click listener on top of
+  // the last, permanently.
+  toggle.addEventListener(
+    'click',
+    () => {
+      open = !open;
+      apply(open);
+    },
+    { signal },
+  );
 }

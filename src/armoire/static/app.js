@@ -17,6 +17,7 @@ const canvas = document.getElementById('roadmap-canvas');
 const body = document.getElementById('body');
 
 let roadmapView = null;
+let roadmapListeners = null;
 
 function decodeSegments(raw) {
   return raw
@@ -130,12 +131,18 @@ async function showRoadmap() {
     status.textContent = 'no projects';
     return;
   }
-  roadmapView = renderRoadmap(canvas, data, navigateProject);
+  // Every visit re-runs this against the same persistent #roadmap-canvas and
+  // #rail-toggle elements. Without aborting the previous run's listeners they
+  // accumulate for the lifetime of the page.
+  if (roadmapListeners) roadmapListeners.abort();
+  roadmapListeners = new AbortController();
+  roadmapView = renderRoadmap(canvas, data, navigateProject, roadmapListeners.signal);
   initRail(
     document.getElementById('rail-toggle'),
     document.getElementById('rail'),
     data,
     navigateProject,
+    roadmapListeners.signal,
   );
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();
   document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
