@@ -1,11 +1,7 @@
 import json
 import sys
 
-import pytest
-
 from armoire import store
-
-IS_WINDOWS = sys.platform == "win32"
 
 
 def test_windows_uses_appdata(monkeypatch, tmp_path):
@@ -60,18 +56,14 @@ def test_same_basename_in_different_places_gets_different_keys(tmp_path):
     assert store.folder_key(a) != store.folder_key(b)
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="Windows disallows certain characters in filenames")
 def test_the_key_is_filesystem_safe(tmp_path):
     folder = tmp_path / "a b:c*d"
-    folder.mkdir()
     key = store.folder_key(folder)
     assert all(c.isalnum() or c in "-_" for c in key), key
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="Windows disallows question marks in filenames")
 def test_a_folder_with_no_usable_name_still_gets_a_key(tmp_path):
     folder = tmp_path / "???"
-    folder.mkdir()
     key = store.folder_key(folder)
     # The sanitised tail is empty, so the key is the hash alone -- never "".
     assert len(key) >= 8
@@ -118,6 +110,15 @@ def test_a_second_write_replaces_rather_than_appends(tmp_path, monkeypatch):
     assert json.loads(store.state_path(tmp_path).read_text(encoding="utf-8")) == {
         "status": {"B": "paused"}
     }
+
+
+def test_the_store_does_not_match_sibling_prefix(tmp_path, monkeypatch):
+    # Prevent naive string-prefix bug: /a/bc should not match /a/b
+    config = tmp_path / "armoire"
+    served = tmp_path / "armoir"  # sibling with matching prefix but different path
+    served.mkdir()
+    monkeypatch.setattr(store, "config_root", lambda: config)
+    assert store.store_is_inside(served) is False
 
 
 def test_the_store_is_detected_inside_a_served_home(tmp_path, monkeypatch):
