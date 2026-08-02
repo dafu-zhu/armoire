@@ -89,11 +89,36 @@ def test_cycle_is_reported_with_its_path(tmp_path):
         '[[project]]\nname = "B"\npaths = ["research/0dte"]\nblocked_by = ["A"]\n'
     )
     registry = load_registry(write(tmp_path, text))
-    assert any("cycle" in issue.lower() for issue in registry.issues)
     assert len(registry.projects) == 2
+    cycle_issues = [i for i in registry.issues if "cycle" in i.lower()]
+    assert len(cycle_issues) == 1
+    # Every issue must be attributable: downstream splits on the first ":"
+    # and matches the left side against project names.
+    owner = cycle_issues[0].split(":", 1)[0].strip()
+    assert owner in {p.name for p in registry.projects}
+    assert "A" in cycle_issues[0] and "B" in cycle_issues[0]
 
 
 def test_missing_path_is_an_issue(tmp_path):
     text = '[[project]]\nname = "A"\npaths = ["nowhere"]\n'
     registry = load_registry(write(tmp_path, text))
     assert any("nowhere" in issue for issue in registry.issues)
+
+
+def test_every_issue_is_attributable_to_a_real_project(tmp_path):
+    """Downstream marks the graph by splitting each issue on its first ':'."""
+    text = (
+        '[[project]]\nname = "A"\npaths = ["nowhere"]\nblocked_by = ["Ghost", "B"]\n\n'
+        '[[project]]\nname = "B"\npaths = ["research/0dte"]\nblocked_by = ["A"]\n'
+    )
+    registry = load_registry(write(tmp_path, text))
+    assert registry.issues
+    names = {p.name for p in registry.projects}
+    for issue in registry.issues:
+        assert issue.split(":", 1)[0].strip() in names, issue
+
+
+def test_a_project_blocking_itself_is_a_cycle(tmp_path):
+    text = '[[project]]\nname = "A"\npaths = ["research/0dte"]\nblocked_by = ["A"]\n'
+    registry = load_registry(write(tmp_path, text))
+    assert any("cycle" in i.lower() for i in registry.issues)

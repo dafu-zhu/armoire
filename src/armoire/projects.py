@@ -141,6 +141,9 @@ def load_registry(root: Path) -> Registry | None:
 
     cycle = _find_cycle(projects)
     if cycle is not None:
-        issues.append("dependency cycle: " + " -> ".join(cycle))
+        # Lead with a project name: issues are attributed to a node downstream
+        # by splitting on the first ":", so a message starting with anything
+        # else silently fails to mark the graph.
+        issues.append(f"{cycle[0]}: dependency cycle via {' -> '.join(cycle)}")
 
     return Registry(projects=projects, issues=issues)
