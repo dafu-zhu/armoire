@@ -329,18 +329,30 @@ def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server)
     """Each visit re-runs renderRoadmap/initRail against the same persistent
     #roadmap-canvas and #rail-toggle elements. Without aborting the previous
     run's listeners they pile up for the lifetime of the page -- but a
-    behavioural check on the toggle's final visible state cannot catch it:
-    every surviving duplicate listener holds its own independent `open`
-    closure that starts at the same value and flips in lockstep with all the
-    others on every click, so the rendered result is coincidentally correct
-    no matter how many copies are attached (verified empirically: the
-    dispatch's own suggested assertion -- click once after three revisits
-    and require the rail's visibility to have flipped -- passes against the
-    unfixed code too). The actual, catchable symptom is duplicated *work*:
-    each surviving pointerup listener independently calls save(), so a
-    single drag after N revisits writes the layout key to localStorage N+1
-    times instead of once. Spying on Storage.prototype.setItem counts that
-    directly instead of guessing at an observable side effect.
+    behavioural check on either element's final visible state cannot catch
+    it: every surviving duplicate listener holds its own independent `open`
+    (rail) or `positions`/`dragging` (canvas) closure that starts at the
+    same value and evolves in lockstep with all the others on every real
+    event, so the rendered result is coincidentally correct no matter how
+    many copies are attached (verified empirically: the dispatch's own
+    suggested assertion -- click once after three revisits and require the
+    rail's visibility to have flipped -- passes against the unfixed code
+    too). The actual, catchable symptom is duplicated *work*: each surviving
+    listener independently calls its own write to localStorage, so after N
+    revisits a single canvas drag writes the layout key N+1 times, and a
+    single rail-toggle click writes the rail key N+1 times, instead of once
+    each. Spying on Storage.prototype.setItem counts both directly instead
+    of guessing at an observable side effect. Both prefixes are tracked
+    through the one wrapper rather than two separate spies -- there is only
+    one thing being proven (accumulated writes per surviving listener) and
+    one wrapper installed once reads more directly than re-deriving the same
+    instrumentation twice.
+
+    Coordinator review of this test's first version found it exercised only
+    the canvas listeners (via the drag) and never clicked #rail-toggle, so a
+    signal dropped from only the toggle's addEventListener call in rail.js
+    would have shipped undetected -- the click below, and its own write
+    count, close that gap.
 
     AbortController is wrapped only to count constructions, giving the test
     a way to wait for proof that a given revisit's abort()+render()+attach()
@@ -376,15 +388,21 @@ def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server)
 
     page.evaluate(
         """() => {
-            window.__layoutWrites = 0;
+            window.__writes = { layout: 0, rail: 0 };
             const original = Storage.prototype.setItem;
             Storage.prototype.setItem = function (key, value) {
-                if (key.startsWith('armoire:layout:')) window.__layoutWrites += 1;
+                if (key.startsWith('armoire:layout:')) window.__writes.layout += 1;
+                if (key.startsWith('armoire:rail:')) window.__writes.rail += 1;
                 return original.call(this, key, value);
             };
         }"""
     )
+
+    page.locator("#rail-toggle").click()
+    rail_writes = page.evaluate("window.__writes.rail")
+    assert rail_writes == 1, rail_writes
+
     drag_node(page, "Upstream", 80, 30)
     page.wait_for_timeout(300)
-    writes = page.evaluate("window.__layoutWrites")
-    assert writes == 1, writes
+    layout_writes = page.evaluate("window.__writes.layout")
+    assert layout_writes == 1, layout_writes
