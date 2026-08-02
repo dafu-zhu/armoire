@@ -27,3 +27,10 @@ def test_dagre_is_loaded_before_the_module_entry_point():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert "/vendor/dagre.js" in html
     assert html.index("/vendor/dagre.js") < html.index('src="/app.js"')
+
+
+def test_the_roadmap_has_exactly_one_visibility_mechanism():
+    """`hidden` is display:none !important, so a second CSS switch cannot
+    override it. Two switches invite an edit that toggles only one."""
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    assert "data-active" not in css
