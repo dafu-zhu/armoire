@@ -540,6 +540,40 @@ def test_a_rebound_host_is_refused_even_when_origin_matches_it(tmp_path):
     assert store.read_state(tmp_path) == {}
 
 
+def test_the_host_allowlist_covers_all_loopback_forms_and_refuses_a_foreign_one(tmp_path):
+    """127.0.0.1 and localhost are what armoire's own frontend sends; [::1]:8420
+    is the bracketed IPv6 loopback literal a real client sends on the wire.
+    request.url.hostname unwraps the brackets before the allowlist ever sees
+    it, so this exercises the header form a client actually transmits, not
+    just the value the parser produces from it."""
+    client = _client_with_registry(tmp_path)
+    for host, accepted in [
+        ("127.0.0.1", True),
+        ("localhost", True),
+        ("[::1]:8420", True),
+        ("evil.example", False),
+    ]:
+        response = client.put(
+            "/api/status",
+            json={"name": "Downstream", "status": "done"},
+            headers=HEADERS | {"Host": host},
+        )
+        assert (response.status_code == 200) is accepted, (host, response.status_code)
+
+
+def test_the_testclients_default_host_is_refused(tmp_path):
+    """Starlette's TestClient defaults to Host: testserver when no base_url is
+    given -- the same foreign-host case as above, through the client's own
+    default rather than an explicit override."""
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    store.registry_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    store.registry_path(tmp_path).write_text(REGISTRY, encoding="utf-8")
+    response = TestClient(create_app(tmp_path)).put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    assert response.status_code == 403
+
+
 def test_a_store_inside_the_served_folder_refuses_the_status_write(tmp_path, monkeypatch):
     """Endpoint-level analogue of store.writes_inside's own unit tests and
     cli.prepare_store's refusal. store_is_inside(root) would miss this: it

@@ -195,8 +195,14 @@ def create_app(root: Path) -> FastAPI:
         # the request claims about its own Origin or Host.
         if request.headers.get("X-Armoire") != "1":
             raise HTTPException(status_code=403, detail="missing X-Armoire header")
-        host = request.headers.get("host", "").split(":")[0]
-        if host not in ("127.0.0.1", "localhost", "[::1]", "::1"):
+        # request.url.hostname, not a hand-split Host header: a bracketed
+        # IPv6 literal ("[::1]:8420") contains colons of its own, so
+        # splitting on ":" takes the wrong piece and a genuine IPv6-loopback
+        # request would be refused. The URL parser already strips the
+        # brackets, so the bracketed spelling never appears in the allowlist
+        # itself -- only the unwrapped "::1" does.
+        host = request.url.hostname or ""
+        if host not in ("127.0.0.1", "localhost", "::1"):
             raise HTTPException(status_code=403, detail="foreign host")
         origin = request.headers.get("Origin")
         if origin is not None and origin != str(request.base_url).rstrip("/"):
