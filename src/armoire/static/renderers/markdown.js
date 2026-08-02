@@ -39,8 +39,11 @@ export function renderMarkdown(container, data, path) {
   body.className = 'markdown-body';
 
   // Mermaid blocks are pulled out before marked runs so it does not escape them.
+  // \r?\n, not \n: a CRLF document puts \r between the fence and the newline,
+  // and an \n-anchored pattern silently misses it -- the fence then falls
+  // through to highlight.js as an unknown language instead of rendering.
   const diagrams = [];
-  const source = data.text.replace(/```mermaid\n([\s\S]*?)```/g, (_, code) => {
+  const source = data.text.replace(/```mermaid\r?\n([\s\S]*?)```/g, (_, code) => {
     diagrams.push(code);
     return `<div class="mermaid-slot" data-index="${diagrams.length - 1}"></div>`;
   });
