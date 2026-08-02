@@ -1177,8 +1177,11 @@ Append to `src/armoire/static/app.css`:
 
 ```css
 /* Roadmap ------------------------------------------------------------- */
-#roadmap { position: relative; flex: 1; min-width: 0; display: none; }
-#roadmap[data-active="true"] { display: block; }
+/* Visibility is the `hidden` attribute alone. A second CSS switch cannot
+   override it anyway — `hidden` is display:none !important at UA level — and
+   two switches for one thing invite an edit that toggles only one, leaving a
+   roadmap that renders its nodes into a container nobody can see. */
+#roadmap { position: relative; flex: 1; min-width: 0; }
 #roadmap-canvas { width: 100%; height: 100%; display: block; cursor: grab; background: var(--bg); }
 #roadmap-canvas.dragging { cursor: grabbing; }
 
@@ -1575,7 +1578,6 @@ async function showRoadmap() {
   document.getElementById('tree').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
-  roadmap.dataset.active = 'true';
   if (data.error) {
     canvas.replaceChildren();
     const box = document.createElement('div');
@@ -1590,7 +1592,6 @@ async function showRoadmap() {
 
 function hideRoadmap() {
   roadmap.hidden = true;
-  roadmap.dataset.active = 'false';
   document.getElementById('tree').hidden = false;
   document.getElementById('main').hidden = false;
 }
