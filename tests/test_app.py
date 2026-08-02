@@ -318,5 +318,24 @@ def test_unknown_project_is_404(registry_client):
     assert registry_client.get("/api/project/Ghost").status_code == 404
 
 
-def test_project_name_with_a_slash_does_not_escape(registry_client):
-    assert registry_client.get("/api/project/../../etc").status_code in (404, 422)
+def test_a_slashed_project_name_never_reaches_the_handler(registry_client):
+    """Starlette's single-segment path converter rejects it before dispatch.
+
+    This is a framework guarantee, not something project_detail implements —
+    removing the route's own 404 guard leaves this test green. Named for what
+    it proves so nobody mistakes it for a check on the handler.
+    """
+    assert registry_client.get("/api/project/..%2F..%2Fetc").status_code == 404
+    assert registry_client.get("/api/project/A/../..").status_code == 404
+
+
+def test_a_registry_path_escaping_the_root_yields_no_files(root):
+    """The registry is authored by whoever owns the folder, and armoire gets
+    pointed at cloned repositories. An escaping path must return nothing."""
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Evil"\npaths = ["../../Windows"]\n', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/project/Evil").json()
+    assert body["files"] == []
