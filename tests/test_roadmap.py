@@ -942,6 +942,72 @@ def test_a_failed_status_write_reverts_the_chip_and_its_dependents(
     page.unroute("**/api/status")
 
 
+def test_the_wheel_zooms_in(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.mouse.move(400, 300)
+    page.mouse.wheel(0, -240)
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) > 100
+
+
+def test_the_wheel_zooms_out(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.mouse.move(400, 300)
+    page.mouse.wheel(0, 240)
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) < 100
+
+
+def test_the_wheel_does_not_scroll_the_page(live_server, page):
+    """Without an artificial overflow this assertion cannot fail: the app's
+    own layout (body { height: 100vh }, #main and #tree each scrolling
+    internally via their own overflow-y) never lets the outer document grow
+    taller than the viewport, so window.scrollY stays 0 regardless of
+    whether the wheel handler calls preventDefault -- confirmed empirically
+    by dropping preventDefault and setting passive: true, which left this
+    test green. Forcing document.body's min-height past the viewport here
+    makes the document genuinely scrollable, so a wheel default that reaches
+    the page (the mutation above) actually moves window.scrollY, and the
+    assertion is a real regression guard rather than a vacuous one."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.evaluate("() => { document.body.style.minHeight = '2000px'; }")
+    page.mouse.move(400, 300)
+    page.mouse.wheel(0, 240)
+    page.wait_for_timeout(200)
+    assert page.evaluate("() => window.scrollY") == 0
+
+
+def test_zoom_stays_within_its_limits(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.mouse.move(400, 300)
+    for _ in range(40):
+        page.mouse.wheel(0, -240)
+    page.wait_for_timeout(200)
+    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) <= 250
+    for _ in range(80):
+        page.mouse.wheel(0, 240)
+    page.wait_for_timeout(200)
+    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) >= 35
+
+
+def test_the_point_under_the_cursor_stays_put(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    box = page.locator('.node[data-name="Upstream"] rect').bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy)
+    page.mouse.wheel(0, -240)
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    after = page.locator('.node[data-name="Upstream"] rect').bounding_box()
+    acx, acy = after["x"] + after["width"] / 2, after["y"] + after["height"] / 2
+    # Anchored zoom: the point under the pointer does not slide away from it.
+    assert abs(acx - cx) < 12 and abs(acy - cy) < 12
+
+
 def test_a_project_with_both_a_due_date_and_a_note_shows_both(live_server, page):
     """A fixed 62px node used to force renderRoadmap to pick `project.due ||
     project.note` for the subtitle -- a project carrying both fields showed

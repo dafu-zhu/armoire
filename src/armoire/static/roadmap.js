@@ -487,6 +487,30 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     dragging = null;
   }, { signal });
 
+  function zoomAt(factor, clientX, clientY) {
+    const point = canvas.createSVGPoint();
+    point.x = clientX;
+    point.y = clientY;
+    const local = point.matrixTransform(canvas.getScreenCTM().inverse());
+    const next = Math.min(2.5, Math.max(0.35, scale * factor));
+    // Keep the graph point under the cursor under the cursor: solve
+    // local = graph * next + pan' for pan', where graph is that point in
+    // graph coordinates at the current scale.
+    const graphX = (local.x - pan.x) / scale;
+    const graphY = (local.y - pan.y) / scale;
+    pan = { x: local.x - graphX * next, y: local.y - graphY * next };
+    scale = next;
+    applyViewport();
+  }
+
+  // passive: false, and preventDefault -- a passive listener cannot prevent
+  // the default and the browser ignores the call, so the page would scroll
+  // behind the canvas on every zoom.
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    zoomAt(event.deltaY < 0 ? 1.1 : 1 / 1.1, event.clientX, event.clientY);
+  }, { signal, passive: false });
+
   applyViewport();
 
   return {
@@ -501,8 +525,8 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
       }
     },
     zoomBy(factor) {
-      scale = Math.min(2.5, Math.max(0.35, scale * factor));
-      applyViewport();
+      const box = canvas.getBoundingClientRect();
+      zoomAt(factor, box.left + box.width / 2, box.top + box.height / 2);
     },
   };
 }
