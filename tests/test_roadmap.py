@@ -2,6 +2,8 @@
 
 import time
 
+from conftest import folder_snapshot
+
 
 def open_roadmap(page, live_server):
     page.goto(live_server)
@@ -257,26 +259,11 @@ def test_reset_restores_the_computed_layout(page, live_server):
 
 def test_dragging_does_not_write_to_the_served_folder(page, live_server, sample_root):
     """localStorage, not disk -- the read-only guarantee covers the roadmap too."""
-    import hashlib
-
-    def snapshot():
-        # mtime as well as sha256: a pure-metadata touch -- exactly what an
-        # ill-judged `os.utime` call, or a git operation that rewrites an
-        # index, would produce -- is invisible to a content hash alone.
-        return {
-            p.relative_to(sample_root).as_posix(): (
-                p.stat().st_mtime_ns,
-                hashlib.sha256(p.read_bytes()).hexdigest(),
-            )
-            for p in sorted(sample_root.rglob("*"))
-            if p.is_file()
-        }
-
-    before = snapshot()
+    before = folder_snapshot(sample_root)
     open_roadmap(page, live_server)
     drag_node(page, "Upstream", 90, 40)
     page.wait_for_timeout(300)
-    assert snapshot() == before
+    assert folder_snapshot(sample_root) == before
 
 
 def test_zoom_controls_change_the_reported_level(page, live_server):

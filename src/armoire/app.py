@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -17,7 +17,7 @@ from armoire.previews import extension_of, kind_for
 from armoire.previews.notebook import preview_notebook
 from armoire.previews.table import preview_table
 from armoire.previews.text import preview_text
-from armoire.projects import RegistryError, load_registry
+from armoire.projects import STATUSES, RegistryError, load_registry
 from armoire.scanner import list_dir
 
 logger = logging.getLogger(__name__)
@@ -170,6 +170,53 @@ def create_app(root: Path) -> FastAPI:
         if detail is None:
             raise HTTPException(status_code=404, detail="no such project")
         return detail
+
+    @app.put("/api/status")
+    def set_status(payload: dict, request: Request) -> dict:
+        # The bind address stops other machines, not other tabs: any page in
+        # any browser on this machine can reach 127.0.0.1. A custom header
+        # cannot be set cross-origin without a CORS preflight, and armoire
+        # answers none and installs no CORS middleware, so the browser refuses
+        # the request before it is sent. HTML form posts cannot set headers at
+        # all, which closes the other route in.
+        if request.headers.get("X-Armoire") != "1":
+            raise HTTPException(status_code=403, detail="missing X-Armoire header")
+        origin = request.headers.get("Origin")
+        if origin is not None and origin != str(request.base_url).rstrip("/"):
+            raise HTTPException(status_code=403, detail="foreign origin")
+        # writes_inside, not store_is_inside: the question here is whether the
+        # file this handler is about to write -- store.state_path(root), under
+        # folder_dir(root) -- lands inside the served folder, not whether
+        # config_root() as a whole does. Serving a descendant of config_root()
+        # (config_root() itself, or its own "folders" tree) puts folder_dir(root)
+        # inside root even though config_root() is not inside root -- the other
+        # way around -- so store_is_inside would miss it and this handler would
+        # write into the tree it is serving.
+        if store.writes_inside(root):
+            raise HTTPException(
+                status_code=403, detail="the armoire store is inside the served folder"
+            )
+
+        status = payload.get("status")
+        if status not in STATUSES:
+            raise HTTPException(status_code=400, detail=f"unknown status {status!r}")
+        name = payload.get("name")
+
+        try:
+            registry = load_registry(root, registry_file)
+        except RegistryError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        if registry is None or not any(p.name == name for p in registry.projects):
+            raise HTTPException(status_code=404, detail="no such project")
+
+        state = store.read_state(root)
+        # An entry naming a project the registry no longer has is kept, not
+        # pruned: renaming a project and renaming it back should not lose its
+        # status.
+        statuses = state.get("status")
+        state["status"] = (statuses if isinstance(statuses, dict) else {}) | {name: status}
+        store.write_state(root, state)
+        return {"name": name, "status": status}
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

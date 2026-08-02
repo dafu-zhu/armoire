@@ -1,4 +1,3 @@
-import hashlib
 import json
 import sys
 
@@ -9,6 +8,12 @@ from fastapi.testclient import TestClient
 from armoire import store
 from armoire.app import create_app
 from armoire.projects import STATUSES
+from conftest import folder_snapshot
+
+# Every /api/status request must carry this, or the guard refuses it. Defined
+# here, not just where the guard tests live, because test_serving_never_
+# writes_to_disk also needs it for the PUT inside its checksum window.
+HEADERS = {"X-Armoire": "1"}
 
 # A minimal but valid notebook: nbformat_minor 5 requires every cell to carry
 # an "id". Deliberately distinct from bad.ipynb (which fails at nbformat.read
@@ -217,22 +222,12 @@ def test_serving_never_writes_to_disk(root):
         '[[project]]\nname = "Docs"\npaths = ["docs"]\ncategory = "docs"\n', encoding="utf-8"
     )
 
-    def snapshot():
-        return {
-            p.relative_to(root).as_posix(): (
-                p.stat().st_mtime_ns,
-                hashlib.sha256(p.read_bytes()).hexdigest(),
-            )
-            for p in sorted(root.rglob("*"))
-            if p.is_file()
-        }
-
     # Deliberately does not depend on the `client` fixture: that fixture
     # already calls create_app() and index.wait() before the test body runs,
     # which would put the background index build -- the walk most likely to
     # touch the filesystem -- outside the measured window. Snapshotting
     # first and only then creating the app keeps the whole build inside it.
-    before = snapshot()
+    before = folder_snapshot(root)
     app = create_app(root)
     app.state.index.wait(timeout=10)
     client = TestClient(app)
@@ -255,7 +250,8 @@ def test_serving_never_writes_to_disk(root):
         client.get("/api/raw", params={"path": name})
     projects = client.get("/api/projects")
     detail = client.get("/api/project/Docs")
-    # The snapshot is only as strong as what ran inside it. Assert both calls
+    status = client.put("/api/status", json={"name": "Docs", "status": "done"}, headers=HEADERS)
+    # The snapshot is only as strong as what ran inside it. Assert every call
     # actually reached their work, so this test cannot quietly go back to
     # checksumming a `registry: false` and a 404 the way it used to.
     assert projects.json()["projects"], projects.json()
@@ -264,7 +260,8 @@ def test_serving_never_writes_to_disk(root):
     # not prove list_dir walked anything. The files are what put the scan
     # inside the window.
     assert detail.json()["files"], detail.json()
-    assert snapshot() == before
+    assert status.status_code == 200, status.text
+    assert folder_snapshot(root) == before
 
 
 REGISTRY = """
@@ -452,3 +449,78 @@ def test_a_registry_path_escaping_the_root_yields_no_files(tmp_path):
     assert (served / ".." / ".." / "outside" / "secret.md").exists()
     assert response.status_code == 200
     assert response.json()["files"] == []
+
+
+def _client_with_registry(tmp_path):
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    store.registry_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    store.registry_path(tmp_path).write_text(REGISTRY, encoding="utf-8")
+    return TestClient(create_app(tmp_path))
+
+
+def test_a_status_edit_is_stored(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    assert response.status_code == 200
+    assert store.read_state(tmp_path)["status"]["Downstream"] == "done"
+
+
+def test_the_stored_status_comes_back_from_the_projects_endpoint(tmp_path):
+    client = _client_with_registry(tmp_path)
+    client.put("/api/status", json={"name": "Downstream", "status": "paused"}, headers=HEADERS)
+    rows = {r["name"]: r for r in client.get("/api/projects").json()["projects"]}
+    assert rows["Downstream"]["status"] == "paused"
+
+
+def test_an_unknown_status_is_rejected(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "finished"}, headers=HEADERS
+    )
+    assert response.status_code == 400
+    assert store.read_state(tmp_path) == {}
+
+
+def test_an_unknown_project_is_rejected(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put("/api/status", json={"name": "Ghost", "status": "done"}, headers=HEADERS)
+    assert response.status_code == 404
+    assert store.read_state(tmp_path) == {}
+
+
+def test_a_request_without_the_header_is_refused(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put("/api/status", json={"name": "Downstream", "status": "done"})
+    # 127.0.0.1 keeps other machines out; it does not keep other tabs out.
+    assert response.status_code == 403
+    assert store.read_state(tmp_path) == {}
+
+
+def test_a_request_from_a_foreign_origin_is_refused(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status",
+        json={"name": "Downstream", "status": "done"},
+        headers=HEADERS | {"Origin": "http://evil.example"},
+    )
+    assert response.status_code == 403
+    assert store.read_state(tmp_path) == {}
+
+
+def test_a_request_from_our_own_origin_is_allowed(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status",
+        json={"name": "Downstream", "status": "done"},
+        headers=HEADERS | {"Origin": "http://testserver"},
+    )
+    assert response.status_code == 200
+
+
+def test_a_status_edit_does_not_write_to_the_served_folder(tmp_path):
+    client = _client_with_registry(tmp_path)
+    before = folder_snapshot(tmp_path)
+    client.put("/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS)
+    assert folder_snapshot(tmp_path) == before

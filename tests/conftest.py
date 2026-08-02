@@ -1,11 +1,13 @@
 """A small sample folder, and a live server in front of it."""
 
+import hashlib
 import json
 import os
 import socket
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -13,6 +15,27 @@ import uvicorn
 
 from armoire import store
 from armoire.app import create_app
+
+
+def folder_snapshot(root: Path) -> dict[str, tuple[int, str]]:
+    """Every file under root, keyed by relative path, with mtime and content.
+
+    mtime as well as sha256: a pure-metadata touch -- an ill-judged os.utime,
+    or a git operation that rewrites an index -- is invisible to a content hash
+    alone, and the read-only guarantee has to catch both.
+
+    Keyed by relative path, not by name: two files called README.md in
+    different directories collapsed to one entry under the old keying and one
+    of them went unchecked.
+    """
+    return {
+        p.relative_to(root).as_posix(): (
+            p.stat().st_mtime_ns,
+            hashlib.sha256(p.read_bytes()).hexdigest(),
+        )
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
 
 
 def _redirect_config_root(setenv, setattr_, base) -> None:
