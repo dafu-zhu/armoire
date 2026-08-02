@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from armoire.activity import activity_for, recent_commits
+from armoire import dashboard
 from armoire.index import PathIndex
 from armoire.paths import PathOutsideRoot, resolve_in_root
 from armoire.previews import extension_of, kind_for
@@ -141,61 +141,28 @@ def create_app(root: Path) -> FastAPI:
         if registry is None:
             return envelope | {"registry": False}
 
-        listed = []
-        for project in registry.projects:
-            merged = {"commits": 0, "last": None}
-            for relative in project.paths:
-                found = activity_for(root, relative)
-                merged["commits"] += found.commits
-                if found.last is not None:
-                    merged["last"] = max(merged["last"] or 0.0, found.last)
-            listed.append(
-                asdict(project)
-                | {"paths": list(project.paths), "blocked_by": list(project.blocked_by)}
-                | merged
-            )
-        return envelope | {"projects": listed, "issues": registry.issues}
+        return envelope | {
+            "projects": dashboard.project_rows(root, registry),
+            "issues": registry.issues,
+        }
 
     @app.get("/api/project/{name}")
     def project_detail(name: str) -> dict:
         try:
             registry = load_registry(root)
         except RegistryError as exc:
+            # 404 rather than the 200+error shape /api/projects uses: that endpoint
+            # must render a page and show the parse message, this one is only
+            # reachable from a roadmap that already loaded. The message still
+            # travels in `detail`.
             raise HTTPException(status_code=404, detail=str(exc)) from None
         if registry is None:
             raise HTTPException(status_code=404, detail="no registry")
 
-        match = next((p for p in registry.projects if p.name == name), None)
-        if match is None:
+        detail = dashboard.project_detail(root, registry, name)
+        if detail is None:
             raise HTTPException(status_code=404, detail="no such project")
-
-        files = []
-        for relative in match.paths:
-            try:
-                dirs, entries = list_dir(root, relative)
-            except (PathOutsideRoot, FileNotFoundError):
-                continue
-            for entry in [*dirs, *entries]:
-                files.append(
-                    {
-                        "path": f"{relative}/{entry.name}",
-                        "name": entry.name,
-                        "is_dir": entry.is_dir,
-                    }
-                )
-
-        commits = []
-        for relative in match.paths:
-            commits.extend(recent_commits(root, relative))
-        commits.sort(key=lambda c: c["when"], reverse=True)
-
-        return {
-            "project": asdict(match)
-            | {"paths": list(match.paths), "blocked_by": list(match.blocked_by)},
-            "blocks": [p.name for p in registry.projects if name in p.blocked_by],
-            "commits": commits[:10],
-            "files": files,
-        }
+        return detail
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

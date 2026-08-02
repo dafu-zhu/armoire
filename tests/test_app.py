@@ -304,6 +304,15 @@ def test_malformed_registry_is_200_with_an_error_field(root):
     assert "error" in response.json()
 
 
+def test_project_detail_on_a_malformed_registry_is_404_carrying_the_parse_error(root):
+    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/project/Anything")
+    assert response.status_code == 404
+    assert "armoire.toml" in response.json()["detail"]
+
+
 def test_project_detail_reports_what_it_blocks(registry_client):
     body = registry_client.get("/api/project/Upstream").json()
     assert body["blocks"] == ["Downstream"]
