@@ -3,6 +3,7 @@ import { initFilter } from './filter.js';
 import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
 import { renderRoadmap } from './roadmap.js';
+import { initRail } from './rail.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -130,6 +131,12 @@ async function showRoadmap() {
     return;
   }
   roadmapView = renderRoadmap(canvas, data, navigateProject);
+  initRail(
+    document.getElementById('rail-toggle'),
+    document.getElementById('rail'),
+    data,
+    navigateProject,
+  );
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();
   document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
   document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);

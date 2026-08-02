@@ -213,6 +213,105 @@ def test_clicking_a_node_without_dragging_still_opens_it(page, live_server):
     page.wait_for_function("() => location.hash === '#/project/Upstream'", timeout=5000)
 
 
+def test_the_rail_is_collapsed_by_default(page, live_server):
+    open_roadmap(page, live_server)
+    assert page.locator("#rail").is_hidden()
+
+
+def test_the_rail_toggles_open(page, live_server):
+    open_roadmap(page, live_server)
+    page.locator("#rail-toggle").click()
+    page.wait_for_selector("#rail:visible", timeout=5000)
+    assert page.locator("#rail").is_visible()
+
+
+def test_the_rail_ranks_projects_by_commit_count(page, live_server):
+    """The brief's version asserted only that the rail was non-empty, which
+    passes with the list in any order, or reversed. sample_root's own two
+    projects both compute to zero commits -- there is no git history under
+    the pytest tmp path, confirmed by calling project_rows() against a
+    replica of the fixture -- so real fixture data ties and cannot
+    distinguish a correct sort from a reversed or removed one. This stubs
+    /api/projects with commit counts that actually differ, listed in an
+    order that is neither sorted nor reverse-sorted, so a removed or
+    inverted sort both change the rendered order."""
+    import json
+
+    stub = {
+        "root": "stub-root",
+        "projects": [
+            {
+                "name": "Mid",
+                "paths": [],
+                "blocked_by": [],
+                "category": None,
+                "due": None,
+                "note": None,
+                "commits": 5,
+                "last": None,
+            },
+            {
+                "name": "Low",
+                "paths": [],
+                "blocked_by": [],
+                "category": None,
+                "due": None,
+                "note": None,
+                "commits": 2,
+                "last": None,
+            },
+            {
+                "name": "High",
+                "paths": [],
+                "blocked_by": [],
+                "category": None,
+                "due": None,
+                "note": None,
+                "commits": 9,
+                "last": None,
+            },
+        ],
+        "issues": [],
+    }
+    page.route(
+        "**/api/projects",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(stub)
+        ),
+    )
+    open_roadmap(page, live_server)
+    page.locator("#rail-toggle").click()
+    page.wait_for_selector("#rail li", timeout=5000)
+    items = page.locator("#rail li").all_text_contents()
+    activity = [i for i in items if "—" in i]
+    assert len(activity) == 3, activity
+    counts = [int(i.rsplit("—", 1)[1].strip()) for i in activity]
+    assert counts == [9, 5, 2], counts
+
+
+def test_the_rail_lists_blocked_projects_with_their_blocker(page, live_server):
+    """The brief's version asserted both project names appeared somewhere in
+    the rail, which passes even with an empty Blocked section: both names
+    already appear in the Activity section directly above. Scope the
+    assertion to the blocked entry rail.js actually renders, in the
+    "Downstream ← Upstream" form the sample registry's one edge produces."""
+    open_roadmap(page, live_server)
+    page.locator("#rail-toggle").click()
+    page.wait_for_selector("#rail li", timeout=5000)
+    items = page.locator("#rail li").all_text_contents()
+    blocked = [i for i in items if "←" in i]
+    assert blocked == ["Downstream ← Upstream"], blocked
+
+
+def test_the_rail_open_state_survives_a_reload(page, live_server):
+    open_roadmap(page, live_server)
+    page.locator("#rail-toggle").click()
+    page.wait_for_selector("#rail:visible", timeout=5000)
+    page.reload()
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    assert page.locator("#rail").is_visible()
+
+
 def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_server):
     """JSON.parse('null') succeeds and yields null; Object.entries(null) throws
     unless loadSaved guards against it -- and an uncaught throw inside
