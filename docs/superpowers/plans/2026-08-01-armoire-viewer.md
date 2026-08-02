@@ -21,7 +21,8 @@
 - No request may walk the full tree. Directory listing is one level; the flat index is built once at startup.
 - Default ignores, exactly: `.git`, `.venv`, `node_modules`, `__pycache__`, `site-packages`, `.ruff_cache`, `.pytest_cache`.
 - Colors, verbatim: background `#ffffff`, text `#1f2328`, link `#0969da`, border `#d1d9e0`, subtle fill `#f6f8fa`. Radius 6px.
-- Package name and CLI are both `armoire`. Static assets ship inside the package at `src/armoire/static/`.
+- Package name and CLI are both `armoire`. Static assets ship inside the package at `src/armoire/static/`, vendored libraries included — the wheel must be self-contained or `uvx armoire serve` is broken on install.
+- Frontend behaviour is verified by Playwright against a live server, never by asserting on JavaScript source text.
 
 ## Deviation from the spec
 
@@ -98,7 +99,7 @@ armoire = "armoire.cli:main"
 Homepage = "https://github.com/dafu-zhu/armoire"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6"]
+dev = ["pytest>=8.0", "httpx2>=2.9", "ruff>=0.6", "pytest-playwright>=0.5"]
 
 [build-system]
 requires = ["hatchling"]
@@ -110,6 +111,10 @@ packages = ["src/armoire"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# Plans and specs contain illustrative Python fences. Ruff formats fenced code
+# inside markdown, and reformatting them would desynchronise the task briefs
+# extracted from those documents.
+exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -256,10 +261,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-extras --dev
+      - run: uv run playwright install --with-deps chromium
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pytest -v
 ```
+
+The vendored frontend libraries are committed to the repository, so no fetch step
+is needed here — see Task 9.
+
+`index.html` must open with `<!doctype html>`. Without it the browser renders in
+quirks mode, which breaks KaTeX and Mermaid layout.
 
 - [ ] **Step 8: Verify lint and the full suite pass locally**
 
@@ -405,11 +417,14 @@ Create `src/armoire/scanner.py`:
 ```python
 """One directory in, one listing out. Never recurses."""
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from armoire.ignore import is_ignored
 from armoire.paths import resolve_in_root
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -426,9 +441,12 @@ def _entry(path: Path) -> Entry | None:
     try:
         stat = path.stat()
         is_dir = path.is_dir()
-    except OSError:
+    except OSError as exc:
         # Permission denied, broken symlink, or a file that vanished mid-scan.
         # Skipping is correct: a folder the user cannot read is not browsable.
+        # Logged so a systemic failure is not indistinguishable from an empty
+        # directory.
+        logger.debug("skipping %s: %s", path, exc)
         return None
 
     return Entry(
@@ -440,8 +458,19 @@ def _entry(path: Path) -> Entry | None:
     )
 
 
+def _sort_key(entry: Entry) -> tuple[str, str]:
+    """Case-insensitive, with the exact name as tiebreaker.
+
+    The secondary key matters: lower() alone ties for names differing only by
+    case, and stability then falls through to iterdir()'s filesystem-defined
+    order, which varies across runs and platforms. Named rather than inline so
+    tests exercise the production key instead of a copy of it.
+    """
+    return (entry.name.lower(), entry.name)
+
+
 def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
-    """Return (dirs, files) for one directory, each sorted case-insensitively."""
+    """Return (dirs, files) for one directory, each sorted by _sort_key."""
     target = resolve_in_root(root, relative)
     if not target.is_dir():
         raise FileNotFoundError(relative)
@@ -456,8 +485,8 @@ def list_dir(root: Path, relative: str) -> tuple[list[Entry], list[Entry]]:
             continue
         (dirs if entry.is_dir else files).append(entry)
 
-    dirs.sort(key=lambda e: e.name.lower())
-    files.sort(key=lambda e: e.name.lower())
+    dirs.sort(key=_sort_key)
+    files.sort(key=_sort_key)
     return dirs, files
 ```
 
@@ -555,11 +584,19 @@ Built once at startup on a background thread. The server serves requests while
 the walk runs; the filter box reports "indexing" until it finishes.
 """
 
+import logging
 import os
 import threading
 from pathlib import Path
 
 from armoire.ignore import is_ignored
+
+logger = logging.getLogger(__name__)
+
+
+def _on_walk_error(error: OSError) -> None:
+    """os.walk swallows scandir errors by default, dropping whole subtrees silently."""
+    logger.debug("skipping unreadable directory: %s", error)
 
 
 def build_index(root: Path) -> list[str]:
@@ -567,7 +604,7 @@ def build_index(root: Path) -> list[str]:
     root = root.resolve()
     found: list[str] = []
 
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_walk_error):
         # Mutating dirnames in place is what stops os.walk descending into
         # the ignored trees at all, rather than filtering them afterwards.
         dirnames[:] = [d for d in dirnames if not is_ignored(d)]
@@ -591,11 +628,24 @@ class PathIndex:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        # Idempotent: a second thread would race the first, and wait() only
+        # joins the most recent one.
+        if self._thread is not None:
+            return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
-        paths = build_index(self._root)
+        try:
+            paths = build_index(self._root)
+        except Exception:
+            # A stranded index is worse than an empty one: app.py serves
+            # `ready` straight to clients, which would report "indexing"
+            # forever with no error visible anywhere.
+            logger.exception("index build failed for %s", self._root)
+            paths = []
+        # _paths before _ready: a reader seeing ready is True must be
+        # guaranteed to see the populated list.
         self._paths = paths
         self._ready = True
 
@@ -690,8 +740,11 @@ def test_kind_for_extension(ext, expected):
 
 
 def test_markdown_preview_returns_raw_text(tmp_path):
+    # write_bytes, not write_text: write_text translates "\n" to os.linesep,
+    # so on Windows the file would contain "\r\n" and this assertion would fail
+    # for a reason that has nothing to do with preview_text.
     f = tmp_path / "a.md"
-    f.write_text("# Title\n", encoding="utf-8")
+    f.write_bytes(b"# Title\n")
     assert preview_text(f, "markdown") == {
         "kind": "markdown",
         "text": "# Title\n",
@@ -699,16 +752,30 @@ def test_markdown_preview_returns_raw_text(tmp_path):
     }
 
 
+def test_crlf_line_endings_are_preserved_verbatim(tmp_path):
+    """A read-only viewer must not silently rewrite the bytes it displays."""
+    f = tmp_path / "windows.md"
+    f.write_bytes(b"line one\r\nline two\r\n")
+    assert preview_text(f, "markdown")["text"] == "line one\r\nline two\r\n"
+
+
 def test_code_preview_reports_language(tmp_path):
     f = tmp_path / "a.py"
-    f.write_text("x = 1\n", encoding="utf-8")
+    f.write_bytes(b"x = 1\n")
     assert preview_text(f, "code")["language"] == "python"
 
 
 def test_unknown_code_extension_falls_back_to_plaintext(tmp_path):
-    f = tmp_path / "a.conf"
-    f.write_text("k=v\n", encoding="utf-8")
+    # txt is in CODE_EXTS but deliberately absent from LANGUAGES.
+    f = tmp_path / "notes.txt"
+    f.write_bytes(b"k=v\n")
     assert preview_text(f, "code")["language"] == "plaintext"
+
+
+def test_conf_files_are_highlighted_as_ini(tmp_path):
+    f = tmp_path / "app.conf"
+    f.write_bytes(b"[section]\nkey = value\n")
+    assert preview_text(f, "code")["language"] == "ini"
 
 
 def test_undecodable_bytes_do_not_raise(tmp_path):
@@ -729,6 +796,8 @@ Create `src/armoire/previews/__init__.py`:
 ```python
 """Extension to preview kind. The client switches on `kind`, never on extension."""
 
+from pathlib import Path
+
 MARKDOWN_EXTS = frozenset({"md", "markdown"})
 NOTEBOOK_EXTS = frozenset({"ipynb"})
 TABLE_EXTS = frozenset({"parquet", "csv"})
@@ -738,7 +807,10 @@ CODE_EXTS = frozenset(
     {
         "py", "tex", "bib", "json", "toml", "yaml", "yml", "txt", "js", "ts",
         "html", "css", "sh", "sql", "r", "cpp", "c", "h", "hpp", "rs", "go",
-        "java", "jl", "m", "ini", "cfg", "conf", "gitignore",
+        "java", "jl", "m", "ini", "cfg", "conf",
+        # Dotfiles, reachable only via extension_of below.
+        "gitignore", "gitattributes", "gitmodules", "editorconfig", "env",
+        "python-version",
     }
 )
 
@@ -750,6 +822,20 @@ LANGUAGES = {
     "rs": "rust", "go": "go", "java": "java", "jl": "julia", "m": "matlab",
     "ini": "ini", "cfg": "ini", "conf": "ini",
 }
+
+
+def extension_of(path: Path) -> str:
+    """The extension used for dispatch: no leading dot, lowercased.
+
+    Dotfiles are the reason this is not just `path.suffix`. Path(".gitignore")
+    has an empty suffix, so dispatching on suffix alone renders every dotfile
+    as an unpreviewable binary.
+    """
+    if path.suffix:
+        return path.suffix.removeprefix(".").lower()
+    if path.name.startswith("."):
+        return path.name.removeprefix(".").lower()
+    return ""
 
 
 def kind_for(ext: str) -> str:
@@ -857,7 +943,8 @@ def test_reports_total_rows_not_page_length(parquet):
 
 
 def test_second_page_starts_where_first_ended(parquet):
-    assert preview_table(parquet, page=1, page_size=100)["rows"][0][0] == 100
+    # "100", not 100 — every cell is str()-ed for JSON safety.
+    assert preview_table(parquet, page=1, page_size=100)["rows"][0][0] == "100"
 
 
 def test_final_partial_page(parquet):
@@ -906,9 +993,14 @@ MAX_PAGE_SIZE = 500
 
 
 def _scan(path: Path) -> pl.LazyFrame:
-    if path.suffix.lower() == ".parquet":
+    # Explicit rather than "anything that is not parquet is a CSV": a stray
+    # .tsv or binary file otherwise surfaces as a confusing polars parse error.
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
         return pl.scan_parquet(path)
-    return pl.scan_csv(path)
+    if suffix == ".csv":
+        return pl.scan_csv(path)
+    raise ValueError(f"unsupported table format: {path.suffix or path.name}")
 
 
 def preview_table(path: Path, page: int = 0, page_size: int = 100) -> dict:
@@ -1088,7 +1180,7 @@ git commit -m "feat: notebook preview via nbconvert"
 - Test: `tests/test_app.py`
 
 **Interfaces:**
-- Consumes: `resolve_in_root`, `PathOutsideRoot`, `list_dir`, `Entry`, `PathIndex`, `kind_for`, `preview_text`, `preview_table`, `preview_notebook`
+- Consumes: `resolve_in_root`, `PathOutsideRoot`, `list_dir`, `Entry`, `PathIndex`, `extension_of`, `kind_for`, `preview_text`, `preview_table`, `preview_notebook`. Dispatch on `kind_for(extension_of(target))` — never on `target.suffix`, which is empty for dotfiles.
 - Produces: `armoire.app.create_app(root: Path) -> fastapi.FastAPI`
 
 Response shapes, fixed here and consumed verbatim by the frontend:
@@ -1107,6 +1199,8 @@ Errors are `{"detail": str}` with status 403 (outside root) or 404 (missing).
 Create `tests/test_app.py`:
 
 ```python
+import hashlib
+
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
@@ -1216,8 +1310,13 @@ def test_index_html_is_served_at_root(client):
 
 def test_serving_never_writes_to_disk(root, client):
     def snapshot():
+        # Hash as well as mtime: the test's name promises the bytes did not
+        # change, and a write that restores the timestamp would pass on mtime.
         return {
-            p.relative_to(root).as_posix(): p.stat().st_mtime_ns
+            p.relative_to(root).as_posix(): (
+                p.stat().st_mtime_ns,
+                hashlib.sha256(p.read_bytes()).hexdigest(),
+            )
             for p in sorted(root.rglob("*"))
             if p.is_file()
         }
@@ -1225,7 +1324,9 @@ def test_serving_never_writes_to_disk(root, client):
     before = snapshot()
     client.get("/api/tree", params={"path": ""})
     client.get("/api/index")
-    for name in ["docs/readme.md", "code.py", "d.parquet", "doc.pdf", "blob.dat"]:
+    # bad.ipynb is included deliberately: it is the only fixture that drives
+    # preview's exception branch, which is where a stray write is most likely.
+    for name in ["docs/readme.md", "code.py", "d.parquet", "doc.pdf", "blob.dat", "bad.ipynb"]:
         client.get("/api/preview", params={"path": name})
         client.get("/api/raw", params={"path": name})
     assert snapshot() == before
@@ -1243,6 +1344,7 @@ Create `src/armoire/app.py`:
 ```python
 """HTTP surface. Routing and error translation only — no logic lives here."""
 
+import logging
 import mimetypes
 from dataclasses import asdict
 from pathlib import Path
@@ -1253,13 +1355,15 @@ from fastapi.staticfiles import StaticFiles
 
 from armoire.index import PathIndex
 from armoire.paths import PathOutsideRoot, resolve_in_root
-from armoire.previews import kind_for
+from armoire.previews import extension_of, kind_for
 from armoire.previews.notebook import preview_notebook
 from armoire.previews.table import preview_table
 from armoire.previews.text import preview_text
 from armoire.scanner import list_dir
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve(root: Path, path: str) -> Path:
@@ -1280,11 +1384,14 @@ def create_app(root: Path) -> FastAPI:
 
     @app.get("/api/tree")
     def tree(path: str = Query("")) -> dict:
-        _resolve(root, path)
+        # list_dir resolves through the same jail, so no separate _resolve call
+        # here: a second one would be redundant and make this except unreachable.
         try:
             dirs, files = list_dir(root, path)
         except PathOutsideRoot:
-            raise HTTPException(status_code=403, detail="outside root") from None
+            raise HTTPException(
+                status_code=403, detail="path is outside the served root"
+            ) from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="no such directory") from None
         return {"path": path, "dirs": [asdict(d) for d in dirs], "files": [asdict(f) for f in files]}
@@ -1306,7 +1413,7 @@ def create_app(root: Path) -> FastAPI:
         # without a second request, whatever the kind turns out to be.
         envelope = {"size": stat.st_size, "mtime": stat.st_mtime}
 
-        kind = kind_for(target.suffix.removeprefix(".").lower())
+        kind = kind_for(extension_of(target))
         try:
             if kind in ("markdown", "code"):
                 return envelope | preview_text(target, kind)
@@ -1316,7 +1423,10 @@ def create_app(root: Path) -> FastAPI:
                 return envelope | preview_notebook(target)
         except Exception as exc:
             # A corrupt file is a rendering problem, not a server fault. The
-            # client shows an error card; the server stays up.
+            # client shows an error card; the server stays up. Logged because
+            # otherwise a bug in this file is indistinguishable, to the user,
+            # from a corrupt file — and leaves no trace anywhere.
+            logger.exception("preview failed for %s", path)
             return envelope | {"kind": "error", "message": str(exc)}
 
         # pdf, image and binary are fetched from /api/raw by the client.
@@ -1328,7 +1438,22 @@ def create_app(root: Path) -> FastAPI:
         if not target.is_file():
             raise HTTPException(status_code=404, detail="no such file")
         media_type, _ = mimetypes.guess_type(target.name)
-        return FileResponse(target, media_type=media_type or "application/octet-stream")
+        kind = kind_for(extension_of(target))
+        # Only the kinds the client embeds are served inline, and SVG is
+        # excluded even though its kind is "image": browsers execute scripts in
+        # an SVG opened as a top-level document, which would run in armoire's
+        # own origin and could read any file under the served root. Content-
+        # Disposition is ignored for <img> subresource loads, so the image
+        # renderer is unaffected.
+        inline = kind == "pdf" or (kind == "image" and extension_of(target) != "svg")
+        return FileResponse(
+            target,
+            media_type=media_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename=\"{target.name}\"",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
@@ -1378,45 +1503,56 @@ git commit -m "feat: http api for tree, index, preview and raw"
 Create `tests/test_cli.py`:
 
 ```python
+import pytest
 from click.testing import CliRunner
 
 from armoire.cli import main
 
 
-def test_serve_rejects_a_missing_folder(tmp_path):
-    result = CliRunner().invoke(main, ["serve", str(tmp_path / "nope")])
-    assert result.exit_code != 0
+@pytest.fixture(autouse=True)
+def uvicorn_run(monkeypatch):
+    """Capture uvicorn.run instead of starting a real server.
 
-
-def test_serve_rejects_a_file(tmp_path):
-    f = tmp_path / "a.txt"
-    f.write_text("x")
-    result = CliRunner().invoke(main, ["serve", str(f)])
-    assert result.exit_code != 0
-
-
-def test_serve_binds_loopback_only(tmp_path, monkeypatch):
-    captured = {}
+    autouse so a regression in argument validation fails fast: without it, a
+    test whose validation stops working reaches the real blocking call and
+    hangs the suite until CI times out.
+    """
+    calls = []
 
     def fake_run(app, host, port, log_level):
-        captured["host"] = host
-        captured["port"] = port
+        calls.append({"app": app, "host": host, "port": port, "log_level": log_level})
 
     monkeypatch.setattr("armoire.cli.uvicorn.run", fake_run)
+    return calls
+
+
+def test_serve_rejects_a_missing_folder(tmp_path, uvicorn_run):
+    result = CliRunner().invoke(main, ["serve", str(tmp_path / "nope")])
+    # 2, not just non-zero: click's UsageError is 2, an uncaught crash is 1.
+    assert result.exit_code == 2
+    assert uvicorn_run == []
+
+
+def test_serve_rejects_a_file(tmp_path, uvicorn_run):
+    target = tmp_path / "a.txt"
+    target.write_text("x")
+    result = CliRunner().invoke(main, ["serve", str(target)])
+    assert result.exit_code == 2
+    assert uvicorn_run == []
+
+
+def test_serve_binds_loopback_only(tmp_path, uvicorn_run):
     result = CliRunner().invoke(main, ["serve", str(tmp_path)])
     assert result.exit_code == 0
-    assert captured["host"] == "127.0.0.1"
-    assert captured["port"] == 8420
+    assert len(uvicorn_run) == 1
+    assert uvicorn_run[0]["host"] == "127.0.0.1"
+    assert uvicorn_run[0]["port"] == 8420
 
 
-def test_port_flag_is_honoured(tmp_path, monkeypatch):
-    captured = {}
-    monkeypatch.setattr(
-        "armoire.cli.uvicorn.run",
-        lambda app, host, port, log_level: captured.update(port=port),
-    )
-    CliRunner().invoke(main, ["serve", str(tmp_path), "--port", "9000"])
-    assert captured["port"] == 9000
+def test_port_flag_is_honoured(tmp_path, uvicorn_run):
+    result = CliRunner().invoke(main, ["serve", str(tmp_path), "--port", "9000"])
+    assert result.exit_code == 0
+    assert uvicorn_run[0]["port"] == 9000
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1484,13 +1620,13 @@ git commit -m "feat: armoire serve command"
 
 ### Task 9: Vendored libraries, page shell, and design tokens
 
-Frontend tasks cannot be driven by pytest assertions on behaviour. Each ends with
-an explicit manual verification step naming exactly what to look at.
+Frontend behaviour is verified by Playwright against a live server. This task also
+establishes the shared fixtures every later frontend test uses.
 
 **Files:**
-- Create: `scripts/vendor.py`, `src/armoire/static/app.css`
+- Create: `scripts/vendor.py`, `src/armoire/static/app.css`, `src/armoire/static/vendor/**` (committed)
 - Modify: `src/armoire/static/index.html` (replaces the Task 7 placeholder)
-- Test: `tests/test_static.py`
+- Test: `tests/conftest.py`, `tests/test_shell.py`
 
 **Interfaces:**
 - Consumes: nothing
@@ -1502,12 +1638,15 @@ an explicit manual verification step naming exactly what to look at.
 Create `scripts/vendor.py`:
 
 ```python
-"""Download frontend libraries into the package once.
+"""Download the frontend libraries into the package.
 
 Vendored rather than CDN-loaded so armoire works offline and makes no network
-request per page load. Run this after cloning; the output is gitignored.
+request per page load. The downloaded files are COMMITTED to the repository:
+the wheel has to be self-contained or `uvx armoire serve` installs a broken
+page. Re-run this only to bump a version.
 """
 
+import re
 import urllib.request
 from pathlib import Path
 
@@ -1523,16 +1662,23 @@ FILES = {
     "highlight.css": "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/styles/github.min.css",
 }
 
-FONTS_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/"
-FONTS = [
-    "KaTeX_Main-Regular.woff2",
-    "KaTeX_Main-Bold.woff2",
-    "KaTeX_Main-Italic.woff2",
-    "KaTeX_Math-Italic.woff2",
-    "KaTeX_Size1-Regular.woff2",
-    "KaTeX_Size2-Regular.woff2",
-    "KaTeX_AMS-Regular.woff2",
-]
+FONTS_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+
+
+def fetch_katex_fonts() -> int:
+    """Download every woff2 face katex.css actually references.
+
+    Derived from the stylesheet rather than hardcoded: a hand-maintained list
+    silently drifts on upgrade, and a missing face never fails loudly — the
+    maths just renders in a fallback font. Only woff2 is fetched; every browser
+    that can run this app supports it, and the .woff/.ttf fallbacks in the
+    stylesheet would triple the payload for no benefit.
+    """
+    css = (VENDOR / "katex.css").read_text(encoding="utf-8")
+    faces = sorted(set(re.findall(r"url\((fonts/[^)]+\.woff2)\)", css)))
+    for face in faces:
+        fetch(FONTS_BASE + face, VENDOR / face)
+    return len(faces)
 
 
 def fetch(url: str, dest: Path) -> None:
@@ -1546,9 +1692,9 @@ def main() -> None:
     print(f"vendoring into {VENDOR}")
     for name, url in FILES.items():
         fetch(url, VENDOR / name)
-    for font in FONTS:
-        fetch(FONTS_BASE + font, VENDOR / "fonts" / font)
-    print("done")
+    # After katex.css exists, since the font list is read out of it.
+    count = fetch_katex_fonts()
+    print(f"done ({count} KaTeX faces)")
 
 
 if __name__ == "__main__":
@@ -1558,24 +1704,35 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it and confirm the files land**
 
 Run: `uv run python scripts/vendor.py`
-Expected: seven files in `src/armoire/static/vendor/`, seven fonts in `vendor/fonts/`. Confirm `vendor/` is already covered by the `static/vendor/` line in `.gitignore`.
+
+Expected: seven files in `src/armoire/static/vendor/`, seven fonts in
+`vendor/fonts/`. Confirm they are **not** ignored — `git status --short` must show
+them as untracked. They get committed in Step 9; the wheel is broken without them.
 
 - [ ] **Step 3: Write the page shell**
 
 Replace `src/armoire/static/index.html` with:
 
 ```html
+<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>armoire</title>
 <link rel="stylesheet" href="/vendor/katex.css">
 <link rel="stylesheet" href="/vendor/highlight.css">
+<link rel="stylesheet" href="/vendor/pygments.css">
 <link rel="stylesheet" href="/app.css">
+<script src="/vendor/purify.js"></script>
 <script src="/vendor/marked.js"></script>
 <script src="/vendor/katex.js"></script>
 <script src="/vendor/katex-auto-render.js"></script>
 <script src="/vendor/mermaid.js"></script>
 <script src="/vendor/highlight.js"></script>
+<!-- After highlight.js: these register themselves against the global hljs.
+     The common build omits latex, julia and matlab. -->
+<script src="/vendor/hljs-latex.js"></script>
+<script src="/vendor/hljs-julia.js"></script>
+<script src="/vendor/hljs-matlab.js"></script>
 
 <header id="header">
   <span id="root-name">armoire</span>
@@ -1801,63 +1958,195 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 }
 ```
 
-- [ ] **Step 5: Write the failing test**
+- [ ] **Step 5: Write the shared test fixtures**
 
-Create `tests/test_static.py`:
+Create `tests/conftest.py`. Every Playwright test in Tasks 9–11 runs against this
+sample folder and this live server.
 
 ```python
-from pathlib import Path
+"""A small sample folder, and a live server in front of it."""
+
+import json
+import socket
+import threading
+import time
+
+import polars as pl
+import pytest
+import uvicorn
+
+from armoire.app import create_app
+
+MINIMAL_PDF = b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj
+trailer<</Root 1 0 R>>
+%%EOF
+"""
+
+ROOT_README = """# Sample Folder
+
+Inline math $E = mc^2$ and a display equation:
+
+$$\\int_0^1 x^2 dx = \\frac{1}{3}$$
+
+```mermaid
+flowchart LR
+  A[Start] --> B[End]
+```
+
+See [notes/](notes/) for the nested folder.
+"""
+
+# Every cell carries an "id": nbformat_minor 5 requires it, and a fixture
+# without one is not shaped like anything Jupyter would actually write.
+NOTEBOOK = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "id": "intro",
+            "metadata": {},
+            "source": ["# Notebook Heading\n"],
+        },
+        {
+            "cell_type": "code",
+            "id": "emit",
+            "execution_count": 1,
+            "metadata": {},
+            "source": ["print('notebook output')\n"],
+            "outputs": [
+                {"output_type": "stream", "name": "stdout", "text": ["notebook output\n"]}
+            ],
+        },
+    ],
+    "metadata": {},
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
+
+
+@pytest.fixture(scope="session")
+def sample_root(tmp_path_factory):
+    root = tmp_path_factory.mktemp("sample")
+    (root / "README.md").write_text(ROOT_README, encoding="utf-8")
+    (root / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (root / "doc.pdf").write_bytes(MINIMAL_PDF)
+    (root / "blob.dat").write_bytes(b"\x00\x01\x02\x03")
+    (root / "nb.ipynb").write_text(json.dumps(NOTEBOOK), encoding="utf-8")
+    pl.DataFrame(
+        {"i": range(250), "label": [f"r{n}" for n in range(250)]}
+    ).write_parquet(root / "data.parquet")
+
+    notes = root / "notes"
+    notes.mkdir()
+    (notes / "README.md").write_text("# Notes\n\nNested folder readme.\n", encoding="utf-8")
+    (notes / "deep").mkdir()
+    (notes / "deep" / "buried.md").write_text("# Buried\n", encoding="utf-8")
+
+    ignored = root / ".venv"
+    ignored.mkdir()
+    (ignored / "junk.py").write_text("noise\n", encoding="utf-8")
+    return root
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture(scope="session")
+def live_server(sample_root):
+    app = create_app(sample_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("server did not start within 10s")
+        time.sleep(0.05)
+
+    yield f"http://127.0.0.1:{port}"
+
+    server.should_exit = True
+    thread.join(timeout=5)
+```
+
+- [ ] **Step 6: Write the failing shell test**
+
+Create `tests/test_shell.py`:
+
+```python
+"""The page shell: does it load, and does it match the spec's visual tokens."""
 
 import pytest
 
-# Derived from this file, not the working directory, so the suite passes
-# whatever directory pytest is invoked from.
-STATIC = Path(__file__).resolve().parent.parent / "src" / "armoire" / "static"
 REQUIRED_IDS = ["tree", "filter", "filter-results", "breadcrumb", "content", "status"]
 
 
-def test_index_html_exists():
-    assert (STATIC / "index.html").is_file()
-
-
 @pytest.mark.parametrize("element_id", REQUIRED_IDS)
-def test_shell_declares_the_dom_contract(element_id):
-    assert f'id="{element_id}"' in (STATIC / "index.html").read_text(encoding="utf-8")
+def test_shell_provides_the_dom_contract(page, live_server, element_id):
+    page.goto(live_server)
+    assert page.locator(f"#{element_id}").count() == 1
 
 
-def test_shell_loads_the_module_entry_point():
-    html = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert 'type="module" src="/app.js"' in html
+def test_page_makes_no_external_requests(page, live_server):
+    external = []
+    page.on(
+        "request",
+        lambda request: external.append(request.url)
+        if not request.url.startswith(live_server)
+        else None,
+    )
+    page.goto(live_server)
+    page.wait_for_load_state("networkidle")
+    assert external == []
 
 
-def test_no_external_urls_in_the_shell():
-    html = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert "http://" not in html
-    assert "https://" not in html
+def test_background_and_text_use_the_specified_colours(page, live_server):
+    page.goto(live_server)
+    body = page.locator("body")
+    assert body.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 255, 255)"
+    assert body.evaluate("el => getComputedStyle(el).color") == "rgb(31, 35, 40)"
 
 
-def test_stylesheet_uses_the_specified_tokens():
-    css = (STATIC / "app.css").read_text(encoding="utf-8")
-    for token in ["#ffffff", "#1f2328", "#0969da", "#d1d9e0", "#f6f8fa"]:
-        assert token in css
+def test_filter_input_is_present_and_empty(page, live_server):
+    page.goto(live_server)
+    assert page.locator("#filter").input_value() == ""
+    assert page.locator("#filter-results").is_hidden()
 ```
 
-- [ ] **Step 6: Run the test to verify it passes**
+- [ ] **Step 7: Run the test to verify it fails, then passes**
 
-Run: `uv run pytest tests/test_static.py -v`
-Expected: PASS
+First install the browser once: `uv run playwright install chromium`
 
-- [ ] **Step 7: Verify the shell renders**
+Run: `uv run pytest tests/test_shell.py -v`
+
+Expected before `index.html` and `app.css` exist in their Step 3/4 form: FAIL on the
+DOM contract. After: PASS. The console will show a 404 for `/app.js` — that module
+arrives in Task 10 and the console-error assertion lands there with it.
+
+- [ ] **Step 8: Verify the shell by eye**
 
 Run: `uv run armoire serve .` and open `http://127.0.0.1:8420`
-Expected: white page, bordered header with a "Filter files…" input, empty left rail with a right border, grey status bar pinned at the bottom. Browser devtools Network tab shows zero external requests.
+Expected: white page, bordered header with a "Filter files…" input, empty left rail with a right border, grey status bar pinned at the bottom.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit, vendored libraries included**
 
 ```bash
-git add scripts/vendor.py src/armoire/static/index.html src/armoire/static/app.css tests/test_static.py
-git commit -m "feat: page shell, design tokens and vendor script"
+git add scripts/vendor.py src/armoire/static/index.html src/armoire/static/app.css src/armoire/static/vendor tests/conftest.py tests/test_shell.py
+git commit -m "feat: page shell, design tokens and vendored libraries"
 ```
+
+Confirm `git show --stat HEAD` lists the files under `static/vendor/`. If it does
+not, they are still being ignored and the published wheel will serve a broken page.
 
 ---
 
@@ -1865,7 +2154,7 @@ git commit -m "feat: page shell, design tokens and vendor script"
 
 **Files:**
 - Create: `src/armoire/static/app.js`, `src/armoire/static/tree.js`, `src/armoire/static/filter.js`
-- Modify: `tests/test_static.py`
+- Test: `tests/test_navigation.py`
 
 **Interfaces:**
 - Consumes: `/api/tree`, `/api/index`, the DOM ids from Task 9
@@ -2039,6 +2328,13 @@ export function initFilter(input, results, onPick) {
     .then((data) => {
       paths = data.paths;
       input.placeholder = `Filter ${paths.length} files…`;
+      // The index takes seconds on a large folder — 3.1s for the 12 GB case.
+      // Anything typed before it arrived matched nothing and would never
+      // re-run on its own.
+      if (input.value.trim()) input.dispatchEvent(new Event('input'));
+    })
+    .catch(() => {
+      input.placeholder = 'Filter unavailable';
     });
 
   function close() {
@@ -2184,34 +2480,89 @@ tree.ready.then(() => {
 });
 ```
 
-- [ ] **Step 4: Add the module wiring test**
+- [ ] **Step 4: Write the navigation tests**
 
-Append to `tests/test_static.py`:
+Create `tests/test_navigation.py`. These drive a real browser — they fail if a
+module throws at runtime, which source-text assertions cannot catch.
 
 ```python
-def test_frontend_modules_exist():
-    for name in ["app.js", "tree.js", "filter.js"]:
-        assert (STATIC / name).is_file()
+"""Tree, filter and routing, exercised in a real browser."""
 
 
-def test_app_imports_its_modules_not_reimplements_them():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert "from './tree.js'" in js
-    assert "from './filter.js'" in js
-    assert "from './preview.js'" in js
+def test_tree_lists_the_root_folder(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    names = page.locator("#tree .row").all_inner_texts()
+    assert any("notes" in name for name in names)
+    assert any("README.md" in name for name in names)
 
 
-def test_frontend_makes_no_external_requests():
-    for name in ["app.js", "tree.js", "filter.js"]:
-        js = (STATIC / name).read_text(encoding="utf-8")
-        assert "//cdn" not in js
-        assert "https://" not in js
+def test_tree_hides_ignored_directories(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    assert all(".venv" not in name for name in page.locator("#tree .row").all_inner_texts())
+
+
+def test_expanding_a_directory_reveals_its_children(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    assert page.locator('#tree [data-path="notes/deep"]').count() == 0
+    page.locator('#tree [data-path="notes"]').click()
+    page.wait_for_selector('#tree [data-path="notes/deep"]')
+    assert page.locator('#tree [data-path="notes/deep"]').count() == 1
+
+
+def test_clicking_a_file_updates_the_url(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    page.locator('#tree [data-path="code.py"]').click()
+    page.wait_for_function("() => location.hash === '#/code.py'")
+
+
+def test_filter_finds_a_deeply_nested_file(page, live_server):
+    page.goto(live_server)
+    page.wait_for_function("() => document.querySelector('#filter').placeholder.includes('Filter')")
+    page.locator("#filter").fill("buried")
+    page.wait_for_selector("#filter-results li")
+    assert "notes/deep/buried.md" in page.locator("#filter-results li").first.inner_text()
+
+
+def test_filter_enter_navigates_to_the_match(page, live_server):
+    page.goto(live_server)
+    page.wait_for_selector("#tree .row")
+    page.locator("#filter").fill("buried")
+    page.wait_for_selector("#filter-results li")
+    page.locator("#filter").press("Enter")
+    page.wait_for_function("() => location.hash === '#/notes/deep/buried.md'")
+
+
+def test_deep_link_reload_expands_the_tree_to_the_file(page, live_server):
+    page.goto(f"{live_server}/#/notes/deep/buried.md")
+    page.wait_for_selector('#tree [data-path="notes/deep/buried.md"]')
+    assert page.locator('#tree [data-path="notes/deep/buried.md"]').count() == 1
+
+
+def test_breadcrumb_reflects_the_current_path(page, live_server):
+    page.goto(f"{live_server}/#/notes/deep/buried.md")
+    page.wait_for_selector("#breadcrumb a")
+    text = page.locator("#breadcrumb").inner_text()
+    assert "notes" in text and "deep" in text and "buried.md" in text
+
+
+def test_no_console_errors_during_navigation(page, live_server):
+    errors = []
+    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{live_server}/#/notes/deep/buried.md")
+    page.wait_for_selector("#content")
+    page.wait_for_load_state("networkidle")
+    assert errors == []
 ```
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `uv run pytest tests/test_static.py -v`
-Expected: PASS
+Run: `uv run pytest tests/test_navigation.py tests/test_shell.py -v`
+Expected: PASS. `test_deep_link_reload_expands_the_tree_to_the_file` is the one that catches an un-awaited `revealPath` — if it flakes, the expander promises are not being awaited.
 
 - [ ] **Step 6: Verify manually**
 
@@ -2231,7 +2582,7 @@ Confirm only the console error naming `preview.js` appears, nothing else.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/armoire/static/app.js src/armoire/static/tree.js src/armoire/static/filter.js tests/test_static.py
+git add src/armoire/static/app.js src/armoire/static/tree.js src/armoire/static/filter.js tests/test_navigation.py
 git commit -m "feat: lazy tree, fuzzy filter and hash router"
 ```
 
@@ -2241,7 +2592,8 @@ git commit -m "feat: lazy tree, fuzzy filter and hash router"
 
 **Files:**
 - Create: `src/armoire/static/format.js`, `src/armoire/static/preview.js`, `src/armoire/static/renderers/{listing,markdown,code,pdf,table,notebook}.js`
-- Modify: `tests/test_static.py`, `README.md`
+- Test: `tests/test_renderers.py`
+- Modify: `README.md`
 
 **Interfaces:**
 - Consumes: `/api/preview`, `/api/tree`, `/api/raw`; the `size` and `mtime` keys present on every preview payload from Task 7
@@ -2380,7 +2732,12 @@ export function renderMarkdown(container, data, path) {
     return `<div class="mermaid-slot" data-index="${diagrams.length - 1}"></div>`;
   });
 
-  body.innerHTML = marked.parse(source);
+  // marked does not sanitize, and this renders files the user may not have
+  // written. Sanitize before injection, and before rewriteLinks — which
+  // deliberately leaves absolute schemes alone, `javascript:` among them.
+  // KaTeX and Mermaid run afterwards, inserting their own markup into the
+  // already-cleaned DOM.
+  body.innerHTML = DOMPurify.sanitize(marked.parse(source));
   rewriteLinks(body, base);
 
   body.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));
@@ -2518,7 +2875,8 @@ Create `src/armoire/static/renderers/notebook.js`:
 export function renderNotebook(container, data) {
   const body = document.createElement('div');
   body.className = 'notebook-body';
-  body.innerHTML = data.html;
+  // nbconvert output is derived from an untrusted file, same as markdown.
+  body.innerHTML = DOMPurify.sanitize(data.html);
   body.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));
   container.append(body);
   return 'notebook';
@@ -2542,7 +2900,9 @@ async function getJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(body.detail || `HTTP ${response.status}`);
+    const error = new Error(body.detail || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
@@ -2599,13 +2959,14 @@ export async function renderPreview(container, path, page = 0) {
   // The root and any directory come back from /api/tree, not /api/preview.
   if (path === '') return renderDirectory(container, path);
 
-  const data = await getJson(
-    `/api/preview?path=${encodeURIComponent(path)}&page=${page}`,
-  ).catch(async (error) => {
-    if (String(error.message).includes('no such file')) return renderDirectory(container, path);
+  let data;
+  try {
+    data = await getJson(`/api/preview?path=${encodeURIComponent(path)}&page=${page}`);
+  } catch (error) {
+    // /api/preview refuses directories with a 404; /api/tree serves them.
+    if (error.status === 404) return renderDirectory(container, path);
     throw error;
-  });
-  if (typeof data === 'string') return data;
+  }
 
   const reload = (nextPage) => renderPreview(container, path, nextPage);
 
@@ -2646,41 +3007,166 @@ export async function renderPreview(container, path, page = 0) {
 }
 ```
 
-- [ ] **Step 6: Add the renderer wiring test**
+- [ ] **Step 5b: Restore the static import of `preview.js`**
 
-Append to `tests/test_static.py`:
+Task 10 could not statically import `preview.js` because it did not exist yet, and
+a static import of a missing module fails the whole ES module graph — `app.js`
+would not have executed at all, taking the tree and filter down with it. It used a
+dynamic `import()` inside `show()` as a temporary measure. Now that `preview.js`
+exists, put it back.
+
+In `src/armoire/static/app.js`, restore the top-level import:
+
+```js
+import { renderPreview } from './preview.js';
+```
+
+and in `show()` replace
+
+```js
+    const { renderPreview } = await import('./preview.js');
+    const meta = await renderPreview(content, path);
+```
+
+with
+
+```js
+    const meta = await renderPreview(content, path);
+```
+
+A missing renderer is a packaging bug; it should fail loudly at load rather than
+surface as a per-file error card on every navigation.
+
+Then delete this marker from `test_no_console_errors_during_navigation` in
+`tests/test_navigation.py`:
 
 ```python
-RENDERERS = ["listing", "markdown", "code", "pdf", "table", "notebook"]
+@pytest.mark.xfail(reason="preview.js arrives in Task 11", strict=True)
+```
+
+It is `strict=True`, so leaving it in place fails the suite once the test starts
+passing — it cannot be silently inherited.
+
+- [ ] **Step 6: Write the renderer tests**
+
+Create `tests/test_renderers.py`. Each asserts the rendered output in a real
+browser, so a renderer that throws fails its test.
+
+```python
+"""Every renderer, exercised against the sample folder in a real browser."""
 
 
-@pytest.mark.parametrize("name", RENDERERS)
-def test_renderer_module_exists(name):
-    assert (STATIC / "renderers" / f"{name}.js").is_file()
+def open_path(page, live_server, path):
+    page.goto(f"{live_server}/#/{path}")
+    page.wait_for_selector("#content *")
 
 
-def test_status_line_reports_size_and_age():
-    js = (STATIC / "preview.js").read_text(encoding="utf-8")
-    assert "formatSize(data.size)" in js
-    assert "formatAge(data.mtime)" in js
+def test_directory_shows_a_listing(page, live_server):
+    open_path(page, live_server, "notes")
+    assert page.locator(".listing").count() == 1
+    assert "buried" not in page.locator(".listing").inner_text()
+    assert "deep" in page.locator(".listing").inner_text()
 
 
-@pytest.mark.parametrize("name", RENDERERS)
-def test_preview_imports_every_renderer(name):
-    js = (STATIC / "preview.js").read_text(encoding="utf-8")
-    assert f"./renderers/{name}.js" in js
+def test_directory_renders_its_readme_below_the_listing(page, live_server):
+    open_path(page, live_server, "notes")
+    page.wait_for_selector(".markdown-body")
+    assert "Nested folder readme" in page.locator(".markdown-body").inner_text()
 
 
-def test_every_preview_kind_has_a_branch():
-    js = (STATIC / "preview.js").read_text(encoding="utf-8")
-    for kind in ["markdown", "code", "notebook", "table", "pdf", "image", "error"]:
-        assert f"case '{kind}'" in js
+def test_markdown_renders_headings(page, live_server):
+    open_path(page, live_server, "README.md")
+    assert page.locator(".markdown-body h1").inner_text() == "Sample Folder"
 
 
-def test_renderers_make_no_external_requests():
-    for name in RENDERERS:
-        js = (STATIC / "renderers" / f"{name}.js").read_text(encoding="utf-8")
-        assert "https://" not in js
+def test_markdown_renders_math_through_katex(page, live_server):
+    open_path(page, live_server, "README.md")
+    page.wait_for_selector(".katex")
+    assert page.locator(".katex").count() >= 2
+
+
+def test_markdown_renders_mermaid_as_svg(page, live_server):
+    open_path(page, live_server, "README.md")
+    page.wait_for_selector(".mermaid-slot svg")
+    assert page.locator(".mermaid-slot svg").count() == 1
+
+
+def test_markdown_rewrites_relative_links_to_in_app_routes(page, live_server):
+    open_path(page, live_server, "README.md")
+    link = page.locator('.markdown-body a[href="#/notes"]')
+    assert link.count() == 1
+    link.click()
+    page.wait_for_selector(".listing")
+
+
+def test_code_is_syntax_highlighted(page, live_server):
+    open_path(page, live_server, "code.py")
+    page.wait_for_selector("pre.code code.hljs")
+    assert "return" in page.locator("pre.code").inner_text()
+
+
+def test_notebook_renders_cells_and_outputs(page, live_server):
+    open_path(page, live_server, "nb.ipynb")
+    page.wait_for_selector(".notebook-body")
+    body = page.locator(".notebook-body").inner_text()
+    assert "Notebook Heading" in body
+    assert "notebook output" in body
+
+
+def test_pdf_is_embedded(page, live_server):
+    open_path(page, live_server, "doc.pdf")
+    frame = page.locator("iframe.pdf")
+    assert frame.count() == 1
+    assert "doc.pdf" in frame.get_attribute("src")
+
+
+def test_table_shows_schema_and_first_page(page, live_server):
+    open_path(page, live_server, "data.parquet")
+    page.wait_for_selector(".datatable")
+    assert "250 rows" in page.locator(".card-head").inner_text()
+    assert page.locator(".datatable tr").count() == 101  # header + 100 rows
+
+
+def test_table_pager_advances(page, live_server):
+    open_path(page, live_server, "data.parquet")
+    page.wait_for_selector(".datatable")
+    assert page.locator(".datatable tr").nth(1).inner_text().startswith("0")
+    page.get_by_role("button", name="Next").click()
+    page.wait_for_function(
+        "() => document.querySelector('.pager span').textContent.includes('Page 2')"
+    )
+    assert page.locator(".datatable tr").nth(1).inner_text().startswith("100")
+
+
+def test_table_previous_is_disabled_on_the_first_page(page, live_server):
+    open_path(page, live_server, "data.parquet")
+    page.wait_for_selector(".pager")
+    assert page.get_by_role("button", name="Previous").is_disabled()
+
+
+def test_unsupported_type_offers_a_download(page, live_server):
+    open_path(page, live_server, "blob.dat")
+    assert "No preview" in page.locator("#content").inner_text()
+    assert page.get_by_role("link", name="Download").count() == 1
+
+
+def test_status_bar_reports_type_size_and_age(page, live_server):
+    open_path(page, live_server, "code.py")
+    page.wait_for_function("() => document.querySelector('#status').textContent.includes('·')")
+    status = page.locator("#status").inner_text()
+    assert "python" in status
+    assert "B" in status
+    assert "modified" in status
+
+
+def test_no_console_errors_across_every_renderer(page, live_server):
+    errors = []
+    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    for path in ["", "notes", "README.md", "code.py", "nb.ipynb", "data.parquet", "blob.dat"]:
+        open_path(page, live_server, path)
+    page.wait_for_load_state("networkidle")
+    assert errors == []
 ```
 
 - [ ] **Step 7: Run the full suite**
@@ -2723,14 +3209,13 @@ Install from source until the first release:
     git clone https://github.com/dafu-zhu/armoire
     cd armoire
     uv sync
-    uv run python scripts/vendor.py
     uv run armoire serve /path/to/folder
 ```
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add src/armoire/static/preview.js src/armoire/static/format.js src/armoire/static/renderers tests/test_static.py README.md
+git add src/armoire/static/preview.js src/armoire/static/format.js src/armoire/static/renderers tests/test_renderers.py README.md
 git commit -m "feat: markdown, code, pdf, table and notebook renderers"
 ```
 

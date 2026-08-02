@@ -19,9 +19,16 @@ $ uvx armoire check .                          # report drift from the template
 
 ## Status
 
-Pre-alpha — under active development, not yet installable. The design is written up
-in [`docs/superpowers/specs/2026-08-01-armoire-design.md`](docs/superpowers/specs/2026-08-01-armoire-design.md);
-issues and comments on it are welcome.
+The viewer works: browse any folder and read markdown (with math and diagrams),
+PDFs, notebooks, code, and parquet/CSV tables. Templates, scaffolding, and
+conformance checking are next.
+
+Install from source until the first release:
+
+    git clone https://github.com/dafu-zhu/armoire
+    cd armoire
+    uv sync
+    uv run armoire serve /path/to/folder
 
 ## License
 
