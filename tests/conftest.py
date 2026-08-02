@@ -39,24 +39,34 @@ def _redirect_config_root(setenv, setattr_, base) -> None:
     setattr_(store, "_home", lambda: base)
 
 
-@pytest.fixture(autouse=True)
-def _isolated_store(tmp_path_factory, monkeypatch):
-    """No test may read or write the developer's real armoire store."""
-    base = tmp_path_factory.mktemp("armoire-store")
-    _redirect_config_root(monkeypatch.setenv, monkeypatch.setattr, base)
-    return base
-
-
 @pytest.fixture(scope="session")
 def _isolated_store_session(tmp_path_factory):
-    """The session-scoped fixtures below build their registry file, and their
+    """One store base for the whole test session -- shared by every test,
+    function-scoped or session-scoped alike, via `_isolated_store` below.
+
+    This used to be a *separate* store from `_isolated_store`'s own
+    per-test directory, which review caught as a real bug in the making:
+    task-4-brief.md already has dashboard.project_rows call
+    store.read_state(root) per request, and app.py calls that per request
+    too. Once that lands, a Playwright test against a session-scoped server
+    (whose app was created once, against this session store) would read its
+    registry from here but its state.json from wherever *that test's own*
+    `_isolated_store` pointed -- silently returning {} instead of erroring,
+    in a way that would look like a dashboard.py bug rather than a fixture
+    one. `folder_dir` already keys by `sha256(realpath(folder))`, and every
+    test's served folder is its own distinct tmp_path/mktemp directory, so
+    there is no collision between tests to isolate against by giving each
+    one a separate base -- sharing this one removes the disagreement
+    entirely, for free.
+
+    The session-scoped fixtures below build their registry file, and their
     server's app (which bakes in that registry's path at creation time), once,
-    long before any single test's function-scoped `_isolated_store` exists --
-    and that server keeps running for the rest of the session, across every
-    test's own isolated store. A function-scoped monkeypatch cannot reach back
-    far enough to cover that: it does not exist yet when this setup runs, and
-    it is torn down at the end of whichever test happens to trigger this
-    fixture's first use, long before the session ends.
+    long before any single test's function-scoped `monkeypatch` exists -- and
+    that server keeps running for the rest of the session. A function-scoped
+    monkeypatch cannot reach back far enough to cover that: it does not exist
+    yet when this setup runs, and it is torn down at the end of whichever
+    test happens to trigger this fixture's first use, long before the session
+    ends.
 
     pytest.MonkeyPatch.context() is used directly, as its own context manager,
     rather than the `monkeypatch` fixture (which is function-scoped and cannot
@@ -66,16 +76,30 @@ def _isolated_store_session(tmp_path_factory):
     which, once a request registers a background thread serving one of them,
     is the rest of the test run.
 
-    Uses the same environment-redirection as `_isolated_store` above, rather
-    than replacing config_root() itself, for the same reason: a wholesale
-    replacement held open for the rest of the session would just as surely
-    break tests/test_store.py's platform tests whenever they happen to run
-    after this fixture's first use.
+    Uses the same environment-redirection as `_redirect_config_root` rather
+    than replacing config_root() itself, for the same reason `_isolated_store`
+    does: a wholesale replacement held open for the rest of the session would
+    just as surely break tests/test_store.py's platform tests whenever they
+    happen to run after this fixture's first use.
     """
     base = tmp_path_factory.mktemp("armoire-store-session")
     with pytest.MonkeyPatch.context() as mp:
         _redirect_config_root(mp.setenv, mp.setattr, base)
         yield base
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(_isolated_store_session):
+    """No test may read or write the developer's real armoire store.
+
+    Depends on -- and simply reuses -- _isolated_store_session's one shared
+    base rather than pointing at a fresh directory of its own each time (see
+    that fixture's docstring for why a separate base was itself a bug).
+    Autouse, function-scoped, so it forces the session fixture to be set up
+    before the very first test in the run, regardless of whether that test
+    is one of the session-scoped Playwright fixtures below.
+    """
+    return _isolated_store_session
 
 
 MINIMAL_PDF = b"""%PDF-1.4

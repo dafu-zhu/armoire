@@ -138,3 +138,28 @@ def test_the_refusal_leaves_the_served_folder_untouched(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "config_root", lambda: served / "cfg" / "armoire")
     cli.prepare_store(served)
     assert list(served.iterdir()) == []
+
+
+def test_a_folder_inside_the_stores_own_tree_refuses_to_write(tmp_path, monkeypatch):
+    """store_is_inside asks whether config_root() sits inside the served
+    folder -- true only when the served folder is an *ancestor* of the store.
+    Serving config_root()'s own "folders" directory is the opposite relation
+    (the served folder is a *descendant* of the store), and store_is_inside
+    says False there: config_root() is not inside a folder that is itself
+    inside config_root(). prepare_store must still refuse, because
+    registry_path(served) -- folder_dir(served)/"registry.toml", keyed off
+    served's own hash -- lands inside `served` regardless of which direction
+    the ancestry runs."""
+    config_root = tmp_path / "cfg" / "armoire"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    lines = cli.prepare_store(served)
+    assert not store.registry_path(served).exists()
+    assert list(served.rglob("*")) == []
+    assert any("inside" in line for line in lines)
+
+
+def test_serve_creates_the_registry_in_the_store(tmp_path, uvicorn_run):
+    CliRunner().invoke(main, ["serve", str(tmp_path)])
+    assert store.registry_path(tmp_path).is_file()

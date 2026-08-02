@@ -30,12 +30,16 @@ STUB = """\
 def prepare_store(folder: Path) -> list[str]:
     """Ensure the store exists for this folder. Returns lines to print.
 
-    Writing anything here would land inside the served tree when the store is
-    a descendant of it -- a home directory, or %APPDATA% itself. In that case
-    armoire serves read-only and says so, rather than quietly breaking the one
-    guarantee it makes.
+    Writing anything here would land inside the served tree when the write
+    target is itself a descendant of the folder being served -- a home
+    directory, %APPDATA% itself, or (per review) a folder inside the store's
+    own "folders" tree. In that case armoire serves read-only and says so,
+    rather than quietly breaking the one guarantee it makes. writes_inside
+    asks exactly that question -- store_is_inside only asks whether
+    config_root() sits inside folder, which misses the case where folder is a
+    descendant of config_root() instead.
     """
-    if store.store_is_inside(folder):
+    if store.writes_inside(folder):
         return [
             f"  the armoire store is inside {folder} - serving read-only",
             "  status edits and registry creation are disabled here",
@@ -48,8 +52,22 @@ def prepare_store(folder: Path) -> list[str]:
     legacy = folder / REGISTRY_NAME
     target.parent.mkdir(parents=True, exist_ok=True)
     if legacy.is_file():
-        # Copied, not moved: deleting it would be a write to the served folder.
-        target.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+        # Bytes, not text: a decode-then-re-encode round trip raises
+        # UnicodeDecodeError out of serve for a non-UTF-8 Phase 2 registry --
+        # an unhandled traceback and no server at all, where the old
+        # behaviour (registry read straight from the served folder) was a
+        # server that started and showed a friendly RegistryError. It also
+        # silently rewrites line endings. A raw byte copy defers that same
+        # friendly error to load_registry, which already handles it, and
+        # changes nothing else about the file's content.
+        #
+        # Not wrapped in try/except OSError: unlike store.read_state (which
+        # swallows a bad read because status is a convenience and losing it
+        # beats refusing to render), a failed migration here must not be
+        # mistaken for "no legacy registry" -- that would silently start the
+        # user on an empty stub while their real, unreadable project data
+        # sits right next to it. Failing loudly is safer than losing it quietly.
+        target.write_bytes(legacy.read_bytes())
         return [
             f"  migrated {legacy} into the store",
             f"  {target} is now authoritative; the copy in the folder is ignored",

@@ -131,3 +131,40 @@ def test_the_store_is_not_inside_an_unrelated_folder(tmp_path, monkeypatch):
     served = tmp_path / "served"
     served.mkdir()
     assert store.store_is_inside(served) is False
+
+
+def test_writes_inside_does_not_match_sibling_prefix(tmp_path, monkeypatch):
+    # Prevent naive string-prefix bug: /a/bc should not match /a/b
+    config = tmp_path / "armoire"
+    served = tmp_path / "armoir"  # sibling with matching prefix but different path
+    served.mkdir()
+    monkeypatch.setattr(store, "config_root", lambda: config)
+    assert store.writes_inside(served) is False
+
+
+def test_writes_inside_is_detected_inside_a_served_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg" / "armoire")
+    assert store.writes_inside(tmp_path) is True
+
+
+def test_writes_inside_is_not_inside_an_unrelated_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg" / "armoire")
+    served = tmp_path / "served"
+    served.mkdir()
+    assert store.writes_inside(served) is False
+
+
+def test_writes_inside_catches_the_descendant_case_store_is_inside_misses(tmp_path, monkeypatch):
+    """The exact scenario from review: config_root() sits *above* the served
+    folder (the served folder is a descendant of the store, e.g. serving
+    config_root()'s own "folders" directory), so store_is_inside -- which
+    only asks whether config_root() itself sits inside the served folder --
+    says False. But folder_dir(folder) is keyed off folder's own hash and
+    still lands inside folder in this case, which is the question
+    prepare_store actually needs answered."""
+    config_root = tmp_path / "cfg" / "armoire"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    assert store.store_is_inside(served) is False
+    assert store.writes_inside(served) is True

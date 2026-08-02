@@ -50,21 +50,27 @@ def _as_str_tuple(value, field_name: str, project: str) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
-def _project_entries(raw: dict) -> list:
+def _project_entries(raw: dict, path: Path) -> list:
     """The `project` key as a list of entries, or a RegistryError explaining it.
 
     `[project]` with one bracket is the most likely typo in the file and it is
     valid TOML, so it never reaches the TOMLDecodeError arm: it parses to a
     string-keyed table, and iterating that yields the *key names*. Checking only
     for "a list containing a non-dict" would miss it entirely.
+
+    Labelled with `path`, the file actually read, rather than the constant
+    REGISTRY_NAME ("armoire.toml"): once the registry lives in the store,
+    that constant no longer names the file on disk at all (it is
+    registry.toml, under a per-folder store directory), and on the migration
+    path the served folder may hold a real, stale armoire.toml that armoire
+    is deliberately ignoring -- naming that file here would send the user to
+    edit the wrong one.
     """
     declared = raw.get("project", [])
     if isinstance(declared, dict):
-        raise RegistryError(
-            f"{REGISTRY_NAME}: project must be declared as [[project]], not [project]"
-        )
+        raise RegistryError(f"{path}: project must be declared as [[project]], not [project]")
     if not isinstance(declared, list):
-        raise RegistryError(f"{REGISTRY_NAME}: project must be a list of [[project]] tables")
+        raise RegistryError(f"{path}: project must be a list of [[project]] tables")
     return declared
 
 
@@ -153,11 +159,11 @@ def load_registry(root: Path, registry_file: Path | None = None) -> Registry | N
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as exc:
-        raise RegistryError(f"{REGISTRY_NAME}: {exc}") from exc
+        raise RegistryError(f"{path}: {exc}") from exc
 
     projects: list[Project] = []
     seen: dict[str, int] = {}
-    for position, entry in enumerate(_project_entries(raw), start=1):
+    for position, entry in enumerate(_project_entries(raw, path), start=1):
         project = _parse_project(entry, position)
         if project.name in seen:
             raise RegistryError(

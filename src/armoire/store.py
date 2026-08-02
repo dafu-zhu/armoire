@@ -81,6 +81,31 @@ def store_is_inside(folder: Path) -> bool:
         return False
 
 
+def writes_inside(folder: Path) -> bool:
+    """True when the file armoire is about to write for `folder` would land
+    inside `folder` itself.
+
+    store_is_inside asks whether config_root() sits inside folder -- true
+    only when folder is an ancestor of (or equal to) the whole store. But the
+    actual write target is folder_dir(folder), a per-folder subdirectory
+    keyed by folder's own hash, which can land inside folder even when
+    config_root() does not: whenever folder is a *descendant* of
+    config_root() instead (serving config_root() itself, or one of its own
+    subdirectories, such as its "folders" directory). store_is_inside says
+    False in exactly that case, because config_root() is not inside folder --
+    it is the other way around -- while the registry write still ends up
+    under folder. This is the strictly stronger question prepare_store (and,
+    later, write_state) actually needs asked; anything store_is_inside caught
+    before, this catches too.
+    """
+    try:
+        return Path(os.path.realpath(folder_dir(folder))).is_relative_to(
+            Path(os.path.realpath(folder))
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def read_state(folder: Path) -> dict:
     """The stored state, or {} when absent, unreadable or malformed.
 

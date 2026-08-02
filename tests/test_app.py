@@ -323,6 +323,26 @@ def test_no_registry_reports_that_rather_than_erroring(client):
     assert body["projects"] == []
 
 
+def test_the_stores_registry_wins_over_a_stale_copy_in_the_served_folder(root):
+    """prepare_store's migration message claims the folder's own copy is
+    ignored once the store already has a registry -- this is what proves it,
+    at the layer that actually serves requests: app.py reads exclusively from
+    store.registry_path(root) and never looks at the served folder's own
+    armoire.toml at all, regardless of what it contains."""
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Folder"\npaths = ["docs"]\ncategory = "x"\n', encoding="utf-8"
+    )
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "Store"\npaths = ["docs"]\ncategory = "x"\n', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/projects").json()
+    assert [p["name"] for p in body["projects"]] == ["Store"]
+
+
 def test_malformed_registry_is_200_with_an_error_field(root):
     registry_file = store.registry_path(root)
     registry_file.parent.mkdir(parents=True, exist_ok=True)
@@ -369,7 +389,11 @@ def test_project_detail_on_a_malformed_registry_is_404_carrying_the_parse_error(
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/project/Anything")
     assert response.status_code == 404
-    assert "armoire.toml" in response.json()["detail"]
+    # The store path, not the literal string "armoire.toml": that constant no
+    # longer names the file actually read once the registry lives in the
+    # store, and pinning it here would hide a regression back to mislabelling
+    # the error with the wrong filename.
+    assert str(registry_file) in response.json()["detail"]
 
 
 def test_project_detail_reports_what_it_blocks(registry_client):
