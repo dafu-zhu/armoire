@@ -6,6 +6,16 @@
   --link: #0969da;
   --border: #d1d9e0;
   --subtle: #f6f8fa;
+  /* Every category fill (.cat-0..cat-4) and the uncategorised fallback
+     (.cat-5, which reuses --subtle) is a very light, low-saturation pastel
+     (~94-97% lightness). --blocked-fill has to read as "muted/waiting"
+     against all six at once, including --subtle itself -- so it cannot be
+     another pale pastel: it is meaningfully darker and more saturated
+     (~85% lightness) than every one of them, a tan/amber in the same
+     family as the pre-existing warning colour (#bc4c00) this file already
+     uses for issue markers, so "blocked" reads as a hazard/wait colour
+     rather than a seventh category. */
+  --blocked-fill: #f3d9b1;
   --radius: 6px;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -237,8 +247,16 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 .node.status-paused rect      { stroke-width: 1.5; stroke-dasharray: 6 4; }
 .node.status-done rect        { stroke-width: 1; }
 .node.status-done             { opacity: 0.55; }
-.node.status-done text        { text-decoration: line-through; }
-.node.blocked rect            { fill: var(--subtle); }
+/* :not(.status-chip):not(.node-warn) -- the strikethrough is for the title
+   and the subtitle (due/note) only. Both the chip's glyph and the warn
+   marker are themselves <text> elements inside the same .node, so an
+   unqualified `.node.status-done text` struck through the chip's own glyph
+   (e.g. a done project's ✓ rendered with a line through it) along with
+   everything it was meant for. */
+.node.status-done text:not(.status-chip):not(.node-warn) { text-decoration: line-through; }
+/* Distinct from every category fill, including cat-5's --subtle -- see the
+   --blocked-fill definition at the top of this file for why. */
+.node.blocked rect            { fill: var(--blocked-fill); }
 .status-chip { font-size: 12px; cursor: pointer; }
 .node text { font-family: var(--sans); font-size: 13px; fill: var(--fg); }
 .node .node-sub { font-size: 11px; fill: var(--muted); }

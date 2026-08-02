@@ -2,7 +2,7 @@
 // click targets, drag and styling stay under our control -- mermaid would emit
 // a static picture we would then have to fight.
 
-import { nextStatus, glyphFor, setStatus } from './status.js';
+import { STATUS_ORDER, nextStatus, glyphFor, setStatus } from './status.js';
 
 const NODE_W = 168;
 const CATEGORIES = 6;
@@ -202,7 +202,22 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     for (const edge of edges) edge.path.setAttribute('d', edgePath(edge.from, edge.to));
   }
 
-  const statuses = new Map(projects.map((p) => [p.name, p.status]));
+  // An unrecognised status (an omitted field in a stubbed/malformed payload;
+  // the server itself always sends a valid one, but nothing upstream of this
+  // module enforces that) must not seed a `status-undefined` class: no CSS
+  // rule matches it, so the border silently falls back to whatever the base
+  // `.node rect` rule draws (indistinguishable from `status-done`'s
+  // stroke-width) while `glyphFor` separately falls back to the active
+  // glyph -- two different fallbacks disagreeing with each other. Defending
+  // here, at the one place `statuses` is seeded, means every reader
+  // (border, glyph, aria-label, isBlocked) agrees on the same fallback.
+  const statuses = new Map(
+    projects.map((p) => [p.name, STATUS_ORDER.includes(p.status) ? p.status : 'active']),
+  );
+  // Per-project write serialization and rollback-staleness guard for the
+  // chip's cycle() handler, below.
+  const writeQueue = new Map();
+  const writeToken = new Map();
 
   function isBlocked(project) {
     // Blocked means "waiting on something unfinished", not "has a blocker".
@@ -283,7 +298,7 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     });
     chip.textContent = glyphFor(statuses.get(project.name));
     chip.setAttribute('aria-label', `Status: ${statuses.get(project.name)}. Click to change.`);
-    const cycle = async (event) => {
+    const cycle = (event) => {
       // The chip lives inside the node group, whose own click handler opens
       // the detail view. Without stopPropagation every status change would
       // also navigate away from the screen showing it.
@@ -291,15 +306,39 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
       event.preventDefault();
       const previous = statuses.get(project.name);
       const wanted = nextStatus(previous);
+      // The optimistic UI update happens on every click, synchronously,
+      // regardless of network state -- responsiveness must not wait on a
+      // queued write.
       statuses.set(project.name, wanted);
-      applyStatus(project.name);
-      try {
-        await setStatus(project.name, wanted);
-      } catch {
+      applyStatus();
+
+      // Two clicks on the same chip in quick succession must not let their
+      // PUTs race each other to the server on separate connections: if the
+      // second lands first, the server ends on the first click's status
+      // while the screen still shows the second's. Chaining this write onto
+      // the *settlement* (success or failure, via the two-argument .then)
+      // of this project's previous write makes them strictly sequential --
+      // only one is ever in flight for a given project, so there is nothing
+      // left for the server to reorder.
+      const previousWrite = writeQueue.get(project.name) || Promise.resolve();
+      const token = (writeToken.get(project.name) || 0) + 1;
+      writeToken.set(project.name, token);
+      const thisWrite = previousWrite.then(
+        () => setStatus(project.name, wanted),
+        () => setStatus(project.name, wanted),
+      ).catch(() => {
         // The write failed; the screen must not keep claiming it succeeded.
-        statuses.set(project.name, previous);
-        applyStatus(project.name);
-      }
+        // But only roll back if this is still the *latest* click for this
+        // project: an intervening click has already moved the optimistic
+        // state (and queued its own write) past this one, and rolling back
+        // to this click's `previous` would show a status the server never
+        // actually held for either click.
+        if (writeToken.get(project.name) === token) {
+          statuses.set(project.name, previous);
+          applyStatus();
+        }
+      });
+      writeQueue.set(project.name, thisWrite);
     };
     chip.addEventListener('click', cycle);
     chip.addEventListener('keydown', (event) => {
@@ -322,7 +361,7 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   // change to any one project can still flip any number of others' `blocked`
   // class, so every node is recomputed rather than tracking a dependency
   // graph for it. Seventeen nodes is nothing; do the simple thing.
-  function applyStatus(changed) {
+  function applyStatus() {
     for (const project of projects) {
       const group = nodeLayer.querySelector(`[data-name="${CSS.escape(project.name)}"]`);
       if (!group) continue;
@@ -382,6 +421,20 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   // signal each revisit to the roadmap would add another copy on top of the
   // last, permanently.
   canvas.addEventListener('pointerdown', (event) => {
+    // A pointerdown that starts on the chip must not arm anything here --
+    // neither a node drag nor a canvas pan. `click`'s stopPropagation()
+    // (in `cycle`, above) does not touch `pointerdown`: it is a different
+    // event, dispatched and handled before any `click` fires at all. Without
+    // this guard, a real click (a pixel or two of hand tremor) sets
+    // `dragging.moved = true` on the very first of those pixels -- there is
+    // no deadzone below -- and pointerup then persists a perturbed node
+    // position for what the user experienced as a click on the status icon.
+    // Playwright's synthetic click has zero jitter, so this never surfaced
+    // in a test.
+    if (event.target.closest('.status-chip')) {
+      dragging = null;
+      return;
+    }
     const group = event.target.closest('.node');
     const point = canvas.createSVGPoint();
     point.x = event.clientX;

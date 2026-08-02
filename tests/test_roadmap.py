@@ -679,9 +679,9 @@ def test_the_wrap_probe_measures_at_the_rendered_subtitles_font_size(live_server
     assert probe_sizes == {rendered_size}, (probe_sizes, rendered_size)
 
 
-@pytest.fixture
-def reset_upstream_status(live_server, page):
-    """Restore Upstream's server-side status after a test that changes it.
+def _status_reset_fixture(name):
+    """Build a fixture that restores `name`'s server-side status after a test
+    that changes it.
 
     live_server and sample_root are both session-scoped (conftest.py), so a
     status PUT from one test is visible to every test that runs afterward in
@@ -700,20 +700,39 @@ def reset_upstream_status(live_server, page):
     fixture the ~30 other tests in this file already share for free.
 
     Restoring in a fixture teardown instead -- functionally a `finally`
-    block, shared here rather than pasted into all four mutating tests --
-    reads Upstream's actual pre-test status from the server itself, rather
-    than assuming the registry's default ("active"), so the restore is
-    correct even if a test runs alone, out of order, or a prior run in this
-    session already left Upstream on some other status.
+    block, shared here rather than pasted into every mutating test -- reads
+    `name`'s actual pre-test status from the server itself, rather than
+    assuming the registry's default ("active"), so the restore is correct
+    even if a test runs alone, out of order, or a prior run in this session
+    already left `name` on some other status.
+
+    A factory, not two copies of the same fixture body, because Important 3
+    (Task 7 fix round 1) needs the same restore for Downstream, not just
+    Upstream.
     """
-    before = page.request.get(f"{live_server}/api/projects").json()
-    original = next(p["status"] for p in before["projects"] if p["name"] == "Upstream")
-    yield
-    page.request.put(
-        f"{live_server}/api/status",
-        headers={"X-Armoire": "1"},
-        data={"name": "Upstream", "status": original},
-    )
+
+    @pytest.fixture
+    def _reset(live_server, page):
+        before = page.request.get(f"{live_server}/api/projects").json()
+        original = next(p["status"] for p in before["projects"] if p["name"] == name)
+        yield
+        response = page.request.put(
+            f"{live_server}/api/status",
+            headers={"X-Armoire": "1"},
+            data={"name": name, "status": original},
+        )
+        # Unchecked, a future guard change to /api/status (a stricter host
+        # check, a renamed header) could make this restore a silent no-op --
+        # the next test to touch this project would then inherit whatever
+        # status this test left it on, and the resulting failure would point
+        # nowhere near the real cause.
+        assert response.ok, (response.status, name, original)
+
+    return _reset
+
+
+reset_upstream_status = _status_reset_fixture("Upstream")
+reset_downstream_status = _status_reset_fixture("Downstream")
 
 
 def test_the_four_statuses_render_four_distinct_borders(live_server, page):
@@ -731,6 +750,32 @@ def test_the_four_statuses_render_four_distinct_borders(live_server, page):
             )
         )
     assert len(seen) == 4, seen
+
+
+def test_blocked_and_ready_render_different_fills_on_an_uncategorised_node(live_server, page):
+    """categoryClass() returns 'cat-5' (fill: var(--subtle)) for any project
+    with no category, and blocked_by with no category is an explicitly
+    supported registry shape (tests/test_projects.py:234). .node.blocked
+    rect used to fill with that same var(--subtle) -- since the border
+    encodes status only, a blocked, uncategorised node and a ready,
+    uncategorised node computed to the exact same fill, so the "waiting"
+    signal carried zero bits for that whole category. Scoped to a single
+    node's rect the same way test_the_four_statuses_render_four_distinct_borders
+    isolates the border signal, rather than depending on any node in
+    sample_root actually being both uncategorised and blocked."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+
+    def fill_for(class_attr):
+        page.evaluate(
+            "cls => document.querySelector('.node').setAttribute('class', cls)",
+            class_attr,
+        )
+        return page.locator(".node rect").first.evaluate("r => getComputedStyle(r).fill")
+
+    ready = fill_for("node cat-5 status-active")
+    blocked = fill_for("node cat-5 status-active blocked")
+    assert ready != blocked, (ready, blocked)
 
 
 def test_clicking_the_chip_cycles_the_status(live_server, page, reset_upstream_status):
@@ -767,11 +812,19 @@ def test_a_status_edit_survives_a_fresh_browser_context(
 ):
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Upstream"]')
+    # Without a captured baseline this test can pass vacuously: if every PUT
+    # were rejected (e.g. a broken guard), the optimistic update would revert
+    # in milliseconds, `after` would equal the untouched original class, and
+    # the fresh context would read that same original from the server --
+    # green, while persistence is entirely broken.
+    before = node.get_attribute("class")
     chip = page.locator('.node[data-name="Upstream"] .status-chip')
     for _ in range(3):
         chip.click()
         page.wait_for_timeout(150)
-    after = page.locator('.node[data-name="Upstream"]').get_attribute("class")
+    after = node.get_attribute("class")
+    assert after != before, "three clicks changed nothing -- nothing left to prove persists"
 
     # A fresh context shares no localStorage. If status survives this, it is
     # server state -- which is the whole point of moving it out of the browser.
@@ -793,14 +846,100 @@ def test_marking_the_last_blocker_done_unblocks_its_dependent(
     dependent = page.locator('.node[data-name="Downstream"]')
     assert "blocked" in dependent.get_attribute("class")
     blocker = page.locator('.node[data-name="Upstream"] .status-chip')
-    while "status-done" not in page.locator('.node[data-name="Upstream"]').get_attribute("class"):
+    upstream = page.locator('.node[data-name="Upstream"]')
+    # Bounded, not `while ...: click()` -- no pytest-timeout is installed, so
+    # a chip that stopped cycling (a regression, not a hypothetical: this is
+    # exactly the class of bug fix round 1 introduced and fixed in setStatus
+    # ordering) would hang this test, and CI, forever. STATUS_ORDER has 4
+    # entries, so 4 clicks always reach "done" from any starting status; +1
+    # is slack, not a magic number.
+    for _ in range(5):
+        if "status-done" in upstream.get_attribute("class"):
+            break
         blocker.click()
         page.wait_for_timeout(150)
+    assert "status-done" in upstream.get_attribute("class")
     # Same unquoted-attribute-value fix as above, for the same reason.
     page.wait_for_function(
         "() => !document.querySelector('.node[data-name=Downstream]')"
         ".className.baseVal.includes('blocked')"
     )
+
+
+def test_a_done_projects_node_collapses_on_reload(live_server, page, reset_downstream_status):
+    """buildSubtitle's early return for status === 'done' is the single place
+    the collapse is decided (roadmap.js), and it is a named spec deliverable
+    with no prior coverage -- deleting that one line left the whole suite
+    green. Targets Downstream specifically, not Upstream: Downstream is the
+    only sample_root project that carries both a due date and a wrapped
+    note, so this is the only node where "collapsed" and "never had a
+    subtitle to begin with" are actually distinguishable. Sets status via a
+    direct PUT rather than chip-clicking -- chip cycling behaviour already
+    has its own coverage above; this test is only about what a 'done'
+    payload renders after a reload, which is deliberately one render behind
+    any click (see buildSubtitle's own comment)."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    response = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Downstream", "status": "done"},
+    )
+    assert response.ok, response.status
+    page.reload()
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Downstream"]')
+    assert "status-done" in node.get_attribute("class")
+    # The raw SVG `height` attribute, not .bounding_box() -- the canvas's
+    # viewBox scales to fill its container, so on-screen pixel height is not
+    # a 1:1 reading of what nodeHeight() actually computed (confirmed
+    # empirically: bounding_box() reported ~115px here before this fix,
+    # nowhere near either the collapsed 40 or an uncollapsed value in SVG
+    # units). NODE_MIN_H (roadmap.js) is 40 for zero subtitle lines, and
+    # nodeHeight(0) has no other possible output.
+    height = float(node.locator("rect").get_attribute("height"))
+    assert height == 40, height
+    assert node.locator(".node-due").count() == 0
+    assert node.locator(".node-sub").count() == 0
+
+
+def test_a_failed_status_write_reverts_the_chip_and_its_dependents(
+    live_server, page, reset_upstream_status
+):
+    """The rollback path (cycle()'s catch in roadmap.js) had zero coverage --
+    this is the gap that let Important 2's stale-rollback race through
+    review undetected. Cycles Upstream from 'active' to 'paused' first (a
+    normal, succeeding write) so the one write this test breaks is the
+    click that would also flip Downstream's blocked-ness (paused -> done),
+    proving applyStatus()'s full recompute-on-rollback carries the
+    dependent along too, not just the clicked node itself."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    upstream = page.locator('.node[data-name="Upstream"]')
+    downstream = page.locator('.node[data-name="Downstream"]')
+    chip = upstream.locator(".status-chip")
+
+    before = upstream.get_attribute("class")
+    chip.click()
+    page.wait_for_function(
+        "cls => document.querySelector('.node[data-name=Upstream]').className.baseVal !== cls",
+        arg=before,
+    )
+    assert "status-paused" in upstream.get_attribute("class")
+    assert "blocked" in downstream.get_attribute("class")
+
+    page.route("**/api/status", lambda route: route.fulfill(status=500))
+    chip.click()
+    # The optimistic change (status-done, Downstream unblocked) must revert
+    # once the write fails -- on both the clicked node and the dependent
+    # applyStatus's full recompute carries along.
+    page.wait_for_function(
+        "() => document.querySelector('.node[data-name=Upstream]')"
+        ".className.baseVal.includes('status-paused')"
+    )
+    assert "status-paused" in upstream.get_attribute("class")
+    assert "blocked" in downstream.get_attribute("class")
+    page.unroute("**/api/status")
 
 
 def test_a_project_with_both_a_due_date_and_a_note_shows_both(live_server, page):
