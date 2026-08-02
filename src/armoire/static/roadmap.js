@@ -12,9 +12,21 @@ const NODE_MIN_H = 40;
 // SVG <text> does not wrap. Measure in the live SVG rather than guessing from
 // character counts: font metrics are not knowable ahead of time, and the
 // previous fixed-height node let every long note render outside its own box.
+//
+// The probe must be styled exactly like the real .node-sub it stands in for,
+// or every wrap decision is computed against the wrong font. `.node .node-sub`
+// (app.css) is a descendant selector requiring a `.node` ancestor; a probe
+// appended directly to `canvas` has no such ancestor and falls back to the
+// body's font-size instead. Nesting the probe inside a throwaway
+// `.node`-classed host makes the same CSS rule apply to both the probe and
+// the real subtitle, so they can never drift apart even if that rule's
+// font-size later changes -- a hardcoded font-size here would have to be
+// kept in sync with the CSS by hand instead.
 function wrapLines(canvas, text, maxWidth) {
-  const probe = svgEl('text', { class: 'node-sub', visibility: 'hidden' });
-  canvas.append(probe);
+  const probeHost = svgEl('g', { class: 'node', visibility: 'hidden' });
+  const probe = svgEl('text', { class: 'node-sub' });
+  probeHost.append(probe);
+  canvas.append(probeHost);
   const lines = [];
   let current = '';
   const push = () => { if (current) lines.push(current); current = ''; };
@@ -36,7 +48,7 @@ function wrapLines(canvas, text, maxWidth) {
     current = chunk;
   }
   push();
-  probe.remove();
+  probeHost.remove();
   return lines;
 }
 

@@ -634,3 +634,44 @@ def test_nodes_no_longer_show_a_commit_count(live_server, page):
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
     assert page.locator(".node .node-badge").count() == 0
+
+
+def test_the_wrap_probe_measures_at_the_rendered_subtitles_font_size(live_server, page):
+    """wrapLines() measures every candidate line against a probe <text>
+    standing in for the real .node-sub -- if the probe is styled differently
+    (font-size, in particular), every wrap decision, and therefore every
+    node height, is computed against the wrong width.
+
+    Regression this guards: a probe appended directly to the canvas, with no
+    `.node` ancestor, missed `.node .node-sub { font-size: 11px }` (a
+    descendant selector) entirely and silently measured at the body's 14px
+    instead. That was safe only by coincidence -- 14 > 11 means the probe
+    always over-measures and wraps early, never late -- so no containment or
+    line-count test caught it. If the two font-sizes ever swapped which was
+    larger, this would flip from "wastes space" to "overflows the box" with
+    nothing to catch it. This spies on
+    SVGTextElement.prototype.getComputedTextLength to capture the font-size
+    actually in effect at every measurement call, and asserts it always
+    matches the font-size a real rendered .node .node-sub uses, rather than
+    asserting a specific number in either place -- a future edit to the
+    shared CSS rule moves both together and keeps passing; only a probe that
+    stops reading that rule at all would fail it.
+    """
+    page.add_init_script(
+        """
+        window.__probeFontSizes = [];
+        const original = SVGTextElement.prototype.getComputedTextLength;
+        SVGTextElement.prototype.getComputedTextLength = function () {
+            window.__probeFontSizes.push(getComputedStyle(this).fontSize);
+            return original.call(this);
+        };
+        """
+    )
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    probe_sizes = set(page.evaluate("window.__probeFontSizes"))
+    rendered_size = page.locator('.node[data-name="Downstream"] .node-sub').evaluate(
+        "el => getComputedStyle(el).fontSize"
+    )
+    assert probe_sizes, "expected wrapLines to measure at least one candidate"
+    assert probe_sizes == {rendered_size}, (probe_sizes, rendered_size)
