@@ -2,7 +2,7 @@
 // click targets, drag and styling stay under our control -- mermaid would emit
 // a static picture we would then have to fight.
 
-import { STATUS_ORDER, nextStatus, glyphFor, writeStatus } from './status.js';
+import { nextStatus, glyphFor, normalizeStatus, writeStatus } from './status.js';
 
 const NODE_W = 168;
 const CATEGORIES = 6;
@@ -210,10 +210,10 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   // stroke-width) while `glyphFor` separately falls back to the active
   // glyph -- two different fallbacks disagreeing with each other. Defending
   // here, at the one place `statuses` is seeded, means every reader
-  // (border, glyph, aria-label, isBlocked) agrees on the same fallback.
-  const statuses = new Map(
-    projects.map((p) => [p.name, STATUS_ORDER.includes(p.status) ? p.status : 'active']),
-  );
+  // (border, glyph, aria-label, isBlocked) agrees on the same fallback --
+  // categories.js normalises at the same seam, via the same
+  // normalizeStatus(), for the same reason.
+  const statuses = new Map(projects.map((p) => [p.name, normalizeStatus(p.status)]));
 
   function isBlocked(project) {
     // Blocked means "waiting on something unfinished", not "has a blocker".

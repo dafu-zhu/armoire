@@ -2,12 +2,13 @@
 // Phase 2 let dagre park them mid-canvas, where they pushed the real roots
 // off-centre and read as part of a structure they are not in.
 
-import { glyphFor, nextStatus, writeStatus } from './status.js';
+import { glyphFor, nextStatus, normalizeStatus, writeStatus } from './status.js';
 
 export function renderCategories(container, data, onOpen) {
   container.replaceChildren();
   const isolated = (data.projects || []).filter((p) => p.isolated);
   if (!isolated.length) return;
+  const issues = data.issues || [];
 
   const groups = new Map();
   for (const project of isolated) {
@@ -25,16 +26,22 @@ export function renderCategories(container, data, onOpen) {
 
     const list = document.createElement('ul');
     for (const project of members) {
+      // Seeded the same way, at the same seam, as roadmap.js's own
+      // `statuses` Map -- an unrecognised status must not reach glyphFor,
+      // nextStatus or the `status-…` class raw, or this column and the graph
+      // can disagree about what a click on the same bad input produces.
+      const initialStatus = normalizeStatus(project.status);
+
       const item = document.createElement('li');
-      item.className = `entry status-${project.status}`;
+      item.className = `entry status-${initialStatus}`;
       item.setAttribute('data-name', project.name);
 
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'status-chip';
-      chip.textContent = glyphFor(project.status);
-      chip.setAttribute('aria-label', `Status: ${project.status}. Click to change.`);
-      let status = project.status;
+      chip.textContent = glyphFor(initialStatus);
+      chip.setAttribute('aria-label', `Status: ${initialStatus}. Click to change.`);
+      let status = initialStatus;
       chip.addEventListener('click', (event) => {
         // The chip lives inside the item; nothing else in this list listens
         // for a click today, but stopping it here keeps the chip's own
@@ -67,6 +74,22 @@ export function renderCategories(container, data, onOpen) {
       label.addEventListener('click', () => onOpen(project.name));
 
       item.append(chip, label);
+
+      // The same registry-issue affordance a graph node gets from its own
+      // `.node-warn` (roadmap.js): an isolated project has no node to carry
+      // it, so without this, an issue against it -- like Backlog's unknown
+      // blocked_by in sample_root -- exists only as a number in the status
+      // strip, readable nowhere. `title` is the HTML equivalent of the SVG
+      // node's nested <title> tooltip.
+      const projectIssues = issues.filter((issue) => issue.startsWith(`${project.name}:`));
+      if (projectIssues.length) {
+        const warn = document.createElement('span');
+        warn.className = 'entry-warn';
+        warn.textContent = '!';
+        warn.setAttribute('title', projectIssues.join('\n'));
+        item.append(warn);
+      }
+
       if (project.note) {
         const note = document.createElement('p');
         note.className = 'entry-note';

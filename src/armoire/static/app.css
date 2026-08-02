@@ -303,7 +303,13 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 .category ul { list-style: none; margin: 0; padding: 0; }
 .entry { padding: 4px 0; }
 .entry-name { background: none; border: 0; padding: 0; color: var(--link); cursor: pointer; font: inherit; }
+/* .status-chip's other rule (above, in the roadmap block) was written for an
+   SVG <text> -- no button chrome to reset there in the first place. Here the
+   chip is a real HTML <button>, so it keeps the UA default border/background
+   unless reset the same way .entry-name already is. */
+.category .status-chip { background: none; border: 0; padding: 0; font: inherit; }
 .entry-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+.entry-warn { margin-left: 4px; font-weight: 700; color: #bc4c00; cursor: help; }
 .entry.status-done { opacity: 0.55; }
 .entry.status-done .entry-name { text-decoration: line-through; }
 

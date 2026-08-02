@@ -92,8 +92,16 @@ function showError(error) {
 // replaceChildren is the only way it writes to it. Appending straight to
 // #roadmap meant nothing ever removed a box: they stacked one per visit, and a
 // stale error card survived underneath a later successful render.
+//
+// #categories gets the same treatment as the canvas, and for the same
+// reason: both error exits below (the fetch's own catch, and data.error)
+// return without ever reaching renderCategories, which is the only other
+// place anything writes to #categories. Without this, a category column
+// populated by an earlier successful visit would sit, stale, beside an error
+// card that says the fetch itself just failed.
 function showRoadmapMessage(message, className) {
   canvas.replaceChildren();
+  categories.replaceChildren();
   const box = document.createElement('div');
   box.className = className;
   box.textContent = message;

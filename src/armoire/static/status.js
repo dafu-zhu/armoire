@@ -16,6 +16,20 @@ export function nextStatus(current) {
   return STATUS_ORDER[(at + 1) % STATUS_ORDER.length];
 }
 
+// The one place an unrecognised status (an omitted field in a
+// stubbed/malformed payload; the server itself always sends a valid one)
+// gets a fallback, so every reader -- roadmap.js's border/glyph/aria-label/
+// isBlocked, categories.js's item class/glyph/aria-label/cycle -- agrees on
+// the same value instead of each inventing its own. Feeding an unnormalised
+// status straight into nextStatus() is its own bug even before any of that:
+// nextStatus(undefined) returns 'not-started' (indexOf -1, +1 wraps to 0),
+// not the 'active' fallback below, so a caller that skips this and calls
+// nextStatus() directly on a raw payload value can disagree with a caller
+// that normalises first about what a click from the same bad input produces.
+export function normalizeStatus(status) {
+  return STATUS_ORDER.includes(status) ? status : 'active';
+}
+
 export function glyphFor(status) {
   return GLYPH[status] || GLYPH.active;
 }
@@ -47,7 +61,12 @@ export async function setStatus(name, status) {
 const writeQueue = new Map();
 const writeToken = new Map();
 
-export function writeStatus(name, status, onStaleFailure) {
+// `onLatestFailure` fires when this write's failure is *not* stale -- i.e.
+// this is still the most recent click for `name`. (Named for the condition
+// that triggers it, not for staleness itself, which is the case it must
+// stay silent for.) Optional: a caller that never fails its writes, or
+// doesn't care to roll back, may omit it.
+export function writeStatus(name, status, onLatestFailure) {
   const previous = writeQueue.get(name) || Promise.resolve();
   const token = (writeToken.get(name) || 0) + 1;
   writeToken.set(name, token);
@@ -66,7 +85,7 @@ export function writeStatus(name, status, onStaleFailure) {
       // queued its own write) past this one, and rolling back to this
       // click's view of "previous" would show a status the server never
       // actually held for either click.
-      if (writeToken.get(name) === token) onStaleFailure();
+      if (writeToken.get(name) === token) onLatestFailure?.();
     });
   writeQueue.set(name, write);
   return write;

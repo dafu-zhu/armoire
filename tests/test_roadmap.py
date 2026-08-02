@@ -168,6 +168,29 @@ def test_a_stale_error_card_does_not_survive_a_successful_revisit(page, live_ser
     assert page.locator("#roadmap .error").count() == 0
 
 
+def test_a_stale_category_column_does_not_survive_a_failed_revisit(page, live_server):
+    """The mirror of test_a_stale_error_card_does_not_survive_a_successful_revisit
+    above, but the other direction (a *successful* visit followed by a
+    *failed* one), and scoped to #categories rather than the error card.
+
+    showRoadmapMessage clears the canvas on every error exit (both the
+    fetch's own catch and the data.error branch route through it), but
+    nothing cleared #categories -- renderCategories is the only other writer
+    of #categories, and neither error exit ever reaches it. A transient
+    failure after a populated visit used to leave the column showing
+    isolated projects from the *previous* successful load, sitting beside a
+    card that says the fetch itself just failed.
+    """
+    open_roadmap(page, live_server)
+    page.wait_for_selector("#categories .category")
+    page.evaluate("window.location.hash = '/browse/'")
+    page.wait_for_function("() => location.hash === '#/browse/'")
+    page.route("**/api/projects", lambda route: route.abort())
+    page.evaluate("window.location.hash = '/'")
+    page.wait_for_selector("#roadmap .error", timeout=15000)
+    assert page.locator("#categories .category").count() == 0
+
+
 def test_a_throw_inside_render_shows_an_error_not_a_stuck_loading_status(page, live_server):
     """showRoadmap() was called unawaited and uncaught, so anything renderRoadmap
     threw left the screen on "Loading roadmap…" with no error card at all."""
@@ -210,10 +233,17 @@ def test_the_viewbox_stays_finite_for_an_empty_graph(page, empty_registry_server
 def test_a_colon_in_a_project_name_does_not_drop_its_marker(page, colon_name_server):
     """flagged must match issues the same way the per-node tooltip does
     (issue.startsWith(`${name}:`)), or a name containing ":" loses its
-    warning marker even though it has a real issue against it."""
+    warning marker even though it has a real issue against it.
+
+    Scoped to "Foo: Bar"'s own node, not a bare count over the whole graph:
+    colon_name_root now declares a second project ("Dependent", added so
+    "Foo: Bar" stays connected under task 9's isolation filter) that carries
+    no issue of its own. An unscoped count == 1 would still pass if a
+    regression flagged "Dependent" instead of "Foo: Bar" -- the count would
+    be right for the wrong reason."""
     page.goto(colon_name_server)
     page.wait_for_selector("#roadmap .node", timeout=15000)
-    assert page.locator("#roadmap .node-warn").count() == 1
+    assert page.locator('#roadmap .node[data-name="Foo: Bar"] .node-warn').count() == 1
 
 
 def drag_node(page, name, dx, dy):
@@ -936,10 +966,37 @@ def test_isolated_projects_appear_in_a_category_container(live_server, page):
 
 
 def test_each_category_gets_its_own_container(live_server, page):
+    """categories.js groups into a Map keyed on category name, so section
+    titles are unique by construction -- a bare `len(titles) ==
+    len(set(titles))` is true for every possible output of this
+    implementation, including a total collapse into one container (["ops"]
+    passes just as trivially as ["ops", "infra"] does). The real claim this
+    test's name makes is that Standalone and Backlog -- sample_root's two
+    isolated projects, in different categories -- land in *different*
+    containers, each titled after its own project's `category`. Assert that
+    directly: each project's own containing .category section, not merely
+    something present somewhere under #categories.
+
+    .text_content(), not .inner_text()/.all_inner_texts(): `.category h3` is
+    `text-transform: uppercase` (app.css), and .inner_text() reflects
+    rendered text -- it read back "OPS"/"INFRA", not the "ops"/"infra"
+    categories.js actually wrote via .textContent. .text_content() reports
+    the raw DOM text, unaffected by CSS.
+    """
     page.goto(f"{live_server}/#/")
     page.wait_for_selector("#categories .category")
-    titles = page.locator("#categories .category h3").all_inner_texts()
-    assert len(titles) == len(set(titles))
+    titles = page.locator("#categories .category h3").all_text_contents()
+    assert sorted(titles) == ["infra", "ops"], titles
+
+    standalone_section = page.locator(
+        "#categories .category", has=page.locator('[data-name="Standalone"]')
+    )
+    assert standalone_section.locator("h3").text_content() == "ops"
+
+    backlog_section = page.locator(
+        "#categories .category", has=page.locator('[data-name="Backlog"]')
+    )
+    assert backlog_section.locator("h3").text_content() == "infra"
 
 
 def test_a_category_entry_opens_the_project(live_server, page):
@@ -962,3 +1019,105 @@ def test_the_status_strip_reports_registry_issues(live_server, page):
     # sample_root's registry has at least one issue; the rail used to be the
     # only place it was visible.
     assert "issue" in page.locator("#status").inner_text()
+
+
+def test_backlogs_issue_is_readable_from_its_category_entry(live_server, page):
+    """The graph's own node gets a `!` marker with the issue text in a
+    <title> tooltip (roadmap.js); an isolated project has no node to carry
+    it, so without an equivalent here, Backlog's issue -- the very one
+    test_the_status_strip_reports_registry_issues depends on -- would exist
+    only as a number in the status strip, readable nowhere on the page."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    entry = page.locator('#categories [data-name="Backlog"]')
+    warn = entry.locator(".entry-warn")
+    assert warn.count() == 1
+    assert "Vanished" in warn.get_attribute("title")
+
+
+def test_a_failed_status_write_reverts_the_category_chip(live_server, page):
+    """The rollback path in categories.js's chip handler had no coverage at
+    all -- every existing rollback test targets a graph node's chip, and
+    every `.status-chip` locator in this file before this test is scoped to
+    `.node[...]`. Mirrors
+    test_a_failed_status_write_reverts_the_chip_and_its_dependents's shape
+    (a real state change first, then a broken one, so the second click has a
+    non-trivial state to revert to -- a single click against an
+    always-failing endpoint cannot distinguish "reverted correctly" from "the
+    whole click handler is inert"), but both requests are stubbed here rather
+    than letting the first one reach the real backend, so this test needs no
+    server-state cleanup afterward."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    entry = page.locator('#categories [data-name="Standalone"]')
+    chip = entry.locator(".status-chip")
+    before_class = entry.get_attribute("class")
+
+    calls = {"n": 0}
+
+    def handler(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+        else:
+            route.fulfill(status=500)
+
+    page.route("**/api/status", handler)
+
+    chip.click()
+    page.wait_for_function(
+        "cls => document.querySelector('#categories [data-name=\"Standalone\"]').className !== cls",
+        arg=before_class,
+    )
+    succeeded_class = entry.get_attribute("class")
+    succeeded_glyph = chip.inner_text()
+    assert succeeded_class != before_class
+
+    chip.click()
+    page.wait_for_timeout(300)
+    assert entry.get_attribute("class") == succeeded_class
+    assert chip.inner_text() == succeeded_glyph
+
+
+def test_rapid_clicks_on_the_category_chip_serialize_their_writes(live_server, page):
+    """writeStatus (status.js) is now a shared, module-scoped queue used by
+    both roadmap.js and categories.js -- grepping this file for
+    stale|serial|queue|token|race before this test returns nothing: the
+    ordering guarantee it exists for was never directly exercised, only
+    inferred from the rollback tests' behaviour. Each intercepted PUT is
+    held open for 150ms before responding; if the client ever let a second
+    PUT overlap the first in time, that overlap would show up directly as a
+    later request's captured start time landing before an earlier request's
+    captured end time. Three rapid clicks (no waiting between them) prove
+    the negative: every request's start is at or after the previous
+    request's end, and all three distinct statuses arrive, in click order,
+    at the server -- nothing was dropped, merged, or reordered.
+    """
+    events = []
+
+    def handler(route):
+        events.append({"start": time.monotonic(), "body": route.request.post_data_json})
+        time.sleep(0.15)
+        events[-1]["end"] = time.monotonic()
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/status", handler)
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    chip = page.locator('#categories [data-name="Standalone"] .status-chip')
+
+    for _ in range(3):
+        chip.click()
+
+    deadline = time.monotonic() + 5
+    while len(events) < 3 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert len(events) == 3, events
+
+    for earlier, later in zip(events, events[1:], strict=False):
+        assert later["start"] >= earlier["end"], events
+
+    names = {event["body"]["name"] for event in events}
+    assert names == {"Standalone"}, events
+    statuses = [event["body"]["status"] for event in events]
+    assert len(set(statuses)) == 3, statuses
