@@ -79,22 +79,39 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
+function showRoadmapError(message) {
+  canvas.replaceChildren();
+  const box = document.createElement('div');
+  box.className = 'error';
+  box.textContent = message;
+  roadmap.append(box);
+}
+
 async function showRoadmap() {
-  const response = await fetch('/api/projects');
-  const data = await response.json();
-  if (data.registry === false) {
-    window.location.hash = `/${BROWSE}/`;
-    return;
-  }
+  // Commit to the roadmap before the fetch, not after: /api/projects walks
+  // git across every declared path -- seconds on a large folder -- and
+  // showing the file browser meanwhile reads as opening on the wrong screen.
   document.getElementById('tree').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
+  status.textContent = 'Loading roadmap…';
+
+  let data;
+  try {
+    data = await (await fetch('/api/projects')).json();
+  } catch (error) {
+    showRoadmapError(String(error.message || error));
+    return;
+  }
+
+  if (data.registry === false) {
+    // No registry: this folder has no roadmap, so hand back to the browser.
+    hideRoadmap();
+    window.location.hash = `/${BROWSE}/`;
+    return;
+  }
   if (data.error) {
-    canvas.replaceChildren();
-    const box = document.createElement('div');
-    box.className = 'error';
-    box.textContent = data.error;
-    roadmap.append(box);
+    showRoadmapError(data.error);
     return;
   }
   roadmapView = renderRoadmap(canvas, data, navigateProject);

@@ -1,5 +1,7 @@
 """The roadmap, exercised in a real browser."""
 
+import time
+
 
 def open_roadmap(page, live_server):
     page.goto(live_server)
@@ -74,3 +76,31 @@ def test_no_console_errors_rendering_the_roadmap(page, live_server):
     open_roadmap(page, live_server)
     page.wait_for_load_state("networkidle")
     assert errors == []
+
+
+def test_the_file_browser_is_not_shown_while_the_roadmap_loads(page, live_server):
+    """/api/projects walks git and can take seconds; showing the tree meanwhile
+    reads as opening on the wrong screen."""
+    page.route("**/api/projects", lambda route: (time.sleep(0.6), route.continue_())[-1])
+    page.goto(live_server)
+    page.wait_for_timeout(250)
+    assert page.locator("#tree").is_hidden()
+    assert page.locator("#roadmap").is_visible()
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+
+
+def test_a_folder_with_no_registry_still_falls_back_to_the_browser(page, bare_server):
+    """The commit-first ordering must still reverse itself when there is no registry."""
+    page.goto(bare_server)
+    page.wait_for_selector(".listing", timeout=15000)
+    assert page.locator("#roadmap").is_hidden()
+    assert page.evaluate("location.hash") == "#/browse/"
+
+
+def test_a_failed_projects_fetch_shows_an_error_not_a_blank_screen(page, live_server):
+    """Committing to the roadmap before the fetch must not leave a blank
+    screen if the fetch itself fails outright."""
+    page.route("**/api/projects", lambda route: route.abort())
+    page.goto(live_server)
+    page.wait_for_selector("#roadmap .error", timeout=15000)
+    assert page.locator("#roadmap").is_visible()
