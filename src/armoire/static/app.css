@@ -324,6 +324,17 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 }
 .project-detail .commit .sha { color: var(--muted); flex: 0 0 auto; }
 .project-detail .commit .when { color: var(--muted); margin-left: auto; flex: 0 0 auto; }
+/* `overflow: hidden` is doing two jobs, and the second is not obvious: it is
+   what text-overflow needs to have anything to clip, and it is also what lets
+   this flex item shrink at all. A flex item's automatic minimum size is zero
+   when its overflow is anything but `visible` (CSS Flexbox 4.5), so the usual
+   companion `min-width: 0` would be a no-op here -- the default
+   `flex: 0 1 auto` shrinks correctly as it stands. Verified in a browser with
+   a 500-character subject: scrollWidth 3398 against clientWidth 771, and
+   `.when` (margin-left: auto) still inside a row that `.project-detail ul`
+   clips. Take `overflow: hidden` away and both jobs go with it: the subject
+   widens to its full intrinsic 3398px and pushes the timestamp ~2.5k past the
+   clip edge, where it is simply gone. */
 .project-detail .commit .subject {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -534,6 +534,75 @@ def test_project_detail_renders_structured_commit_rows(page, live_server):
         assert rows.first.locator(".subject").count() == 1
 
 
+def test_a_long_commit_subject_does_not_push_the_timestamp_out_of_its_row(page, live_server):
+    """Commit subjects come from arbitrary repositories, so the row has to hold
+    against an unbounded one: the subject must ellipsize and `.when`
+    (margin-left: auto) must stay inside the row that `.project-detail ul`
+    clips with overflow: hidden.
+
+    `.subject` is a flex item with the default `flex: 0 1 auto` and a computed
+    `min-width: auto`, which normally cannot shrink below its content's
+    intrinsic width -- but it also sets `overflow: hidden`, and per CSS Flexbox
+    4.5 a flex item whose overflow is anything but `visible` gets an automatic
+    minimum size of zero. So it does shrink and the ellipsis does fire; an
+    explicit `min-width: 0` would be a no-op here. Measured: scrollWidth 3398
+    against clientWidth 771, `.when` at x=1156 inside a row ending at 1203.
+
+    What this test guards is that pairing. Forcing `.subject` back to
+    `overflow: visible` widens it to its full 3398px and throws `.when` out to
+    x=3783, ~2.5k past the clip edge -- the timestamp vanishes.
+
+    Stubbed rather than committed to a fixture repo: the subject has to be long
+    enough to overflow at any viewport, and no real fixture commit is. The
+    payload shape is project.js's contract for /api/project/<name>.
+    """
+    import json
+
+    stub = {
+        "project": {
+            "name": "Long",
+            "paths": ["notes"],
+            "blocked_by": [],
+            "category": None,
+            "due": None,
+            "note": None,
+        },
+        "blocks": [],
+        "commits": [
+            {
+                "sha": "abc1234",
+                "subject": "refactor the entire ingestion pipeline and " * 12,
+                "when": time.time(),
+            }
+        ],
+        "files": [],
+    }
+    page.route(
+        "**/api/project/Long",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body=json.dumps(stub)
+        ),
+    )
+    page.goto(f"{live_server}/#/project/Long")
+    page.wait_for_selector(".project-detail li.commit", timeout=10000)
+    row = page.locator(".project-detail li.commit").first
+    when = row.locator(".when")
+    assert when.count() == 1
+
+    # The subject is genuinely truncated, not merely narrow.
+    overflowed = row.locator(".subject").evaluate("el => el.scrollWidth > el.clientWidth")
+    assert overflowed, "a 500-character subject should be clipped, so the ellipsis can show"
+
+    row_box = row.bounding_box()
+    when_box = when.bounding_box()
+    # 1px of slack for subpixel layout, nothing more.
+    assert when_box["x"] >= row_box["x"] - 1, (when_box, row_box)
+    assert when_box["x"] + when_box["width"] <= row_box["x"] + row_box["width"] + 1, (
+        when_box,
+        row_box,
+    )
+
+
 def test_project_detail_commit_rows_have_sha_subject_and_when(page, committed_server):
     """live_server's sample_root has no git history at all (neither Downstream
     nor Upstream has a single commit), so the guarded check above never
