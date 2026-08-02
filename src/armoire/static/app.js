@@ -83,10 +83,9 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
-// className is 'error' for a genuine failure (fetch/network, malformed
-// registry) or 'empty' for a valid-but-empty registry, which is not a
-// failure and should not read like one. 'empty' reuses the same neutral
-// style preview.js already uses for "no preview for this file".
+// className is always 'error' here: a stub or empty registry is not a
+// failure, and takes the same exit as no registry at all -- back to the
+// file browser, rather than a message rendered in the roadmap panel.
 //
 // #roadmap-message is the only child of #roadmap this module writes, and
 // replaceChildren is the only way it writes to it. Appending straight to
@@ -129,21 +128,16 @@ async function showRoadmap() {
     return;
   }
 
-  if (data.registry === false) {
-    // No registry: this folder has no roadmap, so hand back to the browser.
-    hideRoadmap();
-    window.location.hash = `/${BROWSE}/`;
-    return;
-  }
   if (data.error) {
     showRoadmapError(data.error);
     return;
   }
-  if (!data.projects.length) {
-    // Zero [[project]] entries is valid TOML and reaches here with neither
-    // registry: false nor error -- an empty graph, not a failure.
-    showRoadmapMessage('No projects declared in armoire.toml.', 'empty');
-    status.textContent = 'no projects';
+  if (data.registry === false || !data.projects.length) {
+    // A stub registry is the normal state for a folder nobody has described
+    // yet, so "no projects" means the same thing "no file" used to: there is
+    // no roadmap here, hand back to the browser.
+    hideRoadmap();
+    window.location.hash = `/${BROWSE}/`;
     return;
   }
   // Every visit re-runs this against the same persistent #roadmap-canvas and

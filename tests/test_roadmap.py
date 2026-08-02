@@ -122,29 +122,29 @@ def test_a_failed_projects_fetch_shows_an_error_not_a_blank_screen(page, live_se
     assert_inside_viewport(page, page.locator("#roadmap .error"))
 
 
-def test_an_empty_registry_says_so_instead_of_rendering_a_blank_canvas(page, empty_registry_server):
-    """Zero [[project]] entries is valid TOML and reaches renderRoadmap."""
+def test_an_empty_registry_falls_back_to_the_file_browser_on_every_visit(
+    page, empty_registry_server
+):
+    """Zero [[project]] entries is valid TOML and reaches showRoadmap, but a
+    stub registry is the normal state for a folder nobody has described yet --
+    the same "no roadmap here" exit as no registry file at all, not a message
+    rendered in the roadmap panel. Repeated visits must keep taking that exit
+    rather than getting stuck, or leaving the roadmap panel visible, on a
+    second pass."""
     page.goto(empty_registry_server)
-    page.wait_for_selector("#roadmap .empty", timeout=15000)
-    assert page.locator("#roadmap .empty").is_visible()
-    assert page.locator("#roadmap .node").count() == 0
-    assert_inside_viewport(page, page.locator("#roadmap .empty"))
-
-
-def test_revisiting_the_roadmap_leaves_exactly_one_message_box(page, empty_registry_server):
-    """showRoadmapMessage cleared the canvas but appended to #roadmap, and
-    roadmap.js clears only the canvas -- so nothing ever removed a box and each
-    return to #/ stacked another copy of the same sentence, forever."""
-    page.goto(empty_registry_server)
-    page.wait_for_selector("#roadmap .empty", timeout=15000)
+    # empty_registry_server's served folder holds no files of its own, so the
+    # browser renders ".empty" ("This folder is empty."), not ".listing" --
+    # "#main:visible" is the one signal common to both.
+    page.wait_for_selector("#main:visible", timeout=15000)
+    assert page.locator("#roadmap").is_hidden()
+    assert page.evaluate("location.hash") == "#/browse/"
     for _ in range(2):
-        page.evaluate("window.location.hash = '/browse/'")
+        page.evaluate("window.location.hash = '/'")
         page.wait_for_function("() => location.hash === '#/browse/'")
         page.wait_for_selector("#main:visible", timeout=5000)
-        page.evaluate("window.location.hash = '/'")
-        page.wait_for_function("() => location.hash === '#/'")
-        page.wait_for_selector("#roadmap .empty", timeout=15000)
-    assert page.locator("#roadmap .empty").count() == 1
+    assert page.locator("#roadmap").is_hidden()
+    assert page.locator("#roadmap .node").count() == 0
+    assert page.locator("#roadmap .empty").count() == 0
 
 
 def test_a_stale_error_card_does_not_survive_a_successful_revisit(page, live_server):
@@ -188,13 +188,15 @@ def test_a_throw_inside_render_shows_an_error_not_a_stuck_loading_status(page, l
 
 
 def test_the_viewbox_stays_finite_for_an_empty_graph(page, empty_registry_server):
-    """app.js now never calls renderRoadmap with zero projects (it shows the
-    empty-state message first), so the above test alone cannot reach
-    roadmap.js's own fallback -- dagre leaves graph.width at -Infinity for an
-    empty graph, which `|| 800` cannot catch because -Infinity is truthy.
+    """app.js now never calls renderRoadmap with zero projects (it falls back
+    to the file browser instead), so no other test reaches roadmap.js's own
+    fallback -- dagre leaves graph.width at -Infinity for an empty graph,
+    which `|| 800` cannot catch because -Infinity is truthy.
     Call renderRoadmap directly, the way any other future caller could."""
     page.goto(empty_registry_server)
-    page.wait_for_selector("#roadmap .empty", timeout=15000)
+    # empty_registry_server's served folder holds no files of its own, so the
+    # browser renders ".empty" ("This folder is empty."), not ".listing".
+    page.wait_for_selector("#main:visible", timeout=15000)
     view_box = page.evaluate(
         """async () => {
             const { renderRoadmap } = await import('/roadmap.js');

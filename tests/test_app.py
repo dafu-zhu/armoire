@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from armoire import store
 from armoire.app import create_app
 
 # A minimal but valid notebook: nbformat_minor 5 requires every cell to carry
@@ -200,15 +201,18 @@ def test_index_html_is_served_at_root(client):
 
 
 def test_serving_never_writes_to_disk(root):
-    # Written here rather than into the shared `root` fixture, which has no
-    # registry: adding one there would perturb the ~40 tree and index tests
-    # that count what is in the folder. But without one, the two Phase 2 calls
-    # below get `registry: false` and a 404 -- load_registry never parses,
-    # dashboard never composes, activity never invokes git -- so the only
-    # write-capable surface Phase 2 added would sit outside the checksum
-    # window entirely. "docs" is a real directory in the fixture, so
-    # activity_for and list_dir both do real work against it.
-    (root / "armoire.toml").write_text(
+    # Written into the store, not the shared `root` fixture: the registry no
+    # longer lives inside the served folder at all, and writing it there would
+    # also perturb the ~40 tree and index tests that count what is in the
+    # folder. But without one, the two Phase 2 calls below get `registry:
+    # false` and a 404 -- load_registry never parses, dashboard never
+    # composes, activity never invokes git -- so the only write-capable
+    # surface Phase 2 added would sit outside the checksum window entirely.
+    # "docs" is a real directory in the fixture, so activity_for and list_dir
+    # both do real work against it.
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         '[[project]]\nname = "Docs"\npaths = ["docs"]\ncategory = "docs"\n', encoding="utf-8"
     )
 
@@ -280,7 +284,9 @@ category = "core"
 
 @pytest.fixture
 def registry_root(root):
-    (root / "armoire.toml").write_text(REGISTRY, encoding="utf-8")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(REGISTRY, encoding="utf-8")
     return root
 
 
@@ -318,7 +324,9 @@ def test_no_registry_reports_that_rather_than_erroring(client):
 
 
 def test_malformed_registry_is_200_with_an_error_field(root):
-    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("[[project]\nname = ", encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/projects")
@@ -331,9 +339,9 @@ def test_a_structurally_wrong_registry_is_200_with_an_error_field(root):
     TOMLDecodeError arm. It used to escape load_registry as an AttributeError
     and 500 with a text/plain body, which app.js then failed to parse as JSON.
     The documented contract is 200 plus the message."""
-    (root / "armoire.toml").write_text(
-        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
-    )
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text('[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/projects")
@@ -343,9 +351,9 @@ def test_a_structurally_wrong_registry_is_200_with_an_error_field(root):
 
 
 def test_project_detail_on_a_structurally_wrong_registry_is_404_not_500(root):
-    (root / "armoire.toml").write_text(
-        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
-    )
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text('[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/project/A")
@@ -354,7 +362,9 @@ def test_project_detail_on_a_structurally_wrong_registry_is_404_not_500(root):
 
 
 def test_project_detail_on_a_malformed_registry_is_404_carrying_the_parse_error(root):
-    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("[[project]\nname = ", encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/project/Anything")
@@ -402,7 +412,9 @@ def test_a_registry_path_escaping_the_root_yields_no_files(tmp_path):
     (outside / "secret.md").write_bytes(b"# Secret\n")
     served = tmp_path / "a" / "b"
     served.mkdir(parents=True)
-    (served / "armoire.toml").write_text(
+    registry_file = store.registry_path(served)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         '[[project]]\nname = "Evil"\npaths = ["../../outside"]\n', encoding="utf-8"
     )
     app = create_app(served)

@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from armoire import dashboard
+from armoire import dashboard, store
 from armoire.index import PathIndex
 from armoire.paths import PathOutsideRoot, resolve_in_root
 from armoire.previews import extension_of, kind_for
@@ -34,6 +34,13 @@ def _resolve(root: Path, path: str) -> Path:
 
 def create_app(root: Path) -> FastAPI:
     root = root.resolve()
+    # Resolved once, here, rather than inside each handler: store.registry_path
+    # calls store.config_root(), which reads an environment variable that a
+    # long-lived server must not have to keep re-reading correctly for the
+    # rest of the process's life. Freezing it at creation time is also what
+    # makes the store's location a creation-time concern rather than a
+    # per-request one.
+    registry_file = store.registry_path(root)
     app = FastAPI(title="armoire", docs_url=None, redoc_url=None)
 
     index = PathIndex(root)
@@ -131,7 +138,7 @@ def create_app(root: Path) -> FastAPI:
     def projects() -> dict:
         envelope = {"root": str(root), "projects": [], "issues": []}
         try:
-            registry = load_registry(root)
+            registry = load_registry(root, registry_file)
         except RegistryError as exc:
             # 200, not 4xx: the client must still render the page and show
             # which line was wrong. A status code hides that behind the
@@ -149,7 +156,7 @@ def create_app(root: Path) -> FastAPI:
     @app.get("/api/project/{name}")
     def project_detail(name: str) -> dict:
         try:
-            registry = load_registry(root)
+            registry = load_registry(root, registry_file)
         except RegistryError as exc:
             # 404 rather than the 200+error shape /api/projects uses: that endpoint
             # must render a page and show the parse message, this one is only

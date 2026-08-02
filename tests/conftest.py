@@ -11,7 +11,72 @@ import polars as pl
 import pytest
 import uvicorn
 
+from armoire import store
 from armoire.app import create_app
+
+
+def _redirect_config_root(setenv, setattr_, base) -> None:
+    """Point config_root() at `base`, on every platform, without replacing
+    config_root() itself.
+
+    tests/test_store.py exercises config_root()'s own platform-dispatch logic
+    directly -- each of its platform tests sets sys.platform plus whichever of
+    APPDATA / XDG_CONFIG_HOME / store._home that platform's branch reads, and
+    asserts the *real* function computes the right path. Replacing
+    config_root() wholesale (`monkeypatch.setattr(store, "config_root", ...)`)
+    would make every one of those tests observe a stub instead of the function
+    they mean to test. Patching what the real implementation reads instead
+    keeps that logic intact: a test that overrides one of these three itself
+    simply layers its own patch on top of this one, for the one platform
+    branch it cares about, exactly as if this fixture were not here.
+
+    All three are set regardless of the platform actually running these
+    tests, so the suite stays isolated on whichever of the six CI platform
+    combinations runs it.
+    """
+    setenv("APPDATA", str(base))
+    setenv("XDG_CONFIG_HOME", str(base))
+    setattr_(store, "_home", lambda: base)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(tmp_path_factory, monkeypatch):
+    """No test may read or write the developer's real armoire store."""
+    base = tmp_path_factory.mktemp("armoire-store")
+    _redirect_config_root(monkeypatch.setenv, monkeypatch.setattr, base)
+    return base
+
+
+@pytest.fixture(scope="session")
+def _isolated_store_session(tmp_path_factory):
+    """The session-scoped fixtures below build their registry file, and their
+    server's app (which bakes in that registry's path at creation time), once,
+    long before any single test's function-scoped `_isolated_store` exists --
+    and that server keeps running for the rest of the session, across every
+    test's own isolated store. A function-scoped monkeypatch cannot reach back
+    far enough to cover that: it does not exist yet when this setup runs, and
+    it is torn down at the end of whichever test happens to trigger this
+    fixture's first use, long before the session ends.
+
+    pytest.MonkeyPatch.context() is used directly, as its own context manager,
+    rather than the `monkeypatch` fixture (which is function-scoped and cannot
+    be requested here). Held open for the whole session by yielding from
+    inside the `with` block, so config_root() keeps returning this directory
+    for as long as any session-scoped root or server fixture is alive --
+    which, once a request registers a background thread serving one of them,
+    is the rest of the test run.
+
+    Uses the same environment-redirection as `_isolated_store` above, rather
+    than replacing config_root() itself, for the same reason: a wholesale
+    replacement held open for the rest of the session would just as surely
+    break tests/test_store.py's platform tests whenever they happen to run
+    after this fixture's first use.
+    """
+    base = tmp_path_factory.mktemp("armoire-store-session")
+    with pytest.MonkeyPatch.context() as mp:
+        _redirect_config_root(mp.setenv, mp.setattr, base)
+        yield base
+
 
 MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
@@ -61,7 +126,7 @@ NOTEBOOK = {
 
 
 @pytest.fixture(scope="session")
-def sample_root(tmp_path_factory):
+def sample_root(tmp_path_factory, _isolated_store_session):
     root = tmp_path_factory.mktemp("sample")
     # newline="" avoids Windows' universal-newline translation on write, so
     # the markdown renderer's exact `\n`-anchored mermaid-fence regex sees
@@ -136,7 +201,11 @@ def sample_root(tmp_path_factory):
 
     # A registry makes the roadmap appear. Two nodes and one edge is the
     # smallest graph that exercises layout, an edge, and a blocked node.
-    (root / "armoire.toml").write_text(
+    # Written into the store, not the served folder: describing a folder must
+    # not modify it.
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         "[[project]]\n"
         'name = "Downstream"\n'
         'paths = ["notes"]\n'
@@ -182,8 +251,14 @@ def live_server(sample_root):
 
 
 @pytest.fixture(scope="session")
-def bare_root(tmp_path_factory):
-    """A folder with no armoire.toml -- the state every folder starts in."""
+def bare_root(tmp_path_factory, _isolated_store_session):
+    """A folder with no registry -- the state every folder starts in.
+
+    Depends on _isolated_store_session even though it writes nothing there:
+    bare_server's create_app() call still resolves store.registry_path(root)
+    at creation time, and that must resolve under the session's isolated
+    store rather than the developer's real one.
+    """
     root = tmp_path_factory.mktemp("bare")
     (root / "README.md").write_bytes(b"# Bare\n\nNo registry here.\n")
     return root
@@ -208,11 +283,15 @@ def bare_server(bare_root):
 
 
 @pytest.fixture(scope="session")
-def empty_registry_root(tmp_path_factory):
+def empty_registry_root(tmp_path_factory, _isolated_store_session):
     """Zero [[project]] entries -- valid TOML, no RegistryError, but nothing
-    for renderRoadmap to lay out."""
+    for renderRoadmap to lay out. app.js never calls renderRoadmap with this:
+    it falls back to the file browser, the same exit a missing registry
+    file takes."""
     root = tmp_path_factory.mktemp("empty-registry")
-    (root / "armoire.toml").write_text(
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         "# No [[project]] entries -- still a valid registry.\n",
         encoding="utf-8",
         newline="",
@@ -239,12 +318,14 @@ def empty_registry_server(empty_registry_root):
 
 
 @pytest.fixture(scope="session")
-def colon_name_root(tmp_path_factory):
+def colon_name_root(tmp_path_factory, _isolated_store_session):
     """A project whose name contains a colon, with a genuine issue against it
     (a missing path) -- the fixture Finding 2's flagged-set fix needs to
     prove itself against."""
     root = tmp_path_factory.mktemp("colon-name")
-    (root / "armoire.toml").write_text(
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         '[[project]]\nname = "Foo: Bar"\npaths = ["missing"]\n',
         encoding="utf-8",
         newline="",
@@ -312,7 +393,7 @@ def _git(cwd, *args):
 
 
 @pytest.fixture(scope="session")
-def committed_root(tmp_path_factory):
+def committed_root(tmp_path_factory, _isolated_store_session):
     """A registry with one project whose folder has real git history.
 
     sample_root has none at all -- confirmed by reading its own fixture code,
@@ -331,7 +412,9 @@ def committed_root(tmp_path_factory):
     (project / "a.txt").write_text("2", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "second worked commit")
-    (root / "armoire.toml").write_text(
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         '[[project]]\nname = "Worked"\npaths = ["worked"]\n',
         encoding="utf-8",
         newline="",
