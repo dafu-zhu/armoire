@@ -382,13 +382,27 @@ def test_a_slashed_project_name_never_reaches_the_handler(registry_client):
     assert registry_client.get("/api/project/A/../..").status_code == 404
 
 
-def test_a_registry_path_escaping_the_root_yields_no_files(root):
+def test_a_registry_path_escaping_the_root_yields_no_files(tmp_path):
     """The registry is authored by whoever owns the folder, and armoire gets
-    pointed at cloned repositories. An escaping path must return nothing."""
-    (root / "armoire.toml").write_text(
-        '[[project]]\nname = "Evil"\npaths = ["../../Windows"]\n', encoding="utf-8"
+    pointed at cloned repositories. An escaping path must return nothing.
+
+    Built like its sibling in test_projects.py rather than around a
+    `../../Windows` literal: that literal named a folder that does not exist on
+    any of the platforms this suite runs on, so the escape was never tested
+    against a target that was actually there. Here the target exists and holds
+    a file, which is the case where a missing jail would leak something.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_bytes(b"# Secret\n")
+    served = tmp_path / "a" / "b"
+    served.mkdir(parents=True)
+    (served / "armoire.toml").write_text(
+        '[[project]]\nname = "Evil"\npaths = ["../../outside"]\n', encoding="utf-8"
     )
-    app = create_app(root)
+    app = create_app(served)
     app.state.index.wait(timeout=10)
-    body = TestClient(app).get("/api/project/Evil").json()
-    assert body["files"] == []
+    response = TestClient(app).get("/api/project/Evil")
+    assert (served / ".." / ".." / "outside" / "secret.md").exists()
+    assert response.status_code == 200
+    assert response.json()["files"] == []

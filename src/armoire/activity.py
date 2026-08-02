@@ -4,6 +4,14 @@ Every ledger records what was intended; none records what happened. This module
 is the only part of armoire that shells out, and it does so with a list argument
 and shell=False -- Phase 1's no-shell-outs rule was about path manipulation, and
 reading git history has no pure-Python alternative short of a heavy dependency.
+
+One caveat worth stating plainly, because it is the single place in armoire
+where the jail bounds the path but not the data source: `git -C <dir> log` walks
+*up* to whichever repository contains <dir>, which is an ancestor of the served
+root whenever armoire is pointed at a subdirectory of a repo. Every query is
+scoped by `-- .` so only commits touching served content come back, which is
+what makes that acceptable and is why it is written that way -- but the history
+being read belongs to a repository that may sit outside the served folder.
 """
 
 import logging

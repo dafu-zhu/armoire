@@ -528,10 +528,12 @@ def test_project_detail_renders_structured_commit_rows(page, live_server):
     page.goto(f"{live_server}/#/project/Downstream")
     page.wait_for_selector(".project-detail", timeout=10000)
     assert page.locator(".project-detail .relations").count() == 1
-    rows = page.locator(".project-detail li.commit")
-    if rows.count():
-        assert rows.first.locator(".sha").count() == 1
-        assert rows.first.locator(".subject").count() == 1
+    # The commit-row assertions that used to sit here were guarded behind
+    # `if rows.count():`, and against live_server that count is always zero --
+    # sample_root has no git history at all, so the block never ran and read as
+    # coverage it was not providing. The real check is
+    # test_project_detail_commit_rows_have_sha_subject_and_when, against
+    # committed_server.
 
 
 def test_a_long_commit_subject_does_not_push_the_timestamp_out_of_its_row(page, live_server):
