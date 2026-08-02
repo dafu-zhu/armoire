@@ -1,0 +1,105 @@
+import subprocess
+
+import pytest
+
+from armoire.activity import activity_for, recent_commits
+
+
+def git(cwd, *args):
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env={
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "PATH": __import__("os").environ["PATH"],
+        },
+    )
+
+
+@pytest.fixture
+def repo(tmp_path):
+    git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "beta").mkdir()
+    (tmp_path / "alpha" / "a.txt").write_text("1", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "first alpha commit")
+    (tmp_path / "alpha" / "a.txt").write_text("2", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "second alpha commit")
+    (tmp_path / "beta" / "b.txt").write_text("1", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "only beta commit")
+    return tmp_path
+
+
+def test_counts_commits_scoped_to_the_path(repo):
+    assert activity_for(repo, "alpha").commits == 2
+    assert activity_for(repo, "beta").commits == 1
+
+
+def test_reports_a_last_commit_timestamp(repo):
+    result = activity_for(repo, "alpha")
+    assert result.last is not None and result.last > 0
+
+
+def test_a_path_with_no_history_reports_zero(repo):
+    (repo / "gamma").mkdir()
+    result = activity_for(repo, "gamma")
+    assert result.commits == 0
+
+
+def test_a_missing_path_reports_zero_without_raising(repo):
+    assert activity_for(repo, "nowhere").commits == 0
+
+
+def test_outside_a_repository_reports_zero_without_raising(tmp_path):
+    (tmp_path / "plain").mkdir()
+    assert activity_for(tmp_path, "plain").commits == 0
+
+
+def test_outside_a_repository_still_reports_a_last_touch_from_mtimes(tmp_path):
+    """Not every folder is in git; the spec requires an mtime fallback."""
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "plain" / "f.txt").write_text("x", encoding="utf-8")
+    result = activity_for(tmp_path, "plain")
+    assert result.commits == 0
+    assert result.last is not None and result.last > 0
+
+
+def test_an_empty_untracked_folder_reports_no_last_touch(tmp_path):
+    (tmp_path / "hollow").mkdir()
+    assert activity_for(tmp_path, "hollow").last is None
+
+
+def test_recent_commits_returns_subjects_newest_first(repo):
+    entries = recent_commits(repo, "alpha")
+    assert [e["subject"] for e in entries] == ["second alpha commit", "first alpha commit"]
+    assert all(len(e["sha"]) >= 7 for e in entries)
+    assert all(isinstance(e["when"], float) for e in entries)
+
+
+def test_recent_commits_honours_the_limit(repo):
+    assert len(recent_commits(repo, "alpha", limit=1)) == 1
+
+
+def test_a_submodule_is_read_from_its_own_repository(repo, tmp_path_factory):
+    """The parent repository's log cannot see inside a submodule."""
+    inner = tmp_path_factory.mktemp("inner")
+    git(inner, "init", "-q", "-b", "main")
+    (inner / "x.txt").write_text("1", encoding="utf-8")
+    git(inner, "add", "-A")
+    git(inner, "commit", "-qm", "inner commit one")
+    (inner / "x.txt").write_text("2", encoding="utf-8")
+    git(inner, "add", "-A")
+    git(inner, "commit", "-qm", "inner commit two")
+
+    git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(inner), "sub")
+    git(repo, "commit", "-qm", "add submodule")
+
+    assert activity_for(repo, "sub").commits == 2
