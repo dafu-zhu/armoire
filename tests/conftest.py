@@ -1,7 +1,9 @@
 """A small sample folder, and a live server in front of it."""
 
 import json
+import os
 import socket
+import subprocess
 import threading
 import time
 
@@ -125,6 +127,30 @@ def sample_root(tmp_path_factory):
     ignored = root / ".venv"
     ignored.mkdir()
     (ignored / "junk.py").write_text("noise\n", encoding="utf-8", newline="")
+
+    # A folder literally named "browse". The prefix scheme exists so this
+    # cannot collide with the route; without a fixture, nothing proves it.
+    collide = root / "browse"
+    collide.mkdir()
+    (collide / "inside.md").write_bytes(b"# Inside a folder named browse\n")
+
+    # A registry makes the roadmap appear. Two nodes and one edge is the
+    # smallest graph that exercises layout, an edge, and a blocked node.
+    (root / "armoire.toml").write_text(
+        "[[project]]\n"
+        'name = "Downstream"\n'
+        'paths = ["notes"]\n'
+        'blocked_by = ["Upstream"]\n'
+        'category = "research"\n'
+        "due = 2026-08-17\n"
+        "\n"
+        "[[project]]\n"
+        'name = "Upstream"\n'
+        'paths = ["notes/deep"]\n'
+        'category = "learning"\n',
+        encoding="utf-8",
+        newline="",
+    )
     return root
 
 
@@ -151,5 +177,181 @@ def live_server(sample_root):
 
     yield f"http://127.0.0.1:{port}"
 
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def bare_root(tmp_path_factory):
+    """A folder with no armoire.toml -- the state every folder starts in."""
+    root = tmp_path_factory.mktemp("bare")
+    (root / "README.md").write_bytes(b"# Bare\n\nNo registry here.\n")
+    return root
+
+
+@pytest.fixture(scope="session")
+def bare_server(bare_root):
+    app = create_app(bare_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("bare server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def empty_registry_root(tmp_path_factory):
+    """Zero [[project]] entries -- valid TOML, no RegistryError, but nothing
+    for renderRoadmap to lay out."""
+    root = tmp_path_factory.mktemp("empty-registry")
+    (root / "armoire.toml").write_text(
+        "# No [[project]] entries -- still a valid registry.\n",
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def empty_registry_server(empty_registry_root):
+    app = create_app(empty_registry_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("empty-registry server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def colon_name_root(tmp_path_factory):
+    """A project whose name contains a colon, with a genuine issue against it
+    (a missing path) -- the fixture Finding 2's flagged-set fix needs to
+    prove itself against."""
+    root = tmp_path_factory.mktemp("colon-name")
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Foo: Bar"\npaths = ["missing"]\n',
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def colon_name_server(colon_name_root):
+    app = create_app(colon_name_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("colon-name server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+def _git(cwd, *args):
+    """Run git under a fixed identity. The one copy; test_activity and
+    test_dashboard import it rather than keeping their own.
+
+    The identity is merged *over* os.environ, not substituted for it. A
+    replacement environment carrying only PATH drops HOME, SYSTEMROOT and
+    everything else git may need, and the platform that first minds is not the
+    one you develop on -- CI runs six platform/version combinations. The
+    failure also lands badly: this runs inside session-scoped fixtures, so one
+    CalledProcessError whose captured output nobody prints takes out every
+    Playwright test depending on committed_server at once.
+
+    The four identity variables stay explicit so the isolation intent survives:
+    commits must not be attributed to whoever is running the suite.
+
+    Inheriting the environment inherits the runner's git configuration too,
+    which is the same blast radius from the other side: `commit.gpgsign = true`
+    in someone's ~/.gitconfig would fail every commit here, and a
+    `core.hooksPath` or `commit.template` would be just as fatal. CI images
+    carry no global config, so this bites a developer rather than the matrix.
+    Pointing both config scopes at os.devnull keeps the real environment
+    without the ambient settings -- git reads the file, finds nothing, and
+    falls back to the identity above.
+    """
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env=os.environ
+        | {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def committed_root(tmp_path_factory):
+    """A registry with one project whose folder has real git history.
+
+    sample_root has none at all -- confirmed by reading its own fixture code,
+    which never calls `git init` -- so neither of its two projects can
+    exercise the commit-row markup project.js renders from `/api/project`'s
+    `commits` list. This fixture exists so that markup has something real to
+    render against.
+    """
+    root = tmp_path_factory.mktemp("committed")
+    project = root / "worked"
+    project.mkdir()
+    (project / "a.txt").write_text("1", encoding="utf-8")
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "first worked commit")
+    (project / "a.txt").write_text("2", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "second worked commit")
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Worked"\npaths = ["worked"]\n',
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def committed_server(committed_root):
+    app = create_app(committed_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("committed server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=5)

@@ -36,7 +36,7 @@ $ armoire serve ~/notes --port 9000
 
 Open the URL it prints. The left rail is a lazy directory tree; the box at the top
 filters every file in the folder by fuzzy match. Each file's URL is bookmarkable —
-`#/research/0dte/README.md` — and the back button works.
+`#/browse/research/0dte/README.md` — and the back button works.
 
 | File type | What you get |
 |---|---|
@@ -66,10 +66,18 @@ Ignored everywhere: `.git`, `.venv`, `node_modules`, `__pycache__`, `site-packag
 
 ## Status
 
-The viewer is complete and tested. Templates, scaffolding and conformance checking
-are designed but not yet built — `armoire init` and `armoire check` do not exist
-yet. See the [design spec](docs/superpowers/specs/2026-08-01-armoire-design.md) for
-where it is going.
+Two screens. The roadmap shows your projects and what blocks what, drawn from an
+`armoire.toml` you write; the viewer renders any file you click through to.
+Without a registry, armoire opens straight into the file browser.
+
+    [[project]]
+    name = "0DTE"
+    paths = ["research/0dte"]
+    blocked_by = ["FINM 320", "FINM 330"]
+    due = 2026-08-17
+
+See the [roadmap design](docs/superpowers/specs/2026-08-01-armoire-roadmap-design.md)
+for the full field list.
 
 ## Developing
 

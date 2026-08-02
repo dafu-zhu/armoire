@@ -10,12 +10,14 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from armoire import dashboard
 from armoire.index import PathIndex
 from armoire.paths import PathOutsideRoot, resolve_in_root
 from armoire.previews import extension_of, kind_for
 from armoire.previews.notebook import preview_notebook
 from armoire.previews.table import preview_table
 from armoire.previews.text import preview_text
+from armoire.projects import RegistryError, load_registry
 from armoire.scanner import list_dir
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,43 @@ def create_app(root: Path) -> FastAPI:
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    @app.get("/api/projects")
+    def projects() -> dict:
+        envelope = {"root": str(root), "projects": [], "issues": []}
+        try:
+            registry = load_registry(root)
+        except RegistryError as exc:
+            # 200, not 4xx: the client must still render the page and show
+            # which line was wrong. A status code hides that behind the
+            # generic error path.
+            logger.warning("registry failed to load: %s", exc)
+            return envelope | {"error": str(exc)}
+        if registry is None:
+            return envelope | {"registry": False}
+
+        return envelope | {
+            "projects": dashboard.project_rows(root, registry),
+            "issues": registry.issues,
+        }
+
+    @app.get("/api/project/{name}")
+    def project_detail(name: str) -> dict:
+        try:
+            registry = load_registry(root)
+        except RegistryError as exc:
+            # 404 rather than the 200+error shape /api/projects uses: that endpoint
+            # must render a page and show the parse message, this one is only
+            # reachable from a roadmap that already loaded. The message still
+            # travels in `detail`.
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        if registry is None:
+            raise HTTPException(status_code=404, detail="no registry")
+
+        detail = dashboard.project_detail(root, registry, name)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="no such project")
+        return detail
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

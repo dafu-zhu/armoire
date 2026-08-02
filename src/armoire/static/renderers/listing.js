@@ -1,6 +1,6 @@
 // GitHub's behaviour: the file table, then the folder's README underneath.
 
-import { formatSize, formatAge } from '../format.js';
+import { formatSize, formatAge, encodeHashPath } from '../format.js';
 
 export function renderListing(container, data, path) {
   const card = document.createElement('div');
@@ -24,7 +24,7 @@ export function renderListing(container, data, path) {
       const tr = document.createElement('tr');
       const nameCell = document.createElement('td');
       const link = document.createElement('a');
-      link.href = `#/${path ? `${path}/` : ''}${entry.name}`;
+      link.href = `#/browse/${encodeHashPath(path ? `${path}/${entry.name}` : entry.name)}`;
       link.textContent = `${entry.icon} ${entry.name}`;
       nameCell.append(link);
 

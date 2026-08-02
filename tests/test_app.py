@@ -200,6 +200,18 @@ def test_index_html_is_served_at_root(client):
 
 
 def test_serving_never_writes_to_disk(root):
+    # Written here rather than into the shared `root` fixture, which has no
+    # registry: adding one there would perturb the ~40 tree and index tests
+    # that count what is in the folder. But without one, the two Phase 2 calls
+    # below get `registry: false` and a 404 -- load_registry never parses,
+    # dashboard never composes, activity never invokes git -- so the only
+    # write-capable surface Phase 2 added would sit outside the checksum
+    # window entirely. "docs" is a real directory in the fixture, so
+    # activity_for and list_dir both do real work against it.
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Docs"\npaths = ["docs"]\n', encoding="utf-8"
+    )
+
     def snapshot():
         return {
             p.relative_to(root).as_posix(): (
@@ -236,4 +248,165 @@ def test_serving_never_writes_to_disk(root):
     ]:
         client.get("/api/preview", params={"path": name})
         client.get("/api/raw", params={"path": name})
+    projects = client.get("/api/projects")
+    detail = client.get("/api/project/Docs")
+    # The snapshot is only as strong as what ran inside it. Assert both calls
+    # actually reached their work, so this test cannot quietly go back to
+    # checksumming a `registry: false` and a 404 the way it used to.
+    assert projects.json()["projects"], projects.json()
+    assert detail.status_code == 200, detail.text
+    # 200 alone proves the registry parsed and the project resolved; it does
+    # not prove list_dir walked anything. The files are what put the scan
+    # inside the window.
+    assert detail.json()["files"], detail.json()
     assert snapshot() == before
+
+
+REGISTRY = """
+[[project]]
+name = "Downstream"
+paths = ["docs"]
+blocked_by = ["Upstream"]
+category = "research"
+due = 2026-08-17
+note = "a note"
+
+[[project]]
+name = "Upstream"
+paths = ["docs"]
+"""
+
+
+@pytest.fixture
+def registry_root(root):
+    (root / "armoire.toml").write_text(REGISTRY, encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def registry_client(registry_root):
+    app = create_app(registry_root)
+    app.state.index.wait(timeout=10)
+    return TestClient(app)
+
+
+def test_projects_endpoint_lists_declared_projects(registry_client):
+    body = registry_client.get("/api/projects").json()
+    assert [p["name"] for p in body["projects"]] == ["Downstream", "Upstream"]
+    assert body["issues"] == []
+
+
+def test_projects_endpoint_carries_optional_fields(registry_client):
+    body = registry_client.get("/api/projects").json()
+    downstream = body["projects"][0]
+    assert downstream["blocked_by"] == ["Upstream"]
+    assert downstream["category"] == "research"
+    assert downstream["due"] == "2026-08-17"
+    assert downstream["note"] == "a note"
+
+
+def test_projects_endpoint_includes_activity_so_the_graph_needs_one_call(registry_client):
+    body = registry_client.get("/api/projects").json()
+    assert all("commits" in p and "last" in p for p in body["projects"])
+
+
+def test_no_registry_reports_that_rather_than_erroring(client):
+    body = client.get("/api/projects").json()
+    assert body["registry"] is False
+    assert body["projects"] == []
+
+
+def test_malformed_registry_is_200_with_an_error_field(root):
+    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/projects")
+    assert response.status_code == 200
+    assert "error" in response.json()
+
+
+def test_a_structurally_wrong_registry_is_200_with_an_error_field(root):
+    """`[project]` with one bracket is valid TOML, so it never reaches the
+    TOMLDecodeError arm. It used to escape load_registry as an AttributeError
+    and 500 with a text/plain body, which app.js then failed to parse as JSON.
+    The documented contract is 200 plus the message."""
+    (root / "armoire.toml").write_text(
+        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/projects")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert "[[project]]" in response.json()["error"]
+
+
+def test_project_detail_on_a_structurally_wrong_registry_is_404_not_500(root):
+    (root / "armoire.toml").write_text(
+        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/project/A")
+    assert response.status_code == 404
+    assert "[[project]]" in response.json()["detail"]
+
+
+def test_project_detail_on_a_malformed_registry_is_404_carrying_the_parse_error(root):
+    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/project/Anything")
+    assert response.status_code == 404
+    assert "armoire.toml" in response.json()["detail"]
+
+
+def test_project_detail_reports_what_it_blocks(registry_client):
+    body = registry_client.get("/api/project/Upstream").json()
+    assert body["blocks"] == ["Downstream"]
+
+
+def test_project_detail_lists_files_under_its_paths(registry_client):
+    body = registry_client.get("/api/project/Downstream").json()
+    assert any(f["name"] == "readme.md" for f in body["files"])
+
+
+def test_unknown_project_is_404(registry_client):
+    assert registry_client.get("/api/project/Ghost").status_code == 404
+
+
+def test_a_slashed_project_name_never_reaches_the_handler(registry_client):
+    """Starlette's single-segment path converter rejects it before dispatch.
+
+    This is a framework guarantee, not something project_detail implements —
+    removing the route's own 404 guard leaves this test green. Named for what
+    it proves so nobody mistakes it for a check on the handler.
+    """
+    assert registry_client.get("/api/project/..%2F..%2Fetc").status_code == 404
+    assert registry_client.get("/api/project/A/../..").status_code == 404
+
+
+def test_a_registry_path_escaping_the_root_yields_no_files(tmp_path):
+    """The registry is authored by whoever owns the folder, and armoire gets
+    pointed at cloned repositories. An escaping path must return nothing.
+
+    Built like its sibling in test_projects.py rather than around a
+    `../../Windows` literal: that literal named a folder that does not exist on
+    any of the platforms this suite runs on, so the escape was never tested
+    against a target that was actually there. Here the target exists and holds
+    a file, which is the case where a missing jail would leak something.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_bytes(b"# Secret\n")
+    served = tmp_path / "a" / "b"
+    served.mkdir(parents=True)
+    (served / "armoire.toml").write_text(
+        '[[project]]\nname = "Evil"\npaths = ["../../outside"]\n', encoding="utf-8"
+    )
+    app = create_app(served)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/project/Evil")
+    assert (served / ".." / ".." / "outside" / "secret.md").exists()
+    assert response.status_code == 200
+    assert response.json()["files"] == []

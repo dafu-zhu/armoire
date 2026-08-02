@@ -17,3 +17,20 @@ def test_every_katex_font_referenced_by_the_stylesheet_is_vendored():
     assert referenced, "no woff2 faces found — the regex or the stylesheet changed"
     missing = [f for f in referenced if not (STATIC / "vendor" / f).is_file()]
     assert missing == []
+
+
+def test_dagre_is_vendored():
+    assert (STATIC / "vendor" / "dagre.js").is_file()
+
+
+def test_dagre_is_loaded_before_the_module_entry_point():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "/vendor/dagre.js" in html
+    assert html.index("/vendor/dagre.js") < html.index('src="/app.js"')
+
+
+def test_the_roadmap_has_exactly_one_visibility_mechanism():
+    """`hidden` is display:none !important, so a second CSS switch cannot
+    override it. Two switches invite an edit that toggles only one."""
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    assert "data-active" not in css

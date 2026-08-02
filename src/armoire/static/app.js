@@ -2,34 +2,64 @@ import { initTree } from './tree.js';
 import { initFilter } from './filter.js';
 import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
+import { renderRoadmap } from './roadmap.js';
+import { initRail } from './rail.js';
+import { renderProject } from './project.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
 const status = document.getElementById('status');
 
-function currentPath() {
-  const raw = window.location.hash.replace(/^#\/?/, '');
-  // decodeURIComponent throws on a malformed percent-escape -- e.g. a literal
-  // "%" that was never encoded. format.js's encodeHashPath is the single
-  // write path every producer of location.hash is expected to route
-  // through, so a well-formed hash always round-trips; a malformed one
-  // (hand-typed, hand-edited, or from a write site that skipped it) must
-  // surface as a visible error rather than an uncaught exception that
-  // freezes the page.
+const BROWSE = 'browse';
+const PROJECT = 'project';
+
+const roadmap = document.getElementById('roadmap');
+const canvas = document.getElementById('roadmap-canvas');
+const roadmapMessage = document.getElementById('roadmap-message');
+const body = document.getElementById('body');
+
+let roadmapView = null;
+let roadmapListeners = null;
+
+function decodeSegments(raw) {
   return raw
     .split('/')
     .map((segment) => decodeURIComponent(segment))
     .join('/');
 }
 
+// Everything that is not a file lives behind a reserved first segment, and
+// every file lives behind `browse`. That removes the collision entirely: a
+// folder actually named "browse" is #/browse/browse.
+function currentRoute() {
+  const raw = window.location.hash.replace(/^#\/?/, '');
+  if (raw === '') return { kind: 'home' };
+  const slash = raw.indexOf('/');
+  const head = slash === -1 ? raw : raw.slice(0, slash);
+  const rest = slash === -1 ? '' : raw.slice(slash + 1);
+  if (head === PROJECT) return { kind: 'project', name: decodeURIComponent(rest) };
+  if (head === BROWSE) return { kind: 'browse', path: decodeSegments(rest) };
+  // A hash from before file browsing moved under #/browse/ -- e.g. a bookmark
+  // made under Phase 1's #/<path> scheme. It is a browse path missing its
+  // prefix, so decode it the same way a browse route would be: doing that
+  // here, rather than at the redirect call site, means an uncaught decode
+  // error still surfaces through the same try/catch that already wraps every
+  // currentRoute() call instead of escaping from inside a redirect.
+  return { kind: 'unknown', path: decodeSegments(raw) };
+}
+
 export function navigate(path) {
-  window.location.hash = `/${encodeHashPath(path)}`;
+  window.location.hash = `/${BROWSE}/${encodeHashPath(path)}`;
+}
+
+export function navigateProject(name) {
+  window.location.hash = `/${PROJECT}/${encodeURIComponent(name)}`;
 }
 
 function renderBreadcrumb(path) {
   breadcrumb.replaceChildren();
   const rootLink = document.createElement('a');
-  rootLink.href = '#/';
+  rootLink.href = `#/${BROWSE}/`;
   rootLink.textContent = document.getElementById('root-name').textContent;
   breadcrumb.append(rootLink);
 
@@ -38,7 +68,7 @@ function renderBreadcrumb(path) {
     accumulated = accumulated ? `${accumulated}/${part}` : part;
     breadcrumb.append(document.createTextNode(' / '));
     const link = document.createElement('a');
-    link.href = `#/${encodeHashPath(accumulated)}`;
+    link.href = `#/${BROWSE}/${encodeHashPath(accumulated)}`;
     link.textContent = part;
     breadcrumb.append(link);
   }
@@ -53,7 +83,118 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
-async function show(path) {
+// className is 'error' for a genuine failure (fetch/network, malformed
+// registry) or 'empty' for a valid-but-empty registry, which is not a
+// failure and should not read like one. 'empty' reuses the same neutral
+// style preview.js already uses for "no preview for this file".
+//
+// #roadmap-message is the only child of #roadmap this module writes, and
+// replaceChildren is the only way it writes to it. Appending straight to
+// #roadmap meant nothing ever removed a box: they stacked one per visit, and a
+// stale error card survived underneath a later successful render.
+function showRoadmapMessage(message, className) {
+  canvas.replaceChildren();
+  const box = document.createElement('div');
+  box.className = className;
+  box.textContent = message;
+  roadmapMessage.replaceChildren(box);
+}
+
+function clearRoadmapMessage() {
+  roadmapMessage.replaceChildren();
+}
+
+function showRoadmapError(message) {
+  showRoadmapMessage(message, 'error');
+}
+
+async function showRoadmap() {
+  // Commit to the roadmap before the fetch, not after: /api/projects walks
+  // git across every declared path -- seconds on a large folder -- and
+  // showing the file browser meanwhile reads as opening on the wrong screen.
+  document.getElementById('tree').hidden = true;
+  document.getElementById('main').hidden = true;
+  roadmap.hidden = false;
+  // Clear on entry, not on success: every path out of here either renders a
+  // graph or writes exactly one message, so the previous visit's box never
+  // outlives the visit that wrote it.
+  clearRoadmapMessage();
+  status.textContent = 'Loading roadmap…';
+
+  let data;
+  try {
+    data = await (await fetch('/api/projects')).json();
+  } catch (error) {
+    showRoadmapError(String(error.message || error));
+    return;
+  }
+
+  if (data.registry === false) {
+    // No registry: this folder has no roadmap, so hand back to the browser.
+    hideRoadmap();
+    window.location.hash = `/${BROWSE}/`;
+    return;
+  }
+  if (data.error) {
+    showRoadmapError(data.error);
+    return;
+  }
+  if (!data.projects.length) {
+    // Zero [[project]] entries is valid TOML and reaches here with neither
+    // registry: false nor error -- an empty graph, not a failure.
+    showRoadmapMessage('No projects declared in armoire.toml.', 'empty');
+    status.textContent = 'no projects';
+    return;
+  }
+  // Every visit re-runs this against the same persistent #roadmap-canvas and
+  // #rail-toggle elements. Without aborting the previous run's listeners they
+  // accumulate for the lifetime of the page.
+  if (roadmapListeners) roadmapListeners.abort();
+  roadmapListeners = new AbortController();
+  roadmapView = renderRoadmap(canvas, data, navigateProject, roadmapListeners.signal);
+  initRail(
+    document.getElementById('rail-toggle'),
+    document.getElementById('rail'),
+    data,
+    navigateProject,
+    roadmapListeners.signal,
+  );
+  document.getElementById('layout-reset').onclick = () => roadmapView.reset();
+  document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
+  document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);
+  status.textContent = `${data.projects.length} projects`;
+}
+
+function hideRoadmap() {
+  roadmap.hidden = true;
+  document.getElementById('tree').hidden = false;
+  document.getElementById('main').hidden = false;
+}
+
+async function showRoute(route) {
+  if (route.kind === 'home') {
+    try {
+      await showRoadmap();
+    } catch (error) {
+      // Unawaited, a throw inside renderRoadmap left the screen on
+      // "Loading roadmap…" with no error card and an unhandled rejection.
+      // Same destination as a failed fetch: the user sees what went wrong.
+      showRoadmapError(String(error.message || error));
+    }
+    return;
+  }
+  hideRoadmap();
+  if (route.kind === 'project') {
+    renderBreadcrumb('');
+    status.textContent = 'Loading…';
+    try {
+      status.textContent = await renderProject(content, route.name, navigate);
+    } catch (error) {
+      showError(error);
+    }
+    return;
+  }
+  const path = route.kind === 'browse' ? route.path : '';
   renderBreadcrumb(path);
   status.textContent = 'Loading…';
   try {
@@ -62,6 +203,7 @@ async function show(path) {
   } catch (error) {
     showError(error);
   }
+  tree.revealPath(path);
 }
 
 const tree = initTree(document.getElementById('tree'), navigate);
@@ -72,25 +214,30 @@ initFilter(
 );
 
 window.addEventListener('hashchange', () => {
-  let path;
+  let route;
   try {
-    path = currentPath();
+    route = currentRoute();
   } catch (error) {
-    // Not inside a promise chain, so an uncaught decode error here would be
-    // an unhandled exception with no error card -- the page just freezes.
     showError(error);
     return;
   }
-  show(path);
-  tree.revealPath(path);
+  if (route.kind === 'unknown') {
+    // A hash from before file browsing moved under #/browse/. It is a browse
+    // path missing its prefix, so migrate it rather than rendering the root
+    // listing under a stale URL and silently showing unrelated content.
+    window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;
+    return;
+  }
+  showRoute(route);
 });
 
 tree.ready
   .then(() => {
-    const path = currentPath();
-    show(path);
-    if (path) tree.revealPath(path);
+    const route = currentRoute();
+    if (route.kind === 'unknown') {
+      window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;
+      return;
+    }
+    showRoute(route);
   })
-  // A backend error on the initial listing would otherwise leave the tree
-  // permanently empty with nothing but an unhandled rejection in the console.
   .catch(showError);

@@ -39,9 +39,18 @@ All file browsing moves under `#/browse/`:
 | `#/project/0DTE` | Project detail |
 
 This removes the collision rather than special-casing it — a folder named
-`browse` is `#/browse/browse`. Bookmarks made under the old scheme break; the
-tool has been installable for under a day, so that cost is accepted rather than
-carrying a redirect layer forever.
+`browse` is `#/browse/browse`.
+
+**Revised during Task 4 — this section originally said the opposite.** As
+first written it accepted that bookmarks made under the old scheme would
+break, on the grounds that the tool had been installable for under a day and a
+redirect layer was not worth carrying forever. Task 4's review reversed that,
+and the migration shipped: `currentRoute()` classifies a hash whose first
+segment is neither `browse` nor `project` as `kind: 'unknown'`, and both entry
+points — the `hashchange` listener and the initial `tree.ready` resolution —
+rewrite it to `#/browse/<path>`. Old bookmarks keep working. Proven by
+`test_a_stale_phase_one_url_migrates_to_the_browse_route` and
+`test_a_stale_nested_url_migrates` in `tests/test_navigation.py`.
 
 ## File Structure
 
@@ -209,6 +218,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from armoire.paths import PathOutsideRoot, resolve_in_root
+
 REGISTRY_NAME = "armoire.toml"
 
 
@@ -334,12 +345,23 @@ def load_registry(root: Path) -> Registry | None:
             if blocker not in known:
                 issues.append(f"{project.name}: blocked_by names unknown project {blocker!r}")
         for relative in project.paths:
-            if not (root / relative).exists():
+            try:
+                resolved = resolve_in_root(root, relative)
+            except PathOutsideRoot:
+                # Distinct from "does not exist": an escaping path may well
+                # exist, and an existence-only check silently accepts it. The
+                # project then renders with no files and no explanation.
+                issues.append(f"{project.name}: path {relative!r} escapes the served root")
+                continue
+            if not resolved.exists():
                 issues.append(f"{project.name}: path {relative!r} does not exist")
 
     cycle = _find_cycle(projects)
     if cycle is not None:
-        issues.append("dependency cycle: " + " -> ".join(cycle))
+        # Lead with a project name: issues are attributed to a node downstream
+        # by splitting on the first ":", so a message starting with anything
+        # else silently fails to mark the graph.
+        issues.append(f"{cycle[0]}: dependency cycle via {' -> '.join(cycle)}")
 
     return Registry(projects=projects, issues=issues)
 ```
@@ -390,14 +412,22 @@ import pytest
 from armoire.activity import activity_for, recent_commits
 
 
+# Superseded during the final review: this sketch was transcribed into three
+# files, and its replacement environment drops HOME and SYSTEMROOT, which the
+# six-way CI matrix would eventually mind. What shipped is the single
+# `tests/conftest.py::_git`, merging the identity over os.environ and pinning
+# both git config scopes at os.devnull. Import that; do not copy this.
 def git(cwd, *args):
     subprocess.run(
         ["git", *args],
         cwd=cwd,
         check=True,
         capture_output=True,
-        env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-             "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"]},
+        env=os.environ | {
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+        },
     )
 
 
@@ -533,10 +563,11 @@ def _run(directory: Path, args: list[str]) -> str | None:
             ["git", "-C", str(directory), *args],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
         # git missing, or a repository so large the log times out. Activity is
         # a nice-to-have; the roadmap must still render without it.
         logger.debug("git failed in %s: %s", directory, exc)
@@ -547,13 +578,20 @@ def _run(directory: Path, args: list[str]) -> str | None:
     return completed.stdout
 
 
+MAX_SCAN_FILES = 5000
+
+
 def _newest_mtime(directory: Path) -> float | None:
-    """Fallback for folders outside git. Bounded so a huge tree cannot stall."""
+    """Fallback for folders outside git, or with no commits in the window.
+
+    Bounded so a huge tree cannot stall the startup thread. When the bound is
+    hit the answer is None, not the newest-so-far: rglob order has nothing to
+    do with mtime, so a truncated scan can report an older file as the newest
+    one, and a wrong "last touched" is worse than an absent one.
+    """
     newest: float | None = None
     seen = 0
     for path in directory.rglob("*"):
-        if seen >= 2000:
-            break
         try:
             if not path.is_file():
                 continue
@@ -561,6 +599,8 @@ def _newest_mtime(directory: Path) -> float | None:
         except OSError:
             continue
         seen += 1
+        if seen > MAX_SCAN_FILES:
+            return None
         if newest is None or stamp > newest:
             newest = stamp
     return newest
@@ -735,8 +775,29 @@ def test_unknown_project_is_404(registry_client):
     assert registry_client.get("/api/project/Ghost").status_code == 404
 
 
-def test_project_name_with_a_slash_does_not_escape(registry_client):
-    assert registry_client.get("/api/project/../../etc").status_code in (404, 422)
+def test_a_slashed_project_name_never_reaches_the_handler(registry_client):
+    """Starlette's single-segment path converter rejects it before dispatch.
+
+    A framework guarantee, not something project_detail implements — removing
+    the route's own 404 guard leaves this green. Named for what it proves.
+    """
+    assert registry_client.get("/api/project/..%2F..%2Fetc").status_code == 404
+    assert registry_client.get("/api/project/A/../..").status_code == 404
+
+
+def test_a_registry_path_escaping_the_root_yields_no_files(root):
+    """The registry is authored by whoever owns the folder, and armoire gets
+    pointed at cloned repositories. An escaping path must return nothing."""
+    (root / "armoire.toml").write_text(
+        '[[project]]
+name = "Evil"
+paths = ["../../Windows"]
+', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/project/Evil").json()
+    assert body["files"] == []
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1133,8 +1194,11 @@ Append to `src/armoire/static/app.css`:
 
 ```css
 /* Roadmap ------------------------------------------------------------- */
-#roadmap { position: relative; flex: 1; min-width: 0; display: none; }
-#roadmap[data-active="true"] { display: block; }
+/* Visibility is the `hidden` attribute alone. A second CSS switch cannot
+   override it anyway — `hidden` is display:none !important at UA level — and
+   two switches for one thing invite an edit that toggles only one, leaving a
+   roadmap that renders its nodes into a container nobody can see. */
+#roadmap { position: relative; flex: 1; min-width: 0; }
 #roadmap-canvas { width: 100%; height: 100%; display: block; cursor: grab; background: var(--bg); }
 #roadmap-canvas.dragging { cursor: grabbing; }
 
@@ -1442,10 +1506,13 @@ export function renderRoadmap(canvas, data, onOpen) {
   // Issues are strings of the form "<project>: <what is wrong>". A node whose
   // name leads an issue gets a marker, so a missing folder or an unknown
   // blocker is visible on the graph and not only in a rail nobody opened.
+  // Match each project against the issues rather than splitting the issue on
+  // ":", which loses any project whose own name contains one. This is the same
+  // test the per-node tooltip uses; two methods for one thing disagreed.
   const flagged = new Set(
-    (data.issues || [])
-      .map((issue) => issue.split(':')[0].trim())
-      .filter((name) => projects.some((p) => p.name === name)),
+    projects
+      .filter((project) => (data.issues || []).some((issue) => issue.startsWith(`${project.name}:`)))
+      .map((project) => project.name),
   );
 
   for (const project of projects) {
@@ -1500,7 +1567,11 @@ export function renderRoadmap(canvas, data, onOpen) {
   }
 
   const graph = g.graph();
-  canvas.setAttribute('viewBox', `0 0 ${graph.width || 800} ${graph.height || 400}`);
+  // Number.isFinite, not `||`: dagre leaves width at -Infinity for an empty
+  // graph, and -Infinity is truthy, so the fallback never fired.
+  const width = Number.isFinite(graph.width) && graph.width > 0 ? graph.width : 800;
+  const height = Number.isFinite(graph.height) && graph.height > 0 ? graph.height : 400;
+  canvas.setAttribute('viewBox', `0 0 ${width} ${height}`);
 
   return { positions, redrawEdges, viewport, nodeLayer };
 }
@@ -1531,7 +1602,6 @@ async function showRoadmap() {
   document.getElementById('tree').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
-  roadmap.dataset.active = 'true';
   if (data.error) {
     canvas.replaceChildren();
     const box = document.createElement('div');
@@ -1546,7 +1616,6 @@ async function showRoadmap() {
 
 function hideRoadmap() {
   roadmap.hidden = true;
-  roadmap.dataset.active = 'false';
   document.getElementById('tree').hidden = false;
   document.getElementById('main').hidden = false;
 }

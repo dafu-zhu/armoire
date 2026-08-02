@@ -15,6 +15,7 @@
 <script src="/vendor/hljs-julia.js"></script>
 <script src="/vendor/hljs-matlab.js"></script>
 <script src="/vendor/purify.js"></script>
+<script src="/vendor/dagre.js"></script>
 
 <header id="header">
   <span id="root-name">armoire</span>
@@ -30,6 +31,18 @@
     <div id="breadcrumb"></div>
     <div id="content"></div>
   </main>
+  <section id="roadmap" hidden aria-label="Project roadmap">
+    <svg id="roadmap-canvas"></svg>
+    <div id="roadmap-message"></div>
+    <button id="rail-toggle" type="button" aria-expanded="false">Details</button>
+    <aside id="rail" hidden></aside>
+    <div id="roadmap-controls">
+      <button id="zoom-out" type="button">&minus;</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-in" type="button">+</button>
+      <button id="layout-reset" type="button">Reset layout</button>
+    </div>
+  </section>
 </div>
 
 <footer id="status"></footer>

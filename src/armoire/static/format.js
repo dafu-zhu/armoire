@@ -17,10 +17,9 @@ export function formatAge(mtime) {
   return `${Math.floor(days / 365)} years ago`;
 }
 
-// Every write to location.hash -- navigate(), the breadcrumb links, and a
-// rendered markdown file's relative links -- must go through this. A raw "%"
-// or other reserved character in a path segment is not a valid
-// percent-escape, and currentPath()'s decodeURIComponent throws on it.
+// Every write to location.hash must go through this. A raw "%" or other
+// reserved character in a path segment is not a valid percent-escape, and
+// currentRoute()'s decodeURIComponent throws on it.
 export function encodeHashPath(path) {
   // Encode per segment: the separators are structural and must survive.
   return path.split('/').map(encodeURIComponent).join('/');
