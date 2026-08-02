@@ -1,0 +1,8 @@
+# The vendored libraries are fetched byte-for-byte from a CDN by
+# scripts/vendor.py, which writes exactly what it downloaded: LF. On a checkout
+# with core.autocrlf=true the working tree gets CRLF instead, so the next run of
+# vendor.py rewrites all nine files with a line-ending-only diff and nothing
+# else. That has already cost one implementer stall and a verification round.
+# Marking them binary takes them out of line-ending conversion entirely, and
+# suppresses a diff nobody wants to read for a minified bundle.
+src/armoire/static/vendor/** binary
