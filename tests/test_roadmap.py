@@ -133,3 +133,64 @@ def test_a_colon_in_a_project_name_does_not_drop_its_marker(page, colon_name_ser
     page.goto(colon_name_server)
     page.wait_for_selector("#roadmap .node", timeout=15000)
     assert page.locator("#roadmap .node-warn").count() == 1
+
+
+def drag_node(page, name, dx, dy):
+    node = page.locator(f'#roadmap .node[data-name="{name}"]')
+    box = node.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] / 2 + dx, box["y"] + box["height"] / 2 + dy, steps=8)
+    page.mouse.up()
+    return box
+
+
+def test_dragging_moves_a_node(page, live_server):
+    open_roadmap(page, live_server)
+    before = drag_node(page, "Upstream", 120, 60)
+    after = page.locator('#roadmap .node[data-name="Upstream"]').bounding_box()
+    assert abs(after["x"] - before["x"]) > 40
+
+
+def test_a_dragged_position_survives_a_reload(page, live_server):
+    open_roadmap(page, live_server)
+    drag_node(page, "Upstream", 120, 60)
+    moved = page.locator('#roadmap .node[data-name="Upstream"]').bounding_box()
+    page.reload()
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    restored = page.locator('#roadmap .node[data-name="Upstream"]').bounding_box()
+    assert abs(restored["x"] - moved["x"]) < 4
+
+
+def test_reset_restores_the_computed_layout(page, live_server):
+    open_roadmap(page, live_server)
+    original = page.locator('#roadmap .node[data-name="Upstream"]').bounding_box()
+    drag_node(page, "Upstream", 120, 60)
+    page.locator("#layout-reset").click()
+    page.wait_for_timeout(300)
+    restored = page.locator('#roadmap .node[data-name="Upstream"]').bounding_box()
+    assert abs(restored["x"] - original["x"]) < 4
+
+
+def test_dragging_does_not_write_to_the_served_folder(page, live_server, sample_root):
+    """localStorage, not disk -- the read-only guarantee covers the roadmap too."""
+    import hashlib
+
+    def snapshot():
+        return {
+            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(sample_root.rglob("*"))
+            if p.is_file()
+        }
+
+    before = snapshot()
+    open_roadmap(page, live_server)
+    drag_node(page, "Upstream", 90, 40)
+    page.wait_for_timeout(300)
+    assert snapshot() == before
+
+
+def test_zoom_controls_change_the_reported_level(page, live_server):
+    open_roadmap(page, live_server)
+    page.locator("#zoom-in").click()
+    assert page.locator("#zoom-level").inner_text() != "100%"

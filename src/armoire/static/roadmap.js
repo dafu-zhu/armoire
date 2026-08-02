@@ -6,6 +6,30 @@ const NODE_W = 168;
 const NODE_H = 62;
 const CATEGORIES = 6;
 
+function storageKey(root) {
+  return `armoire:layout:${root}`;
+}
+
+function loadSaved(root) {
+  try {
+    return JSON.parse(window.localStorage.getItem(storageKey(root)) || '{}');
+  } catch {
+    // A corrupt entry must not take the roadmap down with it.
+    return {};
+  }
+}
+
+function save(root, positions) {
+  const plain = {};
+  for (const [name, pos] of positions) plain[name] = { x: pos.x, y: pos.y };
+  try {
+    window.localStorage.setItem(storageKey(root), JSON.stringify(plain));
+  } catch {
+    // Quota or a privacy mode that blocks storage. Dragging still works for
+    // this session; it just will not persist.
+  }
+}
+
 function categoryClass(category, order) {
   if (!category) return 'cat-5';
   if (!order.has(category)) order.set(category, order.size % (CATEGORIES - 1));
@@ -61,6 +85,13 @@ export function renderRoadmap(canvas, data, onOpen) {
 
   for (const id of g.nodes()) positions.set(id, { ...g.node(id) });
 
+  const computed = new Map();
+  for (const [name, pos] of positions) computed.set(name, { x: pos.x, y: pos.y });
+  const saved = loadSaved(data.root);
+  for (const [name, pos] of Object.entries(saved)) {
+    if (positions.has(name)) positions.set(name, { ...positions.get(name), ...pos });
+  }
+
   function edgePath(from, to) {
     const a = positions.get(from);
     const b = positions.get(to);
@@ -94,6 +125,13 @@ export function renderRoadmap(canvas, data, onOpen) {
       .map((project) => project.name),
   );
 
+  // `dragging` itself cannot be the click guard's signal: pointerup resets it
+  // to null before the native mouseup/click pair that follows in the same
+  // synchronous dispatch, so a click handler reading `dragging` would always
+  // see it already cleared. suppressClick is recomputed on every pointerup,
+  // read once by the click that immediately follows in the same gesture.
+  let dragging = null;
+  let suppressClick = false;
   for (const project of projects) {
     const pos = positions.get(project.name);
     if (!pos) continue;
@@ -138,7 +176,10 @@ export function renderRoadmap(canvas, data, onOpen) {
       group.append(warn);
     }
 
-    group.addEventListener('click', () => onOpen(project.name));
+    group.addEventListener('click', () => {
+      if (suppressClick) return;
+      onOpen(project.name);
+    });
     group.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') onOpen(project.name);
     });
@@ -152,5 +193,85 @@ export function renderRoadmap(canvas, data, onOpen) {
   const height = Number.isFinite(graph.height) && graph.height > 0 ? graph.height : 400;
   canvas.setAttribute('viewBox', `0 0 ${width} ${height}`);
 
-  return { positions, redrawEdges, viewport, nodeLayer };
+  let scale = 1;
+  let pan = { x: 0, y: 0 };
+
+  function applyViewport() {
+    viewport.setAttribute('transform', `translate(${pan.x},${pan.y}) scale(${scale})`);
+    const label = document.getElementById('zoom-level');
+    if (label) label.textContent = `${Math.round(scale * 100)}%`;
+  }
+
+  function place(name) {
+    const pos = positions.get(name);
+    const group = nodeLayer.querySelector(`[data-name="${CSS.escape(name)}"]`);
+    if (group) {
+      group.setAttribute('transform', `translate(${pos.x - NODE_W / 2},${pos.y - NODE_H / 2})`);
+    }
+  }
+
+  canvas.addEventListener('pointerdown', (event) => {
+    const group = event.target.closest('.node');
+    const point = canvas.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const local = point.matrixTransform(canvas.getScreenCTM().inverse());
+    if (group) {
+      const name = group.dataset.name;
+      dragging = { name, offsetX: local.x - positions.get(name).x * scale - pan.x,
+                   offsetY: local.y - positions.get(name).y * scale - pan.y, moved: false };
+    } else {
+      dragging = { name: null, offsetX: local.x - pan.x, offsetY: local.y - pan.y, moved: false };
+      canvas.classList.add('dragging');
+      canvas.setPointerCapture(event.pointerId);
+    }
+  });
+
+  canvas.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    const point = canvas.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const local = point.matrixTransform(canvas.getScreenCTM().inverse());
+    dragging.moved = true;
+    if (dragging.name) {
+      positions.set(dragging.name, {
+        ...positions.get(dragging.name),
+        x: (local.x - dragging.offsetX - pan.x) / scale,
+        y: (local.y - dragging.offsetY - pan.y) / scale,
+      });
+      place(dragging.name);
+      redrawEdges();
+    } else {
+      pan = { x: local.x - dragging.offsetX, y: local.y - dragging.offsetY };
+      applyViewport();
+    }
+  });
+
+  canvas.addEventListener('pointerup', (event) => {
+    canvas.classList.remove('dragging');
+    if (dragging && dragging.name && dragging.moved) save(data.root, positions);
+    suppressClick = Boolean(dragging && dragging.moved);
+    dragging = null;
+    canvas.releasePointerCapture(event.pointerId);
+  });
+
+  applyViewport();
+
+  return {
+    reset() {
+      for (const [name, pos] of computed) positions.set(name, { ...pos });
+      for (const name of positions.keys()) place(name);
+      redrawEdges();
+      try {
+        window.localStorage.removeItem(storageKey(data.root));
+      } catch {
+        /* storage unavailable; the in-memory reset still applied */
+      }
+    },
+    zoomBy(factor) {
+      scale = Math.min(2.5, Math.max(0.35, scale * factor));
+      applyViewport();
+    },
+  };
 }

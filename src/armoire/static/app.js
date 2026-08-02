@@ -130,6 +130,9 @@ async function showRoadmap() {
     return;
   }
   roadmapView = renderRoadmap(canvas, data, navigateProject);
+  document.getElementById('layout-reset').onclick = () => roadmapView.reset();
+  document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
+  document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);
   status.textContent = `${data.projects.length} projects`;
 }
 
