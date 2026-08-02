@@ -236,4 +236,87 @@ def test_serving_never_writes_to_disk(root):
     ]:
         client.get("/api/preview", params={"path": name})
         client.get("/api/raw", params={"path": name})
+    client.get("/api/projects")
+    client.get("/api/project/Downstream")
     assert snapshot() == before
+
+
+REGISTRY = """
+[[project]]
+name = "Downstream"
+paths = ["docs"]
+blocked_by = ["Upstream"]
+category = "research"
+due = 2026-08-17
+note = "a note"
+
+[[project]]
+name = "Upstream"
+paths = ["docs"]
+"""
+
+
+@pytest.fixture
+def registry_root(root):
+    (root / "armoire.toml").write_text(REGISTRY, encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def registry_client(registry_root):
+    app = create_app(registry_root)
+    app.state.index.wait(timeout=10)
+    return TestClient(app)
+
+
+def test_projects_endpoint_lists_declared_projects(registry_client):
+    body = registry_client.get("/api/projects").json()
+    assert [p["name"] for p in body["projects"]] == ["Downstream", "Upstream"]
+    assert body["issues"] == []
+
+
+def test_projects_endpoint_carries_optional_fields(registry_client):
+    body = registry_client.get("/api/projects").json()
+    downstream = body["projects"][0]
+    assert downstream["blocked_by"] == ["Upstream"]
+    assert downstream["category"] == "research"
+    assert downstream["due"] == "2026-08-17"
+    assert downstream["note"] == "a note"
+
+
+def test_projects_endpoint_includes_activity_so_the_graph_needs_one_call(registry_client):
+    body = registry_client.get("/api/projects").json()
+    assert all("commits" in p and "last" in p for p in body["projects"])
+
+
+def test_no_registry_reports_that_rather_than_erroring(client):
+    body = client.get("/api/projects").json()
+    assert body["registry"] is False
+    assert body["projects"] == []
+
+
+def test_malformed_registry_is_200_with_an_error_field(root):
+    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/projects")
+    assert response.status_code == 200
+    assert "error" in response.json()
+
+
+def test_project_detail_reports_what_it_blocks(registry_client):
+    body = registry_client.get("/api/project/Upstream").json()
+    assert body["blocks"] == ["Downstream"]
+
+
+def test_project_detail_lists_files_under_its_paths(registry_client):
+    body = registry_client.get("/api/project/Downstream").json()
+    assert any(f["name"] == "readme.md" for f in body["files"])
+
+
+def test_unknown_project_is_404(registry_client):
+    assert registry_client.get("/api/project/Ghost").status_code == 404
+
+
+def test_project_name_with_a_slash_does_not_escape(registry_client):
+    assert registry_client.get("/api/project/../../etc").status_code in (404, 422)
