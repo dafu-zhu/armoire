@@ -149,7 +149,8 @@ def test_dragging_moves_a_node(page, live_server):
     open_roadmap(page, live_server)
     before = drag_node(page, "Upstream", 120, 60)
     after = page.locator('#roadmap .node[data-name="Upstream"]').bounding_box()
-    assert abs(after["x"] - before["x"]) > 40
+    assert abs(after["x"] - before["x"] - 120) < 8
+    assert abs(after["y"] - before["y"] - 60) < 8
 
 
 def test_a_dragged_position_survives_a_reload(page, live_server):
@@ -178,7 +179,7 @@ def test_dragging_does_not_write_to_the_served_folder(page, live_server, sample_
 
     def snapshot():
         return {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            p.relative_to(sample_root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
             for p in sorted(sample_root.rglob("*"))
             if p.is_file()
         }
@@ -194,3 +195,32 @@ def test_zoom_controls_change_the_reported_level(page, live_server):
     open_roadmap(page, live_server)
     page.locator("#zoom-in").click()
     assert page.locator("#zoom-level").inner_text() != "100%"
+
+
+def test_dragging_a_node_does_not_open_its_project(page, live_server):
+    """The whole point of suppressClick: a reposition must not navigate away."""
+    open_roadmap(page, live_server)
+    drag_node(page, "Upstream", 120, 60)
+    page.wait_for_timeout(400)
+    assert page.evaluate("location.hash") in ("", "#/")
+    assert page.locator("#roadmap .node").first.is_visible()
+
+
+def test_clicking_a_node_without_dragging_still_opens_it(page, live_server):
+    """suppressClick must not suppress a genuine click."""
+    open_roadmap(page, live_server)
+    page.locator('#roadmap .node[data-name="Upstream"]').click()
+    page.wait_for_function("() => location.hash === '#/project/Upstream'", timeout=5000)
+
+
+def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_server):
+    """JSON.parse('null') succeeds and yields null; Object.entries(null) throws
+    unless loadSaved guards against it -- and an uncaught throw inside
+    renderRoadmap would leave the roadmap with no nodes at all."""
+    import json
+
+    root = page.request.get(f"{live_server}/api/projects").json()["root"]
+    key = f"armoire:layout:{root}"
+    page.add_init_script(f"window.localStorage.setItem({json.dumps(key)}, 'null')")
+    open_roadmap(page, live_server)
+    assert page.locator("#roadmap .node").count() >= 1

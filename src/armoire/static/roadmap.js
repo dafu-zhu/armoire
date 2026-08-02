@@ -12,7 +12,10 @@ function storageKey(root) {
 
 function loadSaved(root) {
   try {
-    return JSON.parse(window.localStorage.getItem(storageKey(root)) || '{}');
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey(root)) || '{}');
+    // JSON.parse('null') succeeds and yields null, which Object.entries
+    // rejects -- the catch below never sees it.
+    return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     // A corrupt entry must not take the roadmap down with it.
     return {};
@@ -251,9 +254,16 @@ export function renderRoadmap(canvas, data, onOpen) {
   canvas.addEventListener('pointerup', (event) => {
     canvas.classList.remove('dragging');
     if (dragging && dragging.name && dragging.moved) save(data.root, positions);
-    suppressClick = Boolean(dragging && dragging.moved);
+    suppressClick = Boolean(dragging && dragging.name && dragging.moved);
     dragging = null;
     canvas.releasePointerCapture(event.pointerId);
+  });
+
+  // An interrupted gesture (e.g. the OS steals the pointer for a scroll)
+  // must not leave the canvas permanently in "dragging" mode.
+  canvas.addEventListener('pointercancel', () => {
+    canvas.classList.remove('dragging');
+    dragging = null;
   });
 
   applyViewport();
