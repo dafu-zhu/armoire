@@ -285,105 +285,6 @@ def test_clicking_a_node_without_dragging_still_opens_it(page, live_server):
     page.wait_for_function("() => location.hash === '#/project/Upstream'", timeout=5000)
 
 
-def test_the_rail_is_collapsed_by_default(page, live_server):
-    open_roadmap(page, live_server)
-    assert page.locator("#rail").is_hidden()
-
-
-def test_the_rail_toggles_open(page, live_server):
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail:visible", timeout=5000)
-    assert page.locator("#rail").is_visible()
-
-
-def test_the_rail_ranks_projects_by_commit_count(page, live_server):
-    """The brief's version asserted only that the rail was non-empty, which
-    passes with the list in any order, or reversed. sample_root's own two
-    projects both compute to zero commits -- there is no git history under
-    the pytest tmp path, confirmed by calling project_rows() against a
-    replica of the fixture -- so real fixture data ties and cannot
-    distinguish a correct sort from a reversed or removed one. This stubs
-    /api/projects with commit counts that actually differ, listed in an
-    order that is neither sorted nor reverse-sorted, so a removed or
-    inverted sort both change the rendered order."""
-    import json
-
-    stub = {
-        "root": "stub-root",
-        "projects": [
-            {
-                "name": "Mid",
-                "paths": [],
-                "blocked_by": [],
-                "category": None,
-                "due": None,
-                "note": None,
-                "commits": 5,
-                "last": None,
-            },
-            {
-                "name": "Low",
-                "paths": [],
-                "blocked_by": [],
-                "category": None,
-                "due": None,
-                "note": None,
-                "commits": 2,
-                "last": None,
-            },
-            {
-                "name": "High",
-                "paths": [],
-                "blocked_by": [],
-                "category": None,
-                "due": None,
-                "note": None,
-                "commits": 9,
-                "last": None,
-            },
-        ],
-        "issues": [],
-    }
-    page.route(
-        "**/api/projects",
-        lambda route: route.fulfill(
-            status=200, content_type="application/json", body=json.dumps(stub)
-        ),
-    )
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail li", timeout=5000)
-    items = page.locator("#rail li").all_text_contents()
-    activity = [i for i in items if "—" in i]
-    assert len(activity) == 3, activity
-    counts = [int(i.rsplit("—", 1)[1].strip()) for i in activity]
-    assert counts == [9, 5, 2], counts
-
-
-def test_the_rail_lists_blocked_projects_with_their_blocker(page, live_server):
-    """The brief's version asserted both project names appeared somewhere in
-    the rail, which passes even with an empty Blocked section: both names
-    already appear in the Activity section directly above. Scope the
-    assertion to the blocked entry rail.js actually renders, in the
-    "Downstream ← Upstream" form the sample registry's one edge produces."""
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail li", timeout=5000)
-    items = page.locator("#rail li").all_text_contents()
-    blocked = [i for i in items if "←" in i]
-    assert blocked == ["Downstream ← Upstream"], blocked
-
-
-def test_the_rail_open_state_survives_a_reload(page, live_server):
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail:visible", timeout=5000)
-    page.reload()
-    page.wait_for_selector("#roadmap .node", timeout=15000)
-    assert page.locator("#rail").is_visible()
-
-
 def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_server):
     """JSON.parse('null') succeeds and yields null; Object.entries(null) throws
     unless loadSaved guards against it -- and an uncaught throw inside
@@ -398,33 +299,24 @@ def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_s
 
 
 def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server):
-    """Each visit re-runs renderRoadmap/initRail against the same persistent
-    #roadmap-canvas and #rail-toggle elements. Without aborting the previous
-    run's listeners they pile up for the lifetime of the page -- but a
-    behavioural check on either element's final visible state cannot catch
-    it: every surviving duplicate listener holds its own independent `open`
-    (rail) or `positions`/`dragging` (canvas) closure that starts at the
-    same value and evolves in lockstep with all the others on every real
-    event, so the rendered result is coincidentally correct no matter how
-    many copies are attached (verified empirically: the dispatch's own
-    suggested assertion -- click once after three revisits and require the
-    rail's visibility to have flipped -- passes against the unfixed code
-    too). The actual, catchable symptom is duplicated *work*: each surviving
-    listener independently calls its own write to localStorage, so after N
-    revisits a single canvas drag writes the layout key N+1 times, and a
-    single rail-toggle click writes the rail key N+1 times, instead of once
-    each. Spying on Storage.prototype.setItem counts both directly instead
-    of guessing at an observable side effect. Both prefixes are tracked
-    through the one wrapper rather than two separate spies -- there is only
-    one thing being proven (accumulated writes per surviving listener) and
-    one wrapper installed once reads more directly than re-deriving the same
-    instrumentation twice.
+    """Each visit re-runs renderRoadmap against the same persistent
+    #roadmap-canvas element. Without aborting the previous run's listeners
+    they pile up for the lifetime of the page -- but a behavioural check on
+    the canvas's final state cannot catch it: every surviving duplicate
+    listener holds its own independent `positions`/`dragging` closure that
+    starts at the same value and evolves in lockstep with all the others on
+    every real event, so the rendered result is coincidentally correct no
+    matter how many copies are attached. The actual, catchable symptom is
+    duplicated *work*: each surviving listener independently calls its own
+    write to localStorage, so after N revisits a single canvas drag writes
+    the layout key N+1 times instead of once. Spying on
+    Storage.prototype.setItem counts this directly instead of guessing at an
+    observable side effect.
 
-    Coordinator review of this test's first version found it exercised only
-    the canvas listeners (via the drag) and never clicked #rail-toggle, so a
-    signal dropped from only the toggle's addEventListener call in rail.js
-    would have shipped undetected -- the click below, and its own write
-    count, close that gap.
+    (This test used to also click #rail-toggle and assert its own write
+    count, closing the same gap for rail.js's toggle listener -- task 9
+    deleted the rail along with that listener, so only the canvas half
+    remains.)
 
     AbortController is wrapped only to count constructions, giving the test
     a way to wait for proof that a given revisit's abort()+render()+attach()
@@ -460,19 +352,14 @@ def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server)
 
     page.evaluate(
         """() => {
-            window.__writes = { layout: 0, rail: 0 };
+            window.__writes = { layout: 0 };
             const original = Storage.prototype.setItem;
             Storage.prototype.setItem = function (key, value) {
                 if (key.startsWith('armoire:layout:')) window.__writes.layout += 1;
-                if (key.startsWith('armoire:rail:')) window.__writes.rail += 1;
                 return original.call(this, key, value);
             };
         }"""
     )
-
-    page.locator("#rail-toggle").click()
-    rail_writes = page.evaluate("window.__writes.rail")
-    assert rail_writes == 1, rail_writes
 
     drag_node(page, "Upstream", 80, 30)
     page.wait_for_timeout(300)
@@ -1034,3 +921,44 @@ def test_a_project_with_both_a_due_date_and_a_note_shows_both(live_server, page)
     # use .text_content(), which works on any node regardless of namespace.
     assert node.locator(".node-due").text_content() == "Due 2026-08-17"
     assert node.locator(".node-sub tspan").count() >= 2
+
+
+def test_isolated_projects_leave_the_graph(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    assert page.locator('.node[data-name="Standalone"]').count() == 0
+
+
+def test_isolated_projects_appear_in_a_category_container(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    assert page.locator('#categories [data-name="Standalone"]').count() == 1
+
+
+def test_each_category_gets_its_own_container(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    titles = page.locator("#categories .category h3").all_inner_texts()
+    assert len(titles) == len(set(titles))
+
+
+def test_a_category_entry_opens_the_project(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    page.locator('#categories [data-name="Standalone"] .entry-name').click()
+    page.wait_for_url("**/#/project/Standalone")
+
+
+def test_the_details_toggle_is_gone(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    assert page.locator("#rail-toggle").count() == 0
+    assert page.locator("#rail").count() == 0
+
+
+def test_the_status_strip_reports_registry_issues(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    # sample_root's registry has at least one issue; the rail used to be the
+    # only place it was visible.
+    assert "issue" in page.locator("#status").inner_text()

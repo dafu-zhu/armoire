@@ -2,7 +2,7 @@
 // click targets, drag and styling stay under our control -- mermaid would emit
 // a static picture we would then have to fight.
 
-import { STATUS_ORDER, nextStatus, glyphFor, setStatus } from './status.js';
+import { STATUS_ORDER, nextStatus, glyphFor, writeStatus } from './status.js';
 
 const NODE_W = 168;
 const CATEGORIES = 6;
@@ -214,10 +214,6 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   const statuses = new Map(
     projects.map((p) => [p.name, STATUS_ORDER.includes(p.status) ? p.status : 'active']),
   );
-  // Per-project write serialization and rollback-staleness guard for the
-  // chip's cycle() handler, below.
-  const writeQueue = new Map();
-  const writeToken = new Map();
 
   function isBlocked(project) {
     // Blocked means "waiting on something unfinished", not "has a blocker".
@@ -312,33 +308,13 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
       statuses.set(project.name, wanted);
       applyStatus();
 
-      // Two clicks on the same chip in quick succession must not let their
-      // PUTs race each other to the server on separate connections: if the
-      // second lands first, the server ends on the first click's status
-      // while the screen still shows the second's. Chaining this write onto
-      // the *settlement* (success or failure, via the two-argument .then)
-      // of this project's previous write makes them strictly sequential --
-      // only one is ever in flight for a given project, so there is nothing
-      // left for the server to reorder.
-      const previousWrite = writeQueue.get(project.name) || Promise.resolve();
-      const token = (writeToken.get(project.name) || 0) + 1;
-      writeToken.set(project.name, token);
-      const thisWrite = previousWrite.then(
-        () => setStatus(project.name, wanted),
-        () => setStatus(project.name, wanted),
-      ).catch(() => {
-        // The write failed; the screen must not keep claiming it succeeded.
-        // But only roll back if this is still the *latest* click for this
-        // project: an intervening click has already moved the optimistic
-        // state (and queued its own write) past this one, and rolling back
-        // to this click's `previous` would show a status the server never
-        // actually held for either click.
-        if (writeToken.get(project.name) === token) {
-          statuses.set(project.name, previous);
-          applyStatus();
-        }
+      // writeStatus (status.js) serializes this project's writes -- across
+      // both this module and categories.js -- and only calls back here if
+      // this write failed and is still the latest click for this project.
+      writeStatus(project.name, wanted, () => {
+        statuses.set(project.name, previous);
+        applyStatus();
       });
-      writeQueue.set(project.name, thisWrite);
     };
     chip.addEventListener('click', cycle);
     chip.addEventListener('keydown', (event) => {

@@ -278,7 +278,36 @@ def sample_root(tmp_path_factory, _isolated_store_session):
         "[[project]]\n"
         'name = "Upstream"\n'
         'paths = ["notes/deep"]\n'
-        'category = "learning"\n',
+        'category = "learning"\n'
+        "\n"
+        # Standalone and Backlog participate in no edge that will actually be
+        # drawn (dashboard.project_rows's "isolated"), so task 9's category
+        # column -- not the graph -- is where they must appear. Both carry a
+        # category: declaring neither blocked_by nor category is itself a
+        # registry issue (projects.py), and that is not the issue this
+        # fixture means to exercise. They sit in different categories so
+        # test_each_category_gets_its_own_container is not vacuous with a
+        # single container.
+        "[[project]]\n"
+        'name = "Standalone"\n'
+        'paths = ["notes"]\n'
+        'category = "ops"\n'
+        'note = "Nothing depends on this project, and it depends on nothing."\n'
+        "\n"
+        # Backlog's blocked_by names a project that does not exist anywhere in
+        # this registry. dashboard.py counts only edges that will actually be
+        # drawn, so an edge to an unknown project leaves Backlog just as
+        # isolated as Standalone -- but projects.py still reports it as a
+        # registry issue (blocked_by names unknown project), which is what
+        # gives sample_root the "at least one issue"
+        # test_the_status_strip_reports_registry_issues needs: the rail used
+        # to be the only place that was visible, and this task moves it into
+        # the status strip instead.
+        "[[project]]\n"
+        'name = "Backlog"\n'
+        'paths = ["notes"]\n'
+        'category = "infra"\n'
+        'blocked_by = ["Vanished"]\n',
         encoding="utf-8",
         newline="",
     )
@@ -383,12 +412,24 @@ def empty_registry_server(empty_registry_root):
 def colon_name_root(tmp_path_factory, _isolated_store_session):
     """A project whose name contains a colon, with a genuine issue against it
     (a missing path) -- the fixture Finding 2's flagged-set fix needs to
-    prove itself against."""
+    prove itself against.
+
+    "Foo: Bar" carries no `blocked_by` of its own, but task 9 filters
+    isolated projects out of the graph entirely, and this fixture's test
+    (test_a_colon_in_a_project_name_does_not_drop_its_marker) checks a
+    *graph* node's warning marker -- it would otherwise have nothing to
+    check against. "Dependent" exists only to give "Foo: Bar" a real inbound
+    edge (dashboard.py's `isolated` looks at edges that will actually be
+    drawn, not at category) so it stays connected and keeps rendering as a
+    node.
+    """
     root = tmp_path_factory.mktemp("colon-name")
     registry_file = store.registry_path(root)
     registry_file.parent.mkdir(parents=True, exist_ok=True)
     registry_file.write_text(
-        '[[project]]\nname = "Foo: Bar"\npaths = ["missing"]\n',
+        '[[project]]\nname = "Foo: Bar"\npaths = ["missing"]\n'
+        "\n"
+        '[[project]]\nname = "Dependent"\npaths = ["."]\nblocked_by = ["Foo: Bar"]\n',
         encoding="utf-8",
         newline="",
     )

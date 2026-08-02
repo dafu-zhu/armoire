@@ -3,7 +3,7 @@ import { initFilter } from './filter.js';
 import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
 import { renderRoadmap } from './roadmap.js';
-import { initRail } from './rail.js';
+import { renderCategories } from './categories.js';
 import { renderProject } from './project.js';
 
 const content = document.getElementById('content');
@@ -16,6 +16,7 @@ const PROJECT = 'project';
 const roadmap = document.getElementById('roadmap');
 const canvas = document.getElementById('roadmap-canvas');
 const roadmapMessage = document.getElementById('roadmap-message');
+const categories = document.getElementById('categories');
 const body = document.getElementById('body');
 
 let roadmapView = null;
@@ -114,6 +115,7 @@ async function showRoadmap() {
   document.getElementById('tree').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
+  categories.hidden = false;
   // Clear on entry, not on success: every path out of here either renders a
   // graph or writes exactly one message, so the previous visit's box never
   // outlives the visit that wrote it.
@@ -140,27 +142,30 @@ async function showRoadmap() {
     window.location.hash = `/${BROWSE}/`;
     return;
   }
-  // Every visit re-runs this against the same persistent #roadmap-canvas and
-  // #rail-toggle elements. Without aborting the previous run's listeners they
-  // accumulate for the lifetime of the page.
+  // Every visit re-runs this against the same persistent #roadmap-canvas
+  // element. Without aborting the previous run's listeners they accumulate
+  // for the lifetime of the page.
   if (roadmapListeners) roadmapListeners.abort();
   roadmapListeners = new AbortController();
-  roadmapView = renderRoadmap(canvas, data, navigateProject, roadmapListeners.signal);
-  initRail(
-    document.getElementById('rail-toggle'),
-    document.getElementById('rail'),
-    data,
-    navigateProject,
-    roadmapListeners.signal,
-  );
+  // Projects that participate in no edge that will actually be drawn have no
+  // place in the graph -- they belong in the category column instead (see
+  // categories.js). Filtering here, before renderRoadmap ever sees them,
+  // keeps that one job in roadmap.js and this one in app.js.
+  const connected = { ...data, projects: data.projects.filter((p) => !p.isolated) };
+  roadmapView = renderRoadmap(canvas, connected, navigateProject, roadmapListeners.signal);
+  renderCategories(categories, data, navigateProject);
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();
   document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
   document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);
-  status.textContent = `${data.projects.length} projects`;
+  const issues = (data.issues || []).length;
+  status.textContent = issues
+    ? `${data.projects.length} projects · ${issues} issue${issues === 1 ? '' : 's'}`
+    : `${data.projects.length} projects`;
 }
 
 function hideRoadmap() {
   roadmap.hidden = true;
+  categories.hidden = true;
   document.getElementById('tree').hidden = false;
   document.getElementById('main').hidden = false;
 }

@@ -286,20 +286,26 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
   border-radius: var(--radius); cursor: pointer;
 }
 
-#rail-toggle {
-  position: absolute; right: 12px; top: 12px;
-  font: inherit; font-size: 12px; padding: 4px 12px;
-  color: var(--fg); background: var(--subtle);
-  border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+/* Category column ------------------------------------------------------ */
+/* A permanent sibling of #roadmap inside #body (already `display: flex`,
+   see the `#body` rule above), not an overlay inside #roadmap like the rail
+   it replaces: unconnected projects are not part of the graph, so they get
+   their own column rather than floating on top of it. */
+#categories {
+  width: 240px;
+  flex: 0 0 240px;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px;
 }
-#rail {
-  position: absolute; right: 0; top: 0; bottom: 0; width: 280px;
-  overflow-y: auto; padding: 44px 16px 16px;
-  background: var(--bg); border-left: 1px solid var(--border);
-}
-#rail h4 { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; color: var(--muted); }
-#rail ul { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.9; }
-#rail .issue { color: #bc4c00; }
+.category { margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
+.category h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.category ul { list-style: none; margin: 0; padding: 0; }
+.entry { padding: 4px 0; }
+.entry-name { background: none; border: 0; padding: 0; color: var(--link); cursor: pointer; font: inherit; }
+.entry-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+.entry.status-done { opacity: 0.55; }
+.entry.status-done .entry-name { text-decoration: line-through; }
 
 /* Project detail ------------------------------------------------------ */
 .project-detail { max-width: 900px; }
