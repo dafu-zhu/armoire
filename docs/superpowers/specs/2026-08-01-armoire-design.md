@@ -1,7 +1,12 @@
 # armoire — design
 
 **Date:** 2026-08-01
-**Status:** Approved
+**Status:** Phase 1 shipped. The template/scaffolding/conformance design below is
+**superseded** by [`2026-08-01-armoire-roadmap-design.md`](2026-08-01-armoire-roadmap-design.md),
+which replaces it with a project roadmap. It was written before the viewer
+existed and guessed at a need that turned out to be different. The Phase 1
+sections — viewer, previews, path jail, read-only boundary — remain current and
+describe what shipped.
 
 ## Problem
 
