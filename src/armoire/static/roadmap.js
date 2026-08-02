@@ -56,6 +56,25 @@ function nodeHeight(lineCount) {
   return Math.max(NODE_MIN_H, TITLE_Y + 6 + lineCount * LINE_H + 8);
 }
 
+// The one place a project's subtitle is decided. A fixed-height node used to
+// force a choice between `due` and `note` (whichever `||` picked); nodes now
+// grow to fit, so both render -- the due date first, unwrapped (an ISO date
+// is short and fixed-format, so it needs no measurement), the note wrapped
+// beneath it. Task 7's "done" collapse needs to suppress both the due line
+// and the note at once for a done project; add that as an early return here
+// (e.g. `if (project.status === 'done') return { dueLine: null, noteLines: [] };`)
+// and every caller -- height computation and rendering both read this same
+// result -- picks it up for free.
+function buildSubtitle(canvas, project) {
+  const dueLine = project.due ? `Due ${project.due}` : null;
+  const noteLines = project.note ? wrapLines(canvas, project.note, NODE_W - NODE_PAD_X * 2) : [];
+  return { dueLine, noteLines };
+}
+
+function subtitleLineCount(subtitle) {
+  return (subtitle.dueLine ? 1 : 0) + subtitle.noteLines.length;
+}
+
 function storageKey(root) {
   return `armoire:layout:${root}`;
 }
@@ -120,12 +139,12 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   const positions = new Map();
 
   canvas.replaceChildren();
-  const wrapped = new Map();
+  const subtitles = new Map();
   const heights = new Map();
   for (const project of projects) {
-    const lines = wrapLines(canvas, project.due || project.note || '', NODE_W - NODE_PAD_X * 2);
-    wrapped.set(project.name, lines);
-    heights.set(project.name, nodeHeight(lines.length));
+    const subtitle = buildSubtitle(canvas, project);
+    subtitles.set(project.name, subtitle);
+    heights.set(project.name, nodeHeight(subtitleLineCount(subtitle)));
   }
   const g = layout(projects, heights);
   const defs = svgEl('defs');
@@ -211,10 +230,17 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
     title.textContent = project.name;
     group.append(title);
 
-    const lines = wrapped.get(project.name);
-    if (lines.length) {
-      const sub = svgEl('text', { x: NODE_PAD_X, y: TITLE_Y + 18, class: 'node-sub' });
-      for (const [i, line] of lines.entries()) {
+    const subtitle = subtitles.get(project.name);
+    let subY = TITLE_Y + 18;
+    if (subtitle.dueLine) {
+      const due = svgEl('text', { x: NODE_PAD_X, y: subY, class: 'node-due' });
+      due.textContent = subtitle.dueLine;
+      group.append(due);
+      subY += LINE_H;
+    }
+    if (subtitle.noteLines.length) {
+      const sub = svgEl('text', { x: NODE_PAD_X, y: subY, class: 'node-sub' });
+      for (const [i, line] of subtitle.noteLines.entries()) {
         const span = svgEl('tspan', { x: NODE_PAD_X, dy: i === 0 ? 0 : LINE_H });
         span.textContent = line;
         sub.append(span);

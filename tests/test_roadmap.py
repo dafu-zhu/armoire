@@ -675,3 +675,19 @@ def test_the_wrap_probe_measures_at_the_rendered_subtitles_font_size(live_server
     )
     assert probe_sizes, "expected wrapLines to measure at least one candidate"
     assert probe_sizes == {rendered_size}, (probe_sizes, rendered_size)
+
+
+def test_a_project_with_both_a_due_date_and_a_note_shows_both(live_server, page):
+    """A fixed 62px node used to force renderRoadmap to pick `project.due ||
+    project.note` for the subtitle -- a project carrying both fields showed
+    only the due date, and its note was silently dropped. Nodes now grow to
+    fit, so that tradeoff is gone: Downstream (sample_root) carries both, and
+    both must reach the node -- the due line above the wrapped note, not
+    whichever `||` would have picked."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Downstream"]')
+    # .inner_text() requires an HTMLElement; .node-due is an SVG <text>, so
+    # use .text_content(), which works on any node regardless of namespace.
+    assert node.locator(".node-due").text_content() == "Due 2026-08-17"
+    assert node.locator(".node-sub tspan").count() >= 2

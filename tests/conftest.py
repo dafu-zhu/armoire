@@ -251,12 +251,17 @@ def sample_root(tmp_path_factory, _isolated_store_session):
     # Written into the store, not the served folder: describing a folder must
     # not modify it.
     #
-    # Downstream carries the long `note` (>= 120 chars, task 6) instead of
-    # `due`: roadmap.js's subtitle picks `project.due || project.note`, so a
-    # `due` on the same project would win and the note would never reach the
-    # node, defeating the wrap test. `due` moves to Upstream instead --
+    # Downstream carries both `due` and a long `note` (>= 120 chars, task 6).
+    # Round 1 of task 6 moved `due` off Downstream because roadmap.js then
+    # picked `project.due || project.note` for the subtitle, so a `due` on
+    # the same project would have won and the note would never reach the
+    # node. Round 2 renders both (the due line, unwrapped, above the wrapped
+    # note), so that tradeoff is gone -- Downstream carrying both is now the
+    # arrangement that best exercises the new behaviour: a single node proves
+    # the due line, the wrapped note, and containment together.
     # test_a_due_date_appears_on_its_node only asserts the date string
-    # appears somewhere on the roadmap, not which node carries it.
+    # appears somewhere on the roadmap, not which node carries it, so this
+    # does not disturb that test.
     registry_file = store.registry_path(root)
     registry_file.parent.mkdir(parents=True, exist_ok=True)
     registry_file.write_text(
@@ -265,6 +270,7 @@ def sample_root(tmp_path_factory, _isolated_store_session):
         'paths = ["notes"]\n'
         'blocked_by = ["Upstream"]\n'
         'category = "research"\n'
+        "due = 2026-08-17\n"
         'note = "This note is intentionally long so that the roadmap node has to wrap '
         "it across multiple lines rather than letting it spill outside the box "
         'boundary."\n'
@@ -272,8 +278,7 @@ def sample_root(tmp_path_factory, _isolated_store_session):
         "[[project]]\n"
         'name = "Upstream"\n'
         'paths = ["notes/deep"]\n'
-        'category = "learning"\n'
-        "due = 2026-08-17\n",
+        'category = "learning"\n',
         encoding="utf-8",
         newline="",
     )
