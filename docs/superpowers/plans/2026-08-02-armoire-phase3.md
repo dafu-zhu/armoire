@@ -763,12 +763,43 @@ Call it from `serve`, between the two existing `click.echo` calls and the
         click.echo(line)
 ```
 
-- [ ] **Step 4: Point `app.py` at the store**
+- [ ] **Step 4: Keep the file-browser fallback working**
+
+Auto-creating a stub means **no folder ever reports `registry: False` again**.
+`load_registry` returns `Registry(projects=[], issues=[])` for a stub, not
+`None`, so every folder would now open on the roadmap screen showing "No
+projects declared" — and the spec's "a folder with only a stub has no projects,
+so the roadmap falls back to the file browser exactly as before" would be
+quietly false.
+
+The fallback trigger moves from "no registry file" to "no projects". In
+`app.js`'s `showRoadmap`, the zero-projects branch takes the same exit as
+`registry === false`:
+
+```javascript
+  if (data.registry === false || !data.projects.length) {
+    // A stub registry is the normal state for a folder nobody has described
+    // yet, so "no projects" means the same thing "no file" used to: there is
+    // no roadmap here, hand back to the browser.
+    hideRoadmap();
+    window.location.hash = `/${BROWSE}/`;
+    return;
+  }
+```
+
+`showRoadmapMessage('No projects declared in armoire.toml.', 'empty')` and its
+test become unreachable. **Delete both** — the message also names a filename
+that no longer exists. `tests/conftest.py`'s `empty_registry_root` /
+`empty_registry_server` fixtures now describe the fallback rather than the
+message; repoint their test at the fallback or delete them if `bare_server`
+already covers it. Say which you did.
+
+- [ ] **Step 5: Point `app.py` at the store**
 
 Both `load_registry(root)` call sites in `app.py` become
 `load_registry(root, store.registry_path(root))`. Import `store`.
 
-- [ ] **Step 5: Update the existing app tests**
+- [ ] **Step 6: Update the existing app tests**
 
 `tests/test_app.py` and `tests/conftest.py` write `armoire.toml` into the
 served root. Every such fixture must now write to `store.registry_path(root)`
@@ -793,17 +824,17 @@ through `store.registry_path` after pointing `config_root` with
 `monkeypatch.setenv` at session scope via `pytest.MonkeyPatch.context()`. Pick
 one approach and use it consistently; say which in your report.
 
-- [ ] **Step 6: Run the full suite**
+- [ ] **Step 7: Run the full suite**
 
 Run: `uv run pytest -q`
 Expected: PASS. Every previously passing test still passes.
 
-- [ ] **Step 7: Prove the refusal discriminates**
+- [ ] **Step 8: Prove the refusal discriminates**
 
 Delete the `store_is_inside` branch from `prepare_store`. Run
 `uv run pytest tests/test_cli.py -q`. Paste the failure. Revert.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/armoire/cli.py src/armoire/app.py tests/test_cli.py tests/test_app.py tests/conftest.py
@@ -1215,8 +1246,11 @@ def test_a_long_note_stays_inside_its_node(live_server, page):
 def test_a_long_note_wraps_onto_several_lines(live_server, page):
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
-    counts = page.locator(".node .node-sub tspan").count()
-    assert counts >= 2
+    # Scoped to the one node with the long note. Counting tspans across every
+    # node would pass with two nodes of one line each, which proves nothing
+    # about wrapping.
+    lines = page.locator('.node[data-name="Downstream"] .node-sub tspan').count()
+    assert lines >= 2, lines
 
 
 def test_nodes_no_longer_show_a_commit_count(live_server, page):
