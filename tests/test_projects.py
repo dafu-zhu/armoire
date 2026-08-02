@@ -46,6 +46,21 @@ def test_optional_fields_default_to_none_or_empty(tmp_path):
     assert finm.note is None
 
 
+def test_category_defaults_to_none_when_satisfied_via_blocked_by(tmp_path):
+    """FINM 320 above no longer demonstrates category defaulting to None,
+    since it now carries one to satisfy the placement rule. This project
+    satisfies the same rule via blocked_by instead, so it is the one that
+    still proves category is None when the key is absent."""
+    write(
+        tmp_path,
+        '[[project]]\nname = "A"\npaths = ["research/0dte"]\ncategory = "x"\n'
+        '[[project]]\nname = "B"\npaths = ["learning/finm32000"]\nblocked_by = ["A"]\n',
+    )
+    registry = load_registry(tmp_path)
+    b = registry.projects[1]
+    assert b.category is None
+
+
 def test_due_is_an_iso_string_not_a_date(tmp_path):
     import json
 
@@ -155,7 +170,10 @@ def test_a_path_escaping_the_root_is_an_issue_even_when_it_exists(tmp_path):
     assert (root / "../../outside").exists()
     issues = [i for i in registry.issues if "Evil" in i]
     assert issues, "an escaping path must be reported"
-    assert "escape" in issues[0].lower()
+    # Order-independent: this project satisfies the placement rule via
+    # category, but nothing here should depend on the escape issue being
+    # first (or only) among Evil's issues.
+    assert any("escape" in i.lower() for i in issues)
 
 
 def test_every_issue_is_attributable_to_a_real_project(tmp_path):
