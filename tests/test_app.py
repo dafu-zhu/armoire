@@ -304,6 +304,33 @@ def test_malformed_registry_is_200_with_an_error_field(root):
     assert "error" in response.json()
 
 
+def test_a_structurally_wrong_registry_is_200_with_an_error_field(root):
+    """`[project]` with one bracket is valid TOML, so it never reaches the
+    TOMLDecodeError arm. It used to escape load_registry as an AttributeError
+    and 500 with a text/plain body, which app.js then failed to parse as JSON.
+    The documented contract is 200 plus the message."""
+    (root / "armoire.toml").write_text(
+        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/projects")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert "[[project]]" in response.json()["error"]
+
+
+def test_project_detail_on_a_structurally_wrong_registry_is_404_not_500(root):
+    (root / "armoire.toml").write_text(
+        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    response = TestClient(app).get("/api/project/A")
+    assert response.status_code == 404
+    assert "[[project]]" in response.json()["detail"]
+
+
 def test_project_detail_on_a_malformed_registry_is_404_carrying_the_parse_error(root):
     (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
     app = create_app(root)

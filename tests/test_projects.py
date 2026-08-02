@@ -60,6 +60,38 @@ def test_malformed_toml_raises(tmp_path):
         load_registry(write(tmp_path, "[[project]\nname = "))
 
 
+def test_a_single_bracket_project_table_raises_rather_than_escaping(tmp_path):
+    """`[project]` is the single most likely typo in the whole file, and it does
+    not parse to "a list containing a non-dict": TOML makes it a string-keyed
+    table, so iterating it yields the key strings "name" and "paths" and the
+    first `.get` used to escape as a raw AttributeError."""
+    text = '[project]\nname = "A"\npaths = ["research/0dte"]\n'
+    with pytest.raises(RegistryError, match=r"\[\[project\]\]"):
+        load_registry(write(tmp_path, text))
+
+
+def test_a_scalar_project_key_raises_rather_than_escaping(tmp_path):
+    """`project = "A"` iterates to single characters, so it too reached `.get`."""
+    with pytest.raises(RegistryError, match="project"):
+        load_registry(write(tmp_path, 'project = "A"\n'))
+
+
+def test_a_project_entry_that_is_not_a_table_names_its_position(tmp_path):
+    with pytest.raises(RegistryError, match="#2"):
+        load_registry(write(tmp_path, 'project = [{ name = "A", paths = ["x"] }, "B"]\n'))
+
+
+def test_non_list_paths_raises_naming_the_project(tmp_path):
+    """`tuple(str(i) for i in 5)` used to escape as a raw TypeError."""
+    with pytest.raises(RegistryError, match="A"):
+        load_registry(write(tmp_path, '[[project]]\nname = "A"\npaths = 5\n'))
+
+
+def test_non_list_blocked_by_raises_naming_the_project(tmp_path):
+    with pytest.raises(RegistryError, match="A"):
+        load_registry(write(tmp_path, '[[project]]\nname = "A"\npaths = ["x"]\nblocked_by = 7\n'))
+
+
 def test_missing_name_raises(tmp_path):
     with pytest.raises(RegistryError):
         load_registry(write(tmp_path, '[[project]]\npaths = ["a"]\n'))

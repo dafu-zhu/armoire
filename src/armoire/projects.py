@@ -39,10 +39,35 @@ class Registry:
 def _as_str_tuple(value, field_name: str, project: str) -> tuple[str, ...]:
     if isinstance(value, str):
         raise RegistryError(f"{project}: {field_name} must be a list, not a string")
+    if not isinstance(value, list | tuple):
+        # A bare number or a table iterates to something -- or to nothing --
+        # instead of raising here, so without this the TypeError escapes
+        # load_registry raw and the endpoint 500s.
+        raise RegistryError(f"{project}: {field_name} must be a list")
     return tuple(str(item) for item in value)
 
 
-def _parse_project(entry: dict, position: int) -> Project:
+def _project_entries(raw: dict) -> list:
+    """The `project` key as a list of entries, or a RegistryError explaining it.
+
+    `[project]` with one bracket is the most likely typo in the file and it is
+    valid TOML, so it never reaches the TOMLDecodeError arm: it parses to a
+    string-keyed table, and iterating that yields the *key names*. Checking only
+    for "a list containing a non-dict" would miss it entirely.
+    """
+    declared = raw.get("project", [])
+    if isinstance(declared, dict):
+        raise RegistryError(
+            f"{REGISTRY_NAME}: project must be declared as [[project]], not [project]"
+        )
+    if not isinstance(declared, list):
+        raise RegistryError(f"{REGISTRY_NAME}: project must be a list of [[project]] tables")
+    return declared
+
+
+def _parse_project(entry, position: int) -> Project:
+    if not isinstance(entry, dict):
+        raise RegistryError(f"project #{position} is not a [[project]] table")
     name = entry.get("name")
     if not name:
         raise RegistryError(f"project #{position} has no name")
@@ -105,8 +130,11 @@ def _find_cycle(projects: list[Project]) -> list[str] | None:
 def load_registry(root: Path) -> Registry | None:
     """Load armoire.toml, or None when there is none.
 
-    Structural problems raise: a malformed file or a duplicate name means the
-    graph cannot be trusted at all. Referential problems become issues: an
+    Structural problems raise: a malformed file, an entry or field of the wrong
+    shape, or a duplicate name means the graph cannot be trusted at all. Every
+    such problem must raise `RegistryError` specifically -- app.py translates
+    only that one, and anything else becomes a 500 with a text/plain body that
+    the client cannot parse as JSON. Referential problems become issues: an
     unknown blocker or a missing folder still leaves a drawable graph, and
     reporting them beats refusing to render.
     """
@@ -121,7 +149,7 @@ def load_registry(root: Path) -> Registry | None:
 
     projects: list[Project] = []
     seen: dict[str, int] = {}
-    for position, entry in enumerate(raw.get("project", []), start=1):
+    for position, entry in enumerate(_project_entries(raw), start=1):
         project = _parse_project(entry, position)
         if project.name in seen:
             raise RegistryError(
