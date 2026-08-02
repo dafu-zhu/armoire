@@ -406,3 +406,29 @@ def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server)
     page.wait_for_timeout(300)
     layout_writes = page.evaluate("window.__writes.layout")
     assert layout_writes == 1, layout_writes
+
+
+def test_project_detail_shows_blockers_and_what_it_blocks(page, live_server):
+    page.goto(f"{live_server}/#/project/Upstream")
+    page.wait_for_selector(".project-detail", timeout=10000)
+    text = page.locator(".project-detail").inner_text()
+    assert "Downstream" in text
+
+
+def test_project_detail_lists_files(page, live_server):
+    page.goto(f"{live_server}/#/project/Downstream")
+    page.wait_for_selector(".project-detail a", timeout=10000)
+    assert page.locator(".project-detail a").count() >= 1
+
+
+def test_a_file_link_in_the_detail_reaches_the_viewer(page, live_server):
+    page.goto(f"{live_server}/#/project/Downstream")
+    page.wait_for_selector(".project-detail a", timeout=10000)
+    page.locator(".project-detail a").first.click()
+    page.wait_for_function("() => location.hash.startsWith('#/browse/')", timeout=5000)
+
+
+def test_an_unknown_project_shows_an_error_not_a_blank_page(page, live_server):
+    page.goto(f"{live_server}/#/project/Ghost")
+    page.wait_for_selector("#content .error", timeout=10000)
+    assert page.locator("#content .error").inner_text().strip() != ""

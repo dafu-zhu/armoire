@@ -4,6 +4,7 @@ import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
 import { renderRoadmap } from './roadmap.js';
 import { initRail } from './rail.js';
+import { renderProject } from './project.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -163,9 +164,14 @@ async function showRoute(route) {
   }
   hideRoadmap();
   if (route.kind === 'project') {
+    hideRoadmap();
+    renderBreadcrumb('');
     status.textContent = 'Loading…';
-    // Task 8 replaces this with the real detail view.
-    content.replaceChildren();
+    try {
+      status.textContent = await renderProject(content, route.name, navigate);
+    } catch (error) {
+      showError(error);
+    }
     return;
   }
   const path = route.kind === 'browse' ? route.path : '';
