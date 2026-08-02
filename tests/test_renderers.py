@@ -215,3 +215,17 @@ def test_no_console_errors_across_every_renderer(page, live_server):
     # swallowed alongside the deliberate one.
     errors = [(text, url) for text, url in errors if "/api/preview?path=notes" not in url]
     assert errors == []
+
+
+def test_mermaid_renders_in_a_crlf_document(page, live_server):
+    """CRLF is the common case on Windows, and an `\n`-anchored fence regex misses it."""
+    open_path(page, live_server, "crlf.md")
+    page.wait_for_selector(".mermaid-slot svg", timeout=10000)
+    assert page.locator(".mermaid-slot svg").count() == 1
+
+
+def test_katex_renders_in_a_crlf_document(page, live_server):
+    """Same document, same maths -- guards against a line-ending fix breaking KaTeX."""
+    open_path(page, live_server, "crlf.md")
+    page.wait_for_selector(".katex", timeout=10000)
+    assert page.locator(".katex").count() >= 2

@@ -65,6 +65,10 @@ def sample_root(tmp_path_factory):
     # the markdown renderer's exact `\n`-anchored mermaid-fence regex sees
     # the same bytes on every platform.
     (root / "README.md").write_text(ROOT_README, encoding="utf-8", newline="")
+    # The same document with CRLF endings. Windows editors and git's autocrlf
+    # produce these routinely -- 8 of the 11 mermaid documents in the folder
+    # armoire was built for are CRLF -- so the renderer must handle both.
+    (root / "crlf.md").write_bytes(ROOT_README.replace("\n", "\r\n").encode("utf-8"))
     (root / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8", newline="")
     (root / "doc.pdf").write_bytes(MINIMAL_PDF)
     (root / "blob.dat").write_bytes(b"\x00\x01\x02\x03")
