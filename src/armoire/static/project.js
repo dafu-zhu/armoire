@@ -7,11 +7,17 @@ function heading(level, text) {
   return el;
 }
 
-function nameList(label, names) {
-  const wrap = document.createElement('p');
-  wrap.append(document.createTextNode(`${label}: `));
-  wrap.append(document.createTextNode(names.length ? names.join(', ') : 'nothing'));
-  return wrap;
+function relation(label, names) {
+  const span = document.createElement('span');
+  span.textContent = `${label}: ${names.length ? names.join(', ') : 'nothing'}`;
+  return span;
+}
+
+function subtitleText(project) {
+  const parts = [];
+  if (project.note) parts.push(project.note);
+  if (project.due) parts.push(`Due ${project.due}`);
+  return parts.join(' — ');
 }
 
 function ago(seconds) {
@@ -35,11 +41,19 @@ export async function renderProject(container, name, onOpenFile) {
   root.className = 'project-detail';
 
   root.append(heading('h1', data.project.name));
-  if (data.project.note) root.append(heading('p', data.project.note));
-  if (data.project.due) root.append(heading('p', `Due ${data.project.due}`));
+  const subtitle = subtitleText(data.project);
+  if (subtitle) {
+    const p = document.createElement('p');
+    p.className = 'subtitle';
+    p.textContent = subtitle;
+    root.append(p);
+  }
 
-  root.append(nameList('Blocked by', data.project.blocked_by));
-  root.append(nameList('Blocks', data.blocks));
+  const relations = document.createElement('div');
+  relations.className = 'relations';
+  relations.append(relation('Blocked by', data.project.blocked_by));
+  relations.append(relation('Blocks', data.blocks));
+  root.append(relations);
 
   root.append(heading('h2', 'Files'));
   const files = document.createElement('ul');
@@ -62,7 +76,17 @@ export async function renderProject(container, name, onOpenFile) {
     const commits = document.createElement('ul');
     for (const commit of data.commits) {
       const li = document.createElement('li');
-      li.textContent = `${commit.sha}  ${commit.subject} — ${ago(commit.when)}`;
+      li.className = 'commit';
+      const sha = document.createElement('span');
+      sha.className = 'sha';
+      sha.textContent = commit.sha;
+      const subject = document.createElement('span');
+      subject.className = 'subject';
+      subject.textContent = commit.subject;
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = ago(commit.when);
+      li.append(sha, subject, when);
       commits.append(li);
     }
     root.append(commits);

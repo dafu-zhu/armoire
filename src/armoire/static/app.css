@@ -252,3 +252,62 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 #rail h4 { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; color: var(--muted); }
 #rail ul { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.9; }
 #rail .issue { color: #bc4c00; }
+
+/* Project detail ------------------------------------------------------ */
+.project-detail { max-width: 900px; }
+.project-detail h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 600;
+}
+.project-detail .subtitle {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+.project-detail h2 {
+  margin: 24px 0 8px;
+  padding-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.project-detail .relations {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.project-detail .relations span { color: var(--muted); }
+.project-detail ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.project-detail li {
+  padding: 6px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.project-detail li:first-child { border-top: 0; }
+.project-detail li:hover { background: var(--subtle); }
+.project-detail .commit {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.project-detail .commit .sha { color: var(--muted); flex: 0 0 auto; }
+.project-detail .commit .when { color: var(--muted); margin-left: auto; flex: 0 0 auto; }
+.project-detail .commit .subject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

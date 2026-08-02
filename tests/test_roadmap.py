@@ -432,3 +432,33 @@ def test_an_unknown_project_shows_an_error_not_a_blank_page(page, live_server):
     page.goto(f"{live_server}/#/project/Ghost")
     page.wait_for_selector("#content .error", timeout=10000)
     assert page.locator("#content .error").inner_text().strip() != ""
+
+
+def test_project_detail_renders_structured_commit_rows(page, live_server):
+    """The detail view is what a node click lands on; unstyled defaults undercut
+    the whole point of the roadmap screen."""
+    page.goto(f"{live_server}/#/project/Downstream")
+    page.wait_for_selector(".project-detail", timeout=10000)
+    assert page.locator(".project-detail .relations").count() == 1
+    rows = page.locator(".project-detail li.commit")
+    if rows.count():
+        assert rows.first.locator(".sha").count() == 1
+        assert rows.first.locator(".subject").count() == 1
+
+
+def test_project_detail_commit_rows_have_sha_subject_and_when(page, committed_server):
+    """live_server's sample_root has no git history at all (neither Downstream
+    nor Upstream has a single commit), so the guarded check above never
+    actually exercises the commit-row branch. committed_server's one project
+    has two real commits, so this positively verifies the .commit / .sha /
+    .subject / .when structure project.js renders, rather than leaving it
+    unverified."""
+    page.goto(f"{committed_server}/#/project/Worked")
+    page.wait_for_selector(".project-detail li.commit", timeout=10000)
+    rows = page.locator(".project-detail li.commit")
+    assert rows.count() == 2
+    first = rows.first
+    assert first.locator(".sha").count() == 1
+    assert first.locator(".subject").count() == 1
+    assert first.locator(".when").count() == 1
+    assert first.locator(".subject").inner_text() == "second worked commit"
