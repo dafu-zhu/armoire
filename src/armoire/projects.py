@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from armoire.paths import PathOutsideRoot, resolve_in_root
+
 REGISTRY_NAME = "armoire.toml"
 
 
@@ -136,7 +138,15 @@ def load_registry(root: Path) -> Registry | None:
             if blocker not in known:
                 issues.append(f"{project.name}: blocked_by names unknown project {blocker!r}")
         for relative in project.paths:
-            if not (root / relative).exists():
+            try:
+                resolved = resolve_in_root(root, relative)
+            except PathOutsideRoot:
+                # Distinct from "does not exist": an escaping path may well
+                # exist, and the old check silently accepted it. The project
+                # then renders with no files and no explanation.
+                issues.append(f"{project.name}: path {relative!r} escapes the served root")
+                continue
+            if not resolved.exists():
                 issues.append(f"{project.name}: path {relative!r} does not exist")
 
     cycle = _find_cycle(projects)

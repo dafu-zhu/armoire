@@ -105,6 +105,22 @@ def test_missing_path_is_an_issue(tmp_path):
     assert any("nowhere" in issue for issue in registry.issues)
 
 
+def test_a_path_escaping_the_root_is_an_issue_even_when_it_exists(tmp_path):
+    """The old check only asked whether the path existed, so an escaping path
+    that did exist was silently accepted."""
+    (tmp_path / "outside").mkdir()
+    root = tmp_path / "a" / "b"
+    root.mkdir(parents=True)
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Evil"\npaths = ["../../outside"]\n', encoding="utf-8"
+    )
+    registry = load_registry(root)
+    assert (root / "../../outside").exists()
+    issues = [i for i in registry.issues if "Evil" in i]
+    assert issues, "an escaping path must be reported"
+    assert "escape" in issues[0].lower()
+
+
 def test_every_issue_is_attributable_to_a_real_project(tmp_path):
     """Downstream marks the graph by splitting each issue on its first ':'."""
     text = (
