@@ -981,17 +981,29 @@ def test_the_wheel_does_not_scroll_the_page(live_server, page):
 
 
 def test_zoom_stays_within_its_limits(live_server, page):
+    """Both halves must first confirm the level actually moved off 100% --
+    otherwise a wheel handler that never fires at all (unregistered listener,
+    a swallowed error, anything that leaves #zoom-level stuck at '100%')
+    would satisfy `100 <= 250` and `100 >= 35` trivially and this test would
+    report green for a total regression of the feature it is named after.
+    The bound checks below only mean anything once that movement is proven."""
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
     page.mouse.move(400, 300)
     for _ in range(40):
         page.mouse.wheel(0, -240)
-    page.wait_for_timeout(200)
-    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) <= 250
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    level = int(page.locator("#zoom-level").inner_text().rstrip("%"))
+    assert level > 100, level
+    assert level <= 250, level
     for _ in range(80):
         page.mouse.wheel(0, 240)
-    page.wait_for_timeout(200)
-    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) >= 35
+    page.wait_for_function(
+        "() => parseInt(document.getElementById('zoom-level').textContent, 10) < 100"
+    )
+    level = int(page.locator("#zoom-level").inner_text().rstrip("%"))
+    assert level < 100, level
+    assert level >= 35, level
 
 
 def test_the_point_under_the_cursor_stays_put(live_server, page):

@@ -488,11 +488,19 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
   }, { signal });
 
   function zoomAt(factor, clientX, clientY) {
+    const next = Math.min(2.5, Math.max(0.35, scale * factor));
+    // Already at the clamp boundary and pushing further against it: next is
+    // the same literal 2.5/0.35 bound scale was already pinned to, so the
+    // pan' formula below would algebraically reduce to pan' = pan for any
+    // cursor position anyway. Return before doing that work rather than
+    // relying on (a / scale) * next to cancel back to exactly a in floating
+    // point -- it usually does, but a short-circuit makes the no-drift
+    // guarantee true by construction instead of by IEEE 754 luck.
+    if (next === scale) return;
     const point = canvas.createSVGPoint();
     point.x = clientX;
     point.y = clientY;
     const local = point.matrixTransform(canvas.getScreenCTM().inverse());
-    const next = Math.min(2.5, Math.max(0.35, scale * factor));
     // Keep the graph point under the cursor under the cursor: solve
     // local = graph * next + pan' for pan', where graph is that point in
     // graph coordinates at the current scale.
