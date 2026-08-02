@@ -1,23 +1,6 @@
-import subprocess
-
 from armoire.dashboard import project_detail, project_rows
 from armoire.projects import Project, Registry
-
-
-def git(cwd, *args):
-    subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        env={
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@t",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@t",
-            "PATH": __import__("os").environ["PATH"],
-        },
-    )
+from conftest import _git as git
 
 
 def test_project_rows_merges_activity_across_two_paths(tmp_path):

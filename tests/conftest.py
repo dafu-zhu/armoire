@@ -271,17 +271,31 @@ def colon_name_server(colon_name_root):
 
 
 def _git(cwd, *args):
+    """Run git under a fixed identity. The one copy; test_activity and
+    test_dashboard import it rather than keeping their own.
+
+    The identity is merged *over* os.environ, not substituted for it. A
+    replacement environment carrying only PATH drops HOME, SYSTEMROOT and
+    everything else git may need, and the platform that first minds is not the
+    one you develop on -- CI runs six platform/version combinations. The
+    failure also lands badly: this runs inside session-scoped fixtures, so one
+    CalledProcessError whose captured output nobody prints takes out every
+    Playwright test depending on committed_server at once.
+
+    The four identity variables stay explicit so the isolation intent survives:
+    commits must not be attributed to whoever is running the suite.
+    """
     subprocess.run(
         ["git", *args],
         cwd=cwd,
         check=True,
         capture_output=True,
-        env={
+        env=os.environ
+        | {
             "GIT_AUTHOR_NAME": "t",
             "GIT_AUTHOR_EMAIL": "t@t",
             "GIT_COMMITTER_NAME": "t",
             "GIT_COMMITTER_EMAIL": "t@t",
-            "PATH": os.environ["PATH"],
         },
     )
 

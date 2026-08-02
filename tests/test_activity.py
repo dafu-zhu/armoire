@@ -3,22 +3,7 @@ import subprocess
 import pytest
 
 from armoire.activity import Activity, activity_for, recent_commits
-
-
-def git(cwd, *args):
-    subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        env={
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@t",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@t",
-            "PATH": __import__("os").environ["PATH"],
-        },
-    )
+from conftest import _git as git
 
 
 @pytest.fixture
