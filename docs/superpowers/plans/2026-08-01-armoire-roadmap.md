@@ -209,6 +209,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from armoire.paths import PathOutsideRoot, resolve_in_root
+
 REGISTRY_NAME = "armoire.toml"
 
 
@@ -334,7 +336,15 @@ def load_registry(root: Path) -> Registry | None:
             if blocker not in known:
                 issues.append(f"{project.name}: blocked_by names unknown project {blocker!r}")
         for relative in project.paths:
-            if not (root / relative).exists():
+            try:
+                resolved = resolve_in_root(root, relative)
+            except PathOutsideRoot:
+                # Distinct from "does not exist": an escaping path may well
+                # exist, and an existence-only check silently accepts it. The
+                # project then renders with no files and no explanation.
+                issues.append(f"{project.name}: path {relative!r} escapes the served root")
+                continue
+            if not resolved.exists():
                 issues.append(f"{project.name}: path {relative!r} does not exist")
 
     cycle = _find_cycle(projects)
@@ -748,8 +758,29 @@ def test_unknown_project_is_404(registry_client):
     assert registry_client.get("/api/project/Ghost").status_code == 404
 
 
-def test_project_name_with_a_slash_does_not_escape(registry_client):
-    assert registry_client.get("/api/project/../../etc").status_code in (404, 422)
+def test_a_slashed_project_name_never_reaches_the_handler(registry_client):
+    """Starlette's single-segment path converter rejects it before dispatch.
+
+    A framework guarantee, not something project_detail implements — removing
+    the route's own 404 guard leaves this green. Named for what it proves.
+    """
+    assert registry_client.get("/api/project/..%2F..%2Fetc").status_code == 404
+    assert registry_client.get("/api/project/A/../..").status_code == 404
+
+
+def test_a_registry_path_escaping_the_root_yields_no_files(root):
+    """The registry is authored by whoever owns the folder, and armoire gets
+    pointed at cloned repositories. An escaping path must return nothing."""
+    (root / "armoire.toml").write_text(
+        '[[project]]
+name = "Evil"
+paths = ["../../Windows"]
+', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/project/Evil").json()
+    assert body["files"] == []
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
