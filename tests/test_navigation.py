@@ -432,3 +432,53 @@ def test_dragging_the_divider_does_not_write_to_the_served_folder(live_server, p
     page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
     page.mouse.up()
     assert folder_snapshot(sample_root) == before
+
+
+def test_the_home_key_jumps_the_divider_to_its_minimum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    page.locator("#divider").focus()
+    page.keyboard.press("Home")
+    assert abs(page.locator("#tree").bounding_box()["width"] - 180) <= 2
+
+
+def test_the_end_key_jumps_the_divider_to_its_maximum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    page.locator("#divider").focus()
+    page.keyboard.press("End")
+    assert abs(page.locator("#tree").bounding_box()["width"] - 600) <= 2
+
+
+def test_the_divider_reports_its_aria_attributes(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    divider = page.locator("#divider")
+    assert divider.get_attribute("role") == "separator"
+    assert divider.get_attribute("aria-orientation") == "vertical"
+    assert divider.get_attribute("aria-valuemin") == "180"
+    assert divider.get_attribute("aria-valuemax") == "600"
+
+
+def test_aria_valuenow_tracks_the_width_after_a_drag(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    width = page.locator("#tree").bounding_box()["width"]
+    valuenow = int(page.locator("#divider").get_attribute("aria-valuenow"))
+    assert abs(valuenow - width) <= 2
+
+
+def test_aria_valuenow_tracks_the_width_after_a_keyboard_move(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    page.locator("#divider").focus()
+    for _ in range(3):
+        page.keyboard.press("ArrowRight")
+    width = page.locator("#tree").bounding_box()["width"]
+    valuenow = int(page.locator("#divider").get_attribute("aria-valuenow"))
+    assert abs(valuenow - width) <= 2

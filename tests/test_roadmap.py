@@ -105,6 +105,10 @@ def test_the_file_browser_is_not_shown_while_the_roadmap_loads(page, live_server
     page.goto(live_server)
     page.wait_for_timeout(250)
     assert page.locator("#tree").is_hidden()
+    # #divider is a third sibling of #tree and #main in #body's flex row --
+    # without pairing its `hidden` state to theirs it would render as an
+    # orphan 5px bar next to the roadmap while #tree itself is hidden.
+    assert page.locator("#divider").is_hidden()
     assert page.locator("#roadmap").is_visible()
     page.wait_for_selector("#roadmap .node", timeout=15000)
 

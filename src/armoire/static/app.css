@@ -113,16 +113,18 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius);
   cursor: pointer;
   white-space: nowrap;
-  min-width: 0;
 }
 #tree .row:hover { background: var(--subtle); }
 #tree .row[aria-current="true"] { background: var(--subtle); font-weight: 600; }
 #tree .caret { width: 12px; color: var(--muted); flex: 0 0 12px; }
+/* overflow: hidden alone already zeroes this flex item's automatic minimum
+   size (CSS Flexbox 4.5, same reasoning documented at
+   .project-detail .commit .subject below), so it can shrink below its
+   content's intrinsic width without a separate `min-width: 0`. */
 #tree .row span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
 }
 
 #divider {
