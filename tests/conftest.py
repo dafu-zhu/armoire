@@ -226,7 +226,16 @@ def sample_root(tmp_path_factory, _isolated_store_session):
         encoding="utf-8",
         newline="",
     )
-    (root / "links.md").write_text("# Links\n\n[percent](100%.md)\n", encoding="utf-8", newline="")
+    # Three links in one document, because the broken-link check has to be
+    # judged on all three at once: a live file, a live folder (which
+    # /api/preview 404s and only /api/tree serves -- marking that one dead
+    # would be the obvious way to get this wrong), and a name that is simply
+    # not there.
+    (root / "links.md").write_text(
+        "# Links\n\n[percent](100%.md)\n\n[folder](notes/)\n\n[gone](gone.md)\n",
+        encoding="utf-8",
+        newline="",
+    )
 
     # No other root-level name here reaches even 20 characters, so nothing
     # would ever overflow the tree pane's default 280px width -- task 11's

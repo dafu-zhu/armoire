@@ -15,10 +15,6 @@ const NODE_MIN_H = 40;
 // end-anchored at NODE_W - NODE_PAD_X; 18 leaves the widest glyph (the filled
 // and half-filled circles) clear of the marker with a few pixels to spare.
 const CHIP_SLOT = 18;
-// Mirrors app.js's ROOT_CLICK_DELAY: comfortably above the gap between the
-// two clicks of a genuine double click (Playwright's included), short enough
-// that a real single click still feels immediate.
-const CLICK_DELAY = 250;
 
 // SVG <text> does not wrap. Measure in the live SVG rather than guessing from
 // character counts: font metrics are not knowable ahead of time, and the
@@ -286,19 +282,6 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
   // read once by the click that immediately follows in the same gesture.
   let dragging = null;
   let suppressClick = false;
-  // The pending single-click open for whichever node armed it, if any --
-  // module-local like `dragging`/`suppressClick` above, not per-node: only
-  // one gesture happens at a time. Cleared on the render's own abort so a
-  // render torn down mid-gesture (a revisit before the timer fires) cannot
-  // pop the panel open later for a node that no longer exists on screen --
-  // the same leak app.js's rootClickTimer guards against for the breadcrumb.
-  let openTimer = null;
-  signal?.addEventListener('abort', () => {
-    if (openTimer) {
-      window.clearTimeout(openTimer);
-      openTimer = null;
-    }
-  });
   for (const project of projects) {
     const pos = positions.get(project.name);
     if (!pos) continue;
@@ -401,24 +384,24 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
     });
     group.append(chip);
 
-    // A double click fires click, click, dblclick on the same target -- a
-    // click handler that opens the panel immediately would let the first
-    // click's own work run before dblclick ever gets a chance to cancel it.
-    // Deferring by CLICK_DELAY, the same way app.js's breadcrumb root crumb
-    // does, keeps a genuine double click from ever opening the panel at all.
+    // A double click fires click, click, dblclick on the same target, so a
+    // genuine double click still opens the panel briefly before dblclick's
+    // onOpenFolder replaces it -- deliberately not deferred behind a timer
+    // to try to suppress that: unlike app.js's breadcrumb root crumb, which
+    // must defer because navigating on click would re-render the crumb (and
+    // destroy its own listeners) before dblclick could ever reach it, opening
+    // the panel here touches only #project-panel, never this node -- so a
+    // deferred timer bought nothing but a race against the browser's own,
+    // OS-configured double-click window: when that window ran longer than
+    // the timer's delay, the single click's action still fired on schedule
+    // and dblclick then fired again on top of it, which is exactly what made
+    // two ordinary, unhurried clicks look like the panel "opened, then
+    // vanished".
     group.addEventListener('click', () => {
       if (suppressClick) return;
-      if (openTimer) return; // second click of a double click; dblclick decides
-      openTimer = window.setTimeout(() => {
-        openTimer = null;
-        onSelect(project);
-      }, CLICK_DELAY);
+      onSelect(project);
     });
     group.addEventListener('dblclick', () => {
-      if (openTimer) {
-        window.clearTimeout(openTimer);
-        openTimer = null;
-      }
       onOpenFolder(project);
     });
     group.addEventListener('keydown', (event) => {

@@ -364,6 +364,49 @@ def test_a_long_name_truncates_rather_than_widening_the_tree(live_server, page):
     assert page.locator("#tree").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
 
 
+SCROLLBAR_DISPLAY = "el => getComputedStyle(el, '::-webkit-scrollbar').display"
+
+
+def test_the_tree_hides_its_scrollbar_but_no_other_pane_does(live_server, page):
+    """The tree's right edge already carries a line -- the divider -- and a
+    scrollbar arriving immediately beside it reads as one thick smudged
+    border rather than as two separate controls.
+
+    Asks the pseudo-element what it computes to rather than measuring
+    offsetWidth - clientWidth, which would be the direct test of "takes no
+    width" and cannot work here: headless Chromium draws overlay scrollbars,
+    so that difference is already 1 (the border alone) whether the bar is
+    hidden or not, and the measurement passes just as happily against no fix
+    at all.
+
+    #main is asserted alongside it because the rule this checks lives one
+    line away from the global ::-webkit-scrollbar block that styles every
+    other pane. Hiding the tree's bar by widening the blast radius of that
+    block would satisfy a #tree-only assertion perfectly.
+
+    A short viewport, so the pane genuinely overflows: at the default 720px
+    the sample folder's root fits without scrolling at all.
+    """
+    page.set_viewport_size({"width": 1000, "height": 300})
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree .row")
+    tree = page.locator("#tree")
+    assert tree.evaluate("el => el.scrollHeight > el.clientHeight")
+    assert tree.evaluate(SCROLLBAR_DISPLAY) == "none"
+    assert page.locator("#main").evaluate(SCROLLBAR_DISPLAY) != "none"
+
+
+def test_the_tree_still_scrolls_with_its_scrollbar_hidden(live_server, page):
+    """Hidden, not disabled. The wheel, the keyboard and revealPath's own
+    scrollIntoView all still have to reach the bottom of a long tree."""
+    page.set_viewport_size({"width": 1000, "height": 300})
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree .row")
+    tree = page.locator("#tree")
+    tree.evaluate("el => el.scrollTo(0, 200)")
+    assert tree.evaluate("el => el.scrollTop") > 0
+
+
 def test_dragging_the_divider_widens_the_tree(live_server, page):
     page.goto(f"{live_server}/#/browse/")
     page.wait_for_selector("#divider")

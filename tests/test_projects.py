@@ -210,10 +210,10 @@ def test_a_project_blocking_itself_is_a_cycle(tmp_path):
     assert any("cycle" in i.lower() for i in registry.issues)
 
 
-def test_status_defaults_to_active(tmp_path):
+def test_status_defaults_to_not_started(tmp_path):
     write(tmp_path, '[[project]]\nname = "A"\npaths = ["."]\ncategory = "x"\n')
     registry = load_registry(tmp_path)
-    assert registry.projects[0].status == "active"
+    assert registry.projects[0].status == "not-started"
 
 
 def test_each_declared_status_survives_parsing(tmp_path):
@@ -225,18 +225,18 @@ def test_each_declared_status_survives_parsing(tmp_path):
     assert [p.status for p in registry.projects] == list(STATUSES)
 
 
-def test_an_unknown_status_is_an_issue_and_falls_back_to_active(tmp_path):
+def test_an_unknown_status_is_an_issue_and_falls_back_to_not_started(tmp_path):
     write(tmp_path, '[[project]]\nname = "A"\npaths = ["."]\ncategory = "x"\nstatus = "finished"\n')
     registry = load_registry(tmp_path)
     # Falls back rather than raising: a typo must not remove the project.
-    assert registry.projects[0].status == "active"
+    assert registry.projects[0].status == "not-started"
     assert any(i.startswith("A:") and "finished" in i for i in registry.issues)
 
 
 def test_a_non_string_status_is_an_issue_not_a_crash(tmp_path):
     write(tmp_path, '[[project]]\nname = "A"\npaths = ["."]\ncategory = "x"\nstatus = 3\n')
     registry = load_registry(tmp_path)
-    assert registry.projects[0].status == "active"
+    assert registry.projects[0].status == "not-started"
     assert any(i.startswith("A:") for i in registry.issues)
 
 

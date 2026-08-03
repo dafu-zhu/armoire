@@ -27,22 +27,23 @@ export function nextStatus(current) {
 // stubbed/malformed payload; the server itself always sends a valid one)
 // gets a fallback, so every reader -- roadmap.js's border/glyph/aria-label/
 // isBlocked, categories.js's item class/glyph/aria-label/cycle -- agrees on
-// the same value instead of each inventing its own. Feeding an unnormalised
-// status straight into nextStatus() is its own bug even before any of that:
-// nextStatus(undefined) returns 'not-started' (indexOf -1, +1 wraps to 0),
-// not the 'active' fallback below, so a caller that skips this and calls
-// nextStatus() directly on a raw payload value can disagree with a caller
-// that normalises first about what a click from the same bad input produces.
+// the same value instead of each inventing its own. 'not-started' matches
+// the server's own DEFAULT_STATUS (projects.py) and, for free, matches what
+// nextStatus(undefined) already returns on its own (indexOf -1, +1 wraps to
+// 0 = STATUS_ORDER[0]) -- a caller that skipped normalising and called
+// nextStatus() directly on a raw payload value used to disagree with a
+// caller that normalised first about what a click from the same bad input
+// produces; now both land on the same value.
 export function normalizeStatus(status) {
-  return STATUS_ORDER.includes(status) ? status : 'active';
+  return STATUS_ORDER.includes(status) ? status : 'not-started';
 }
 
 export function glyphFor(status) {
-  return GLYPH[status] || GLYPH.active;
+  return GLYPH[status] || GLYPH['not-started'];
 }
 
 export function labelFor(status) {
-  return LABEL[status] || LABEL.active;
+  return LABEL[status] || LABEL['not-started'];
 }
 
 export async function setStatus(name, status) {

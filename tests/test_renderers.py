@@ -62,6 +62,95 @@ def test_markdown_links_to_a_percent_named_file_navigate(page, live_server):
     assert page.locator("#content .error").count() == 0
 
 
+def test_markdown_marks_a_link_that_leads_nowhere(page, live_server):
+    open_path(page, live_server, "links.md")
+    dead = page.locator(".markdown-body a.broken")
+    dead.wait_for()
+    assert dead.count() == 1
+    assert dead.inner_text() == "gone"
+    assert dead.get_attribute("title") == "missing: gone.md"
+
+
+def test_a_broken_link_carries_no_href_at_all(page, live_server):
+    """Removing the href, rather than only swallowing the click, is what makes
+    the gesture inert for every route into it -- a middle click, a ctrl click
+    and Enter on a focused link all bypass a click handler and would each
+    still open the dead path."""
+    open_path(page, live_server, "links.md")
+    page.locator(".markdown-body a.broken").wait_for()
+    assert page.locator(".markdown-body a.broken").get_attribute("href") is None
+
+
+def test_links_that_lead_somewhere_are_left_alone(page, live_server):
+    """The other half of the marking: a check that dulls every link is as
+    broken as one that dulls none. The folder link is the interesting case --
+    /api/preview 404s on a directory, so an existence check built on that
+    endpoint would call a perfectly good folder link dead."""
+    open_path(page, live_server, "links.md")
+    # The marking is asynchronous, so the absence of a class proves nothing
+    # until the check that would have added it has run.
+    page.locator(".markdown-body a.broken").wait_for()
+    live = page.locator('.markdown-body a[href="#/browse/100%25.md"]')
+    assert live.count() == 1
+    assert "broken" not in (live.get_attribute("class") or "")
+    folder = page.locator('.markdown-body a[href="#/browse/notes"]')
+    assert folder.count() == 1
+    assert "broken" not in (folder.get_attribute("class") or "")
+
+
+def test_a_broken_link_reads_as_dead_before_it_is_clicked(page, live_server):
+    """A no-op the reader cannot see coming is indistinguishable from a page
+    that has frozen. The class is only half the fix; the rule that renders it
+    is the half the reader actually meets.
+
+    The hover state is asserted alongside the resting one because `a:hover`
+    matches an anchor with no href just as readily as a real link, and the
+    global `a:hover { text-decoration: underline }` above would otherwise put
+    an underline back on the moment the pointer arrives.
+    """
+    open_path(page, live_server, "links.md")
+    dead = page.locator(".markdown-body a.broken")
+    dead.wait_for()
+    resting = dead.evaluate("el => getComputedStyle(el).textDecorationLine")
+    assert resting == "line-through"
+    dead.hover()
+    assert dead.evaluate("el => getComputedStyle(el).textDecorationLine") == "line-through"
+    live = page.locator('.markdown-body a[href="#/browse/notes"]')
+    assert dead.evaluate("el => getComputedStyle(el).color") != live.evaluate(
+        "el => getComputedStyle(el).color"
+    )
+
+
+def test_clicking_a_broken_link_stays_on_the_document(page, live_server):
+    """The whole point: the old behaviour navigated, 404ed, and replaced the
+    document with an error card under a changed URL, so the reader lost their
+    place and had to press Back.
+
+    Recording every hash the page visits, rather than only comparing the URL
+    afterwards, is deliberate -- see the same pattern in test_navigation.py's
+    inert-gesture test. A regression that navigated and then bounced back
+    would leave the final URL right and the document restored, and only the
+    recording can tell that apart from never having moved.
+    """
+    open_path(page, live_server, "links.md")
+    page.locator(".markdown-body a.broken").wait_for()
+    page.evaluate(
+        "() => { "
+        "window.__hashes = []; "
+        "window.addEventListener('hashchange', () => window.__hashes.push(location.hash)); "
+        "}"
+    )
+    before = page.evaluate("location.hash")
+    page.locator(".markdown-body a.broken").click()
+    # Nothing to wait_for_selector on for "stayed put": give a navigation
+    # that should never happen a window in which to have happened.
+    page.wait_for_timeout(400)
+    assert page.evaluate("window.__hashes") == []
+    assert page.evaluate("location.hash") == before
+    assert page.locator("#content .error").count() == 0
+    assert "Links" in page.locator(".markdown-body").inner_text()
+
+
 def test_markdown_strips_inline_event_handlers(page, live_server):
     """Untrusted file content must not execute on render."""
     open_path(page, live_server, "hostile.md")

@@ -81,8 +81,8 @@ registry, armoire opens straight into the file browser.
 
 Every project must declare `blocked_by`, `category`, or both — one with neither
 has nowhere on screen to go and is reported as a registry issue. `status` is one
-of `not-started`, `active`, `paused`, `done`; it defaults to `active`, and an
-unrecognised value falls back to `active` as a registry issue rather than
+of `not-started`, `active`, `paused`, `done`; it defaults to `not-started`, and an
+unrecognised value falls back to `not-started` as a registry issue rather than
 dropping the project from the graph. Edit it from the roadmap by clicking the
 chip in a node's corner, or by hand in the registry file.
 
