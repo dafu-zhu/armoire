@@ -90,3 +90,13 @@ def test_rows_no_longer_carry_a_commit_count(tmp_path, monkeypatch):
     registry = Registry(projects=[Project(name="A", paths=(), category="x")])
     row = project_rows(registry, store.state_path(tmp_path))[0]
     assert "commits" not in row and "last" not in row
+
+
+def test_project_detail_no_longer_carries_commits(tmp_path):
+    """The recent-commits section was a useless feature -- project_detail
+    must not spend a git-log call building a `commits` list nobody renders
+    any more."""
+    project = Project(name="A", paths=("nowhere",))
+    registry = Registry(projects=[project], issues=[])
+    detail = project_detail(tmp_path, registry, "A", store.state_path(tmp_path))
+    assert "commits" not in detail

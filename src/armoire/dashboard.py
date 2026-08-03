@@ -1,16 +1,15 @@
-"""Composes registry, activity and directory listings into dashboard payloads.
+"""Composes registry and directory listings into dashboard payloads.
 
 app.py stays routing-only: these three functions are what its three routes
 (the two roadmap routes, plus /api/tree's own use of has_roadmap) call. The
-composition needs three modules at once, which is exactly the kind of thing
-that would otherwise accrete inside a route handler.
+composition needs more than one module at once, which is exactly the kind of
+thing that would otherwise accrete inside a route handler.
 """
 
 from dataclasses import asdict
 from pathlib import Path
 
 from armoire import store
-from armoire.activity import recent_commits
 from armoire.paths import PathOutsideRoot
 from armoire.projects import STATUSES, Registry, RegistryError, load_registry
 from armoire.scanner import list_dir
@@ -96,15 +95,9 @@ def project_detail(root: Path, registry: Registry, name: str, state_file: Path) 
                 }
             )
 
-    commits = []
-    for relative in match.paths:
-        commits.extend(recent_commits(root, relative))
-    commits.sort(key=lambda c: c["when"], reverse=True)
-
     return {
         "project": asdict(match)
         | {"paths": list(match.paths), "blocked_by": list(match.blocked_by), "status": status},
         "blocks": [p.name for p in registry.projects if name in p.blocked_by],
-        "commits": commits[:10],
         "files": files,
     }

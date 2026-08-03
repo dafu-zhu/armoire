@@ -11,6 +11,13 @@ const GLYPH = {
   done: '✓',
 };
 
+const LABEL = {
+  'not-started': 'Not started',
+  active: 'Active',
+  paused: 'Paused',
+  done: 'Done',
+};
+
 export function nextStatus(current) {
   const at = STATUS_ORDER.indexOf(current);
   return STATUS_ORDER[(at + 1) % STATUS_ORDER.length];
@@ -32,6 +39,10 @@ export function normalizeStatus(status) {
 
 export function glyphFor(status) {
   return GLYPH[status] || GLYPH.active;
+}
+
+export function labelFor(status) {
+  return LABEL[status] || LABEL.active;
 }
 
 export async function setStatus(name, status) {

@@ -27,6 +27,13 @@
   --cat-3-fill: #fbefff; --cat-3-line: #8250df;
   --cat-4-fill: #fff8c5; --cat-4-line: #9a6700;
   --cat-5-fill: var(--subtle); --cat-5-line: var(--border);
+  /* One hue per status, distinct from every category colour above and from
+     each other, so the status chip (a single small glyph) does not rely on
+     shape alone (○ ● ◐ ✓) to read at a glance. */
+  --status-not-started: var(--muted);
+  --status-active: var(--link);
+  --status-paused: #9a6700;
+  --status-done: #2da44e;
   --radius: 6px;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -67,6 +74,7 @@ a:hover { text-decoration: underline; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 #filter-wrap { position: relative; flex: 1; max-width: 420px; }
@@ -102,7 +110,11 @@ a:hover { text-decoration: underline; }
 #filter-results li[aria-selected="true"] { background: var(--subtle); }
 #filter-results .dir { color: var(--muted); }
 
-#body { display: flex; flex: 1; min-height: 0; }
+/* position: relative so #project-panel (an absolutely positioned overlay,
+   below) can anchor to the whole roadmap+categories area regardless of
+   which of the two triggered it, rather than being confined inside just
+   one of its flex siblings. */
+#body { display: flex; flex: 1; min-height: 0; position: relative; }
 
 #tree {
   flex: 0 0 280px;
@@ -129,9 +141,9 @@ a:hover { text-decoration: underline; }
 #tree .row[aria-current="true"] { background: var(--subtle); font-weight: 600; }
 #tree .caret { width: 12px; color: var(--muted); flex: 0 0 12px; }
 /* overflow: hidden alone already zeroes this flex item's automatic minimum
-   size (CSS Flexbox 4.5, same reasoning documented at
-   .project-detail .commit .subject below), so it can shrink below its
-   content's intrinsic width without a separate `min-width: 0`. */
+   size (CSS Flexbox 4.5: a flex item whose overflow is anything but
+   `visible` gets an automatic minimum size of zero), so it can shrink below
+   its content's intrinsic width without a separate `min-width: 0`. */
 #tree .row span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -304,10 +316,20 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 .node.blocked rect            { fill: var(--blocked-fill); }
 .status-chip { font-size: 12px; cursor: pointer; }
 .node text { font-family: var(--sans); font-size: 13px; fill: var(--fg); }
+.node .node-title { font-size: 15px; font-weight: 600; }
 .node .node-sub { font-size: 11px; fill: var(--muted); }
 .node .node-due { font-size: 11px; fill: var(--muted); }
 .node .node-warn { font-size: 14px; font-weight: 700; fill: #bc4c00; cursor: help; }
 .node:hover rect { stroke: var(--link); }
+
+/* Status chip colour, one per status -- see the --status-* variables above.
+   Keyed off the status-* class already on .node (roadmap.js's `statuses`
+   seam), not off the chip itself, so applyStatus()'s class rewrite on every
+   click keeps the colour in sync for free. */
+.node.status-not-started .status-chip { fill: var(--status-not-started); }
+.node.status-active .status-chip      { fill: var(--status-active); }
+.node.status-paused .status-chip      { fill: var(--status-paused); }
+.node.status-done .status-chip        { fill: var(--status-done); }
 
 .cat-0 rect { fill: var(--cat-0-fill); stroke: var(--cat-0-line); }
 .cat-1 rect { fill: var(--cat-1-fill); stroke: var(--cat-1-line); }
@@ -363,84 +385,70 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
    chip is a real HTML <button>, so it keeps the UA default border/background
    unless reset the same way .entry-name already is. */
 .category .status-chip { background: none; border: 0; padding: 0; font: inherit; }
+/* Same colour-by-status rule as the graph node's chip, keyed the same way
+   off the entry's own status-* class (categories.js). */
+.entry.status-not-started .status-chip { color: var(--status-not-started); }
+.entry.status-active .status-chip      { color: var(--status-active); }
+.entry.status-paused .status-chip      { color: var(--status-paused); }
+.entry.status-done .status-chip        { color: var(--status-done); }
 .entry-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
 .entry-warn { margin-left: 4px; font-weight: 700; color: #bc4c00; cursor: help; }
 .entry.status-done { opacity: 0.55; }
 .entry.status-done .entry-name { text-decoration: line-through; }
 
-/* Project detail ------------------------------------------------------ */
-.project-detail { max-width: 900px; }
-.project-detail h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
-  font-weight: 600;
+/* Project panel --------------------------------------------------------- */
+/* A right-anchored overlay, absolutely positioned against #body (not
+   #roadmap) so it sits above both the graph and the category column
+   regardless of which one opened it. */
+#project-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 300px;
+  max-width: 90vw;
+  overflow-y: auto;
+  padding: 20px 16px;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(31, 35, 40, 0.12);
+  z-index: 20;
 }
-.project-detail .subtitle {
-  margin: 0 0 16px;
+.panel-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
   color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
 }
-.project-detail h2 {
-  margin: 24px 0 8px;
-  padding-bottom: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
-}
-.project-detail .relations {
-  display: flex;
-  gap: 24px;
-  flex-wrap: wrap;
-  margin: 0 0 8px;
-  font-size: 13px;
-}
-.project-detail .relations span { color: var(--muted); }
-.project-detail ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.panel-close:hover { background: var(--subtle); color: var(--fg); }
+#project-panel h2 { margin: 0 28px 12px 0; font-size: 17px; font-weight: 600; }
+.panel-field { margin: 0 0 8px; font-size: 13px; }
+.panel-field .label { color: var(--muted); margin-right: 4px; }
+.panel-status-glyph { margin-right: 4px; }
+.panel-status-glyph.status-not-started { color: var(--status-not-started); }
+.panel-status-glyph.status-active { color: var(--status-active); }
+.panel-status-glyph.status-paused { color: var(--status-paused); }
+.panel-status-glyph.status-done { color: var(--status-done); }
+.panel-note { margin: 12px 0; font-size: 13px; white-space: pre-wrap; }
+.panel-open {
+  display: block;
+  width: 100%;
+  margin-top: 16px;
+  font: inherit;
+  padding: 6px 12px;
+  color: var(--fg);
+  background: var(--subtle);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  cursor: pointer;
 }
-.project-detail li {
-  padding: 6px 14px;
-  border-top: 1px solid var(--border);
-  font-size: 13px;
-}
-.project-detail li:first-child { border-top: 0; }
-.project-detail li:hover { background: var(--subtle); }
-.project-detail .commit {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
-  font-family: var(--mono);
-  font-size: 12px;
-}
-.project-detail .commit .sha { color: var(--muted); flex: 0 0 auto; }
-.project-detail .commit .when { color: var(--muted); margin-left: auto; flex: 0 0 auto; }
-/* `overflow: hidden` is doing two jobs, and the second is not obvious: it is
-   what text-overflow needs to have anything to clip, and it is also what lets
-   this flex item shrink at all. A flex item's automatic minimum size is zero
-   when its overflow is anything but `visible` (CSS Flexbox 4.5), so the usual
-   companion `min-width: 0` would be a no-op here -- the default
-   `flex: 0 1 auto` shrinks correctly as it stands. Verified in a browser with
-   a 500-character subject: scrollWidth 3398 against clientWidth 771, and
-   `.when` (margin-left: auto) still inside a row that `.project-detail ul`
-   clips. Take `overflow: hidden` away and both jobs go with it: the subject
-   widens to its full intrinsic 3398px and pushes the timestamp ~2.5k past the
-   clip edge, where it is simply gone.
-
-   `overflow: clip` is the trap in that sentence -- it still gives
-   text-overflow something to clip, so the ellipsis survives the swap, but a
-   clipped box is not a scroll container and the automatic minimum size goes
-   back to being content-based. The subject stops shrinking, the timestamp
-   leaves the row, and the ellipsis keeps working the whole time, which is
-   what makes it look safe. The test asserts both halves for that reason. */
-.project-detail .commit .subject {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.panel-open:hover { background: var(--border); }
