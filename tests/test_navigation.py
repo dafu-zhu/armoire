@@ -296,11 +296,29 @@ def test_a_folder_with_no_registry_says_the_gesture_is_inert(bare_server, page):
     double click actually does nothing) together: the two currently derive
     from the same `hasRegistry` value and cannot drift, but a regression that
     broke only the dblclick guard while leaving the tooltip ternary intact
-    would still pass a title-only check."""
+    would still pass a title-only check.
+
+    An end-state-only check (hash == "#/browse/", #roadmap hidden) is not
+    enough on its own: on a folder with no registry, showRoadmap's own
+    `registry === false` fallback bounces `#/` straight back to `#/browse/`
+    and hides #roadmap too, so a dblclick handler that wrongly navigates to
+    `#/` converges on exactly the same end state 400ms later -- the bounce
+    just adds a flicker and two extra history entries nothing here checks.
+    Recording every hash the page actually visits, via a hashchange listener
+    installed before the gesture, catches that: a correctly-guarded dblclick
+    never writes `#/` at all, so it can never appear in the recording, no
+    matter what happens afterwards.
+    """
     page.goto(f"{bare_server}/#/browse/")
     page.wait_for_selector("#breadcrumb [data-root]")
     crumb = page.locator("#breadcrumb [data-root]")
     assert "no roadmap" in (crumb.get_attribute("title") or "").lower()
+    page.evaluate(
+        "() => { "
+        "window.__hashes = []; "
+        "window.addEventListener('hashchange', () => window.__hashes.push(location.hash)); "
+        "}"
+    )
     crumb.dblclick()
     # Nothing to wait_for_selector on for "stayed put" -- give the click
     # half's deferred timer (see the leak-guard test below) a window to have
@@ -308,6 +326,7 @@ def test_a_folder_with_no_registry_says_the_gesture_is_inert(bare_server, page):
     page.wait_for_timeout(400)
     assert page.evaluate("location.hash") == "#/browse/"
     assert page.locator("#roadmap").is_hidden()
+    assert "#/" not in page.evaluate("window.__hashes")
 
 
 def test_a_pending_single_click_does_not_leak_into_a_later_roadmap_visit(live_server, page):

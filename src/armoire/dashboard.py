@@ -1,8 +1,9 @@
 """Composes registry, activity and directory listings into dashboard payloads.
 
-app.py stays routing-only: these two functions are what its two roadmap routes
-call. The composition needs three modules at once, which is exactly the kind of
-thing that would otherwise accrete inside a route handler.
+app.py stays routing-only: these three functions are what its three routes
+(the two roadmap routes, plus /api/tree's own use of has_roadmap) call. The
+composition needs three modules at once, which is exactly the kind of thing
+that would otherwise accrete inside a route handler.
 """
 
 from dataclasses import asdict
