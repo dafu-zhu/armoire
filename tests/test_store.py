@@ -4,6 +4,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 from armoire import store
 
 
@@ -245,3 +247,72 @@ def test_writes_inside_catches_the_descendant_case(tmp_path, monkeypatch):
     served.mkdir(parents=True)
     assert not config_root.is_relative_to(served)
     assert store.writes_inside(served) is True
+
+
+def test_open_in_editor_uses_startfile_on_windows(tmp_path, monkeypatch):
+    target = tmp_path / "registry.toml"
+    target.write_text("", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    # raising=False: os.startfile does not exist on Linux or macOS, so on
+    # every non-Windows machine this is creating the attribute rather than
+    # replacing one. Without it, this test cannot run anywhere but Windows.
+    monkeypatch.setattr(os, "startfile", lambda p: seen.append(p), raising=False)
+    store.open_in_editor(target)
+    assert seen == [target]
+
+
+def test_open_in_editor_uses_open_on_macos(tmp_path, monkeypatch):
+    target = tmp_path / "registry.toml"
+    target.write_text("", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: seen.append(argv))
+    store.open_in_editor(target)
+    assert seen == [["open", str(target)]]
+
+
+def test_open_in_editor_uses_xdg_open_elsewhere(tmp_path, monkeypatch):
+    target = tmp_path / "registry.toml"
+    target.write_text("", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: seen.append(argv))
+    store.open_in_editor(target)
+    assert seen == [["xdg-open", str(target)]]
+
+
+def test_open_in_editor_never_waits_for_the_editor(tmp_path, monkeypatch):
+    """A GUI editor outlives the request that launched it. Popen is started
+    and abandoned; calling wait() would hang the handler for as long as the
+    user keeps the file open."""
+    target = tmp_path / "registry.toml"
+    target.write_text("", encoding="utf-8")
+
+    class Handle:
+        def __init__(self):
+            self.waited = False
+
+        def wait(self, *a, **k):
+            self.waited = True
+
+    handle = Handle()
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: handle)
+    store.open_in_editor(target)
+    assert not handle.waited
+
+
+def test_open_in_editor_propagates_a_launch_failure(tmp_path, monkeypatch):
+    """No handler registered, or no xdg-open on the box. The endpoint turns
+    this into a 500 the UI can show, so it must not be swallowed here."""
+    target = tmp_path / "registry.toml"
+    target.write_text("", encoding="utf-8")
+
+    def boom(argv):
+        raise FileNotFoundError("xdg-open")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(store.subprocess, "Popen", boom)
+    with pytest.raises(OSError):
+        store.open_in_editor(target)
