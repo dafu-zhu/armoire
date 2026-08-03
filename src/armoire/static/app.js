@@ -7,6 +7,7 @@ import { renderRoadmap } from './roadmap.js';
 import { renderCategories } from './categories.js';
 import { categoryOrder } from './palette.js';
 import { openPanel, closePanel } from './panel.js';
+import { mountRegistryButton } from './registry.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -32,6 +33,9 @@ let roadmapListeners = null;
 // never refetched per navigation.
 let rootLabel = null;
 let hasRegistry = false;
+// The absolute path to this folder's registry.toml, or null when armoire has
+// no usable store for it. Set once, at boot, from the root tree payload.
+let registryPath = null;
 // The pending single-click navigation for the root crumb, if any. Module
 // scope, not local to renderBreadcrumb: a stale timer from a crumb that has
 // since been replaced (the user navigated elsewhere before it fired) must
@@ -345,6 +349,11 @@ tree.ready
   .then((rootMeta) => {
     rootLabel = displayRoot(rootMeta.root);
     hasRegistry = rootMeta.hasRegistry;
+    registryPath = rootMeta.registry;
+    // The footer, not the roadmap: a folder with only a stub registry never
+    // reaches the roadmap at all (see showRoadmap's fallback below), and the
+    // registry is exactly what it needs to edit to get there.
+    mountRegistryButton(document.getElementById('status'), registryPath);
     const rootNameEl = document.getElementById('root-name');
     rootNameEl.textContent = rootLabel;
     // A single click, unlike the breadcrumb root crumb's click/dblclick

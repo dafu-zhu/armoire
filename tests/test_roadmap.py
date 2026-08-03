@@ -1279,3 +1279,52 @@ def test_a_stale_failed_write_does_not_roll_back_over_a_newer_one(live_server, p
         before,
         entry.get_attribute("class"),
     )
+
+
+def test_the_registry_button_is_in_the_footer_on_the_roadmap(page, live_server):
+    open_roadmap(page, live_server)
+    button = page.locator("#status .registry-open")
+    assert button.is_visible()
+    assert button.inner_text() == "Edit registry"
+
+
+def test_the_registry_button_is_in_the_footer_on_the_browse_view(page, live_server):
+    """The browse view matters as much as the roadmap: a folder with only a
+    stub registry is bounced out of the roadmap into the file browser, so a
+    roadmap-only button would be missing exactly when it is needed to declare
+    a first project."""
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree", state="visible", timeout=15000)
+    assert page.locator("#status .registry-open").is_visible()
+
+
+def test_clicking_the_registry_button_asks_the_server_to_open_it(page, live_server):
+    calls = []
+
+    def stub(route, request):
+        # Never let this reach the real endpoint: it would launch an editor
+        # on whatever machine is running the suite.
+        calls.append(request.method)
+        route.fulfill(status=200, json={"opened": True})
+
+    page.route("**/api/registry/open", stub)
+    open_roadmap(page, live_server)
+    page.locator("#status .registry-open").click()
+    page.wait_for_timeout(300)
+    assert calls == ["POST"]
+
+
+def test_the_registry_button_sends_the_guard_header(page, live_server):
+    """Without X-Armoire the server refuses. A button that always 403s is a
+    button that never works."""
+    seen = []
+
+    def stub(route, request):
+        seen.append(request.headers.get("x-armoire"))
+        route.fulfill(status=200, json={"opened": True})
+
+    page.route("**/api/registry/open", stub)
+    open_roadmap(page, live_server)
+    page.locator("#status .registry-open").click()
+    page.wait_for_timeout(300)
+    assert seen == ["1"]
