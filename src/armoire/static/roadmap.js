@@ -125,6 +125,11 @@ function svgEl(name, attrs = {}) {
   return el;
 }
 
+// No project name a TOML author can type contains a NUL: it is not a legal
+// character in a TOML string, escaped or not, so this can never collide with
+// a real project and never needs quoting or escaping of its own.
+const RANK_ANCHOR = '\0armoire-rank-anchor';
+
 function layout(projects, heights, known) {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: 'LR', align: 'UL', nodesep: 28, ranksep: 72, marginx: 24, marginy: 24 });
@@ -139,7 +144,39 @@ function layout(projects, heights, known) {
       if (known.has(blocker)) g.setEdge(blocker, project.name);
     }
   }
+
+  // Pin every root -- a project with no drawn incoming edge, i.e. nothing
+  // blocks it -- to the same rank. Neither of dagre's rankers does this by
+  // itself. 'network-simplex' (the default) minimises total edge length: a
+  // root whose only dependent sits several ranks away has slack, and the
+  // ranker spends it by sliding the root rightward, off the rank its
+  // blocker-free siblings sit on. 'longest-path' does not fix this either --
+  // despite the name, dagre's implementation schedules every node as late as
+  // possible relative to a sink it can reach, not as early as possible from a
+  // source, so a root with a short reach gets pushed right exactly the same
+  // way.
+  //
+  // A shared invisible anchor with a high-weight edge FROM every root TO it
+  // is the standard way to constrain dagre's rank assignment without
+  // reimplementing it: minlen 1 (an edge of length 0 between two distinct
+  // nodes is not a shape dagre's position phase supports -- it crashes later
+  // with no rank left to give the edge a point on) asks for the anchor to sit
+  // exactly one rank after every root, and a weight (100) far above any real
+  // edge's (1, the default) makes any root drifting from that arrangement
+  // cost far more than the edge-length saving that drift could ever buy
+  // elsewhere in the graph. Pointing the edges root -> anchor, not anchor ->
+  // root, costs nothing extra in width: the anchor only has to clear the
+  // rank already one past the rightmost root, which the graph reaches anyway
+  // through its real edges, rather than opening a new rank of its own before
+  // rank 0. The anchor is removed again before this function returns, so
+  // nothing downstream -- rendering, positions, edge count -- ever sees it.
+  const roots = projects.filter((p) => p.blocked_by.every((b) => !known.has(b)));
+  if (roots.length) {
+    g.setNode(RANK_ANCHOR, { width: 0, height: 0 });
+    for (const root of roots) g.setEdge(root.name, RANK_ANCHOR, { minlen: 1, weight: 100 });
+  }
   dagre.layout(g);
+  g.removeNode(RANK_ANCHOR);
   return g;
 }
 

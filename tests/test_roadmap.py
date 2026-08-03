@@ -65,6 +65,32 @@ def test_the_blocker_is_laid_out_before_the_blocked(page, live_server):
     assert boxes["Upstream"] < boxes["Downstream"]
 
 
+def test_every_root_renders_at_the_same_leftmost_x(page, layout_server):
+    """Every project nothing blocks must render hard left, not merely
+    "before what it blocks".
+
+    sample_root's single edge is too simple to prove this: with only one rank
+    of depth, dagre's default 'network-simplex' ranker places its lone root
+    at rank 0 regardless, so a bug that only shows up when a root's sole
+    dependent sits several ranks away would pass unnoticed there.
+    layout_server's registry (RootA -> MidA -> Leaf, RootB -> Leaf) gives
+    RootB slack that network-simplex spends by sliding it one rank toward
+    Leaf -- off the left edge RootA sits on, even though nothing blocks RootB
+    either. roadmap.js's layout() closes that slack with a high-weight pin
+    edge from every root to a shared (and later removed) anchor node, which
+    forces every root to the same rank regardless of how far its own
+    dependents reach.
+    """
+    page.goto(layout_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    boxes = {}
+    for handle in page.locator("#roadmap .node").element_handles():
+        name = handle.text_content()
+        key = next(n for n in ("RootA", "RootB", "MidA", "Leaf") if n in name)
+        boxes[key] = handle.bounding_box()["x"]
+    assert abs(boxes["RootA"] - boxes["RootB"]) < 1, boxes
+
+
 def test_a_due_date_appears_on_its_node(page, live_server):
     open_roadmap(page, live_server)
     assert "2026-08-17" in page.locator("#roadmap").inner_text()

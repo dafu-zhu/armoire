@@ -468,6 +468,64 @@ def colon_name_server(colon_name_root):
     thread.join(timeout=5)
 
 
+@pytest.fixture(scope="session")
+def layout_root(tmp_path_factory, _isolated_store_session):
+    """Two roots, one of them with a dependent several ranks deep.
+
+    sample_root's only edge (Upstream -> Downstream) is one rank long, which
+    dagre's default 'network-simplex' ranker places correctly regardless --
+    its lone root has no slack to spend, so a bug that only shows up when a
+    root's dependent sits several ranks away would pass unnoticed there. This
+    fixture adds the shape the real registry (D:\\GitHub\\summer-26) exposed:
+    RootB blocks nothing but Leaf, and Leaf sits two ranks away (via
+    RootA -> MidA -> Leaf), so RootB has slack to be pushed off the left
+    edge. network-simplex minimises total edge length and spends that slack
+    -- it places RootB one rank right of RootA, not level with it, even
+    though nothing blocks RootB either. roadmap.js's layout() closes that
+    slack with a pin edge from every root to a shared anchor node, which
+    forces both RootA and RootB to the same rank.
+
+    All four projects use paths = ["."] (the fixture's own root, which always
+    exists) so the registry carries no path-related issues to confound the
+    layout assertion, and each carries a category so the blocked_by-or-
+    category rule adds no issue of its own either.
+    """
+    root = tmp_path_factory.mktemp("layout")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "RootA"\npaths = ["."]\ncategory = "a"\n'
+        "\n"
+        '[[project]]\nname = "MidA"\npaths = ["."]\nblocked_by = ["RootA"]\ncategory = "a"\n'
+        "\n"
+        '[[project]]\nname = "Leaf"\npaths = ["."]\n'
+        'blocked_by = ["MidA", "RootB"]\ncategory = "a"\n'
+        "\n"
+        '[[project]]\nname = "RootB"\npaths = ["."]\ncategory = "a"\n',
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def layout_server(layout_root):
+    app = create_app(layout_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("layout server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
 def _git(cwd, *args):
     """Run git under a fixed identity. The one copy; test_activity and
     test_dashboard import it rather than keeping their own.
