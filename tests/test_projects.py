@@ -177,16 +177,31 @@ def test_a_path_escaping_the_root_is_an_issue_even_when_it_exists(tmp_path):
 
 
 def test_every_issue_is_attributable_to_a_real_project(tmp_path):
-    """Downstream marks the graph by splitting each issue on its first ':'."""
+    """Downstream marks the graph by testing each issue against each project
+    name with `issue.startsWith(`${name}:`)` -- roadmap.js's `flagged` set and
+    its per-node tooltip, and categories.js's entry-warn, all use that one
+    test. Every issue this module builds must therefore begin with a real
+    project's name followed by ":".
+
+    Asserted as a prefix, not by splitting on the first ":": splitting is the
+    contract the frontend abandoned, and it drops any project whose own name
+    contains a colon. "Foo: Bar" here is exactly that case -- it is a legal
+    registry name (conftest's colon_name_root serves one), and its issues
+    split to "Foo", which is not a project. It carries a missing path, an
+    unknown blocker and a cycle, so all three issue shapes are covered for it.
+    """
     text = (
-        '[[project]]\nname = "A"\npaths = ["nowhere"]\nblocked_by = ["Ghost", "B"]\n\n'
-        '[[project]]\nname = "B"\npaths = ["research/0dte"]\nblocked_by = ["A"]\n'
+        '[[project]]\nname = "Foo: Bar"\npaths = ["nowhere"]\nblocked_by = ["Ghost", "B"]\n\n'
+        '[[project]]\nname = "B"\npaths = ["research/0dte"]\nblocked_by = ["Foo: Bar"]\n'
     )
     registry = load_registry(write(tmp_path, text))
     assert registry.issues
     names = {p.name for p in registry.projects}
     for issue in registry.issues:
-        assert issue.split(":", 1)[0].strip() in names, issue
+        assert any(issue.startswith(f"{name}:") for name in names), issue
+    # The colon-named project is the point: without it every issue would also
+    # satisfy the split contract and this test would prove nothing new.
+    assert any(issue.startswith("Foo: Bar:") for issue in registry.issues), registry.issues
 
 
 def test_a_project_blocking_itself_is_a_cycle(tmp_path):

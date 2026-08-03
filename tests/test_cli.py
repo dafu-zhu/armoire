@@ -121,6 +121,16 @@ def test_migration_reports_which_file_is_now_authoritative(tmp_path, isolated_st
     lines = cli.prepare_store(served)
     joined = "\n".join(lines)
     assert str(store.registry_path(served)) in joined
+    # The path alone proves nothing about migration: the "no registry yet -
+    # created ..." branch names the same file, so this test passed unchanged
+    # against a prepare_store that ignored the legacy file entirely and wrote
+    # a stub over it. What the name claims is that the output says a migration
+    # happened, names the file left behind, and says which of the two now
+    # wins.
+    assert "migrated" in joined, joined
+    assert str(served / "armoire.toml") in joined, joined
+    assert "authoritative" in joined, joined
+    assert "ignored" in joined, joined
 
 
 def test_a_store_inside_the_served_folder_refuses_to_write(tmp_path, monkeypatch):

@@ -102,6 +102,21 @@ means modifying it:
 | macOS | `~/Library/Application Support/armoire` |
 | Linux | `$XDG_CONFIG_HOME/armoire`, falling back to `~/.config/armoire` |
 
+Inside it, every folder armoire has served gets its own directory:
+
+```
+<store>/folders/<basename>-<first 8 hex of sha256 of the resolved path>/
+    registry.toml    the projects, the dependency edges — the file you edit
+    state.json       project status, written when you click a chip
+```
+
+The basename is there so the directory is recognisable to a human reading the
+store; the hash is what makes it unique. Two folders called `docs` in different
+places therefore get two directories rather than sharing one, and renaming a
+folder gives it a fresh directory instead of picking up the old one's registry.
+The path is resolved through symlinks and case-normalised on Windows first, so
+two spellings of one folder do not get two stores.
+
 `serve` creates a commented registry stub the first time it serves a folder, and
 prints the path so you know where to edit it. If the folder already carries a
 Phase 2 `armoire.toml`, that file is copied into the store — never deleted,

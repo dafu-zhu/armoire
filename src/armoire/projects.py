@@ -1,9 +1,18 @@
 """The project registry.
 
-armoire.toml declares what a project is and what blocks it. Neither can be
+The registry declares what a project is and what blocks it. Neither can be
 inferred: a project may span several folders, and the dependency edges exist
 only in the author's head. A tool that guesses structure is worse than one that
 admits it does not know, so no registry means no roadmap.
+
+The file itself lives in armoire's own store, outside the folder it describes
+-- store.registry_path(folder), i.e. registry.toml under a per-folder
+directory. Nothing here resolves that path: every production caller passes the
+file to load_registry explicitly (app.create_app resolves it once, at creation
+time). REGISTRY_NAME below is not that file. It is the Phase 2 filename, kept
+only so cli.prepare_store can find a registry sitting in a served folder and
+copy it into the store; once copied, the folder's own armoire.toml is never
+read again.
 """
 
 import tomllib
@@ -13,6 +22,8 @@ from pathlib import Path
 
 from armoire.paths import PathOutsideRoot, resolve_in_root
 
+# The legacy filename to migrate *from*, not the file production reads. See
+# the module docstring.
 REGISTRY_NAME = "armoire.toml"
 STATUSES = ("not-started", "active", "paused", "done")
 DEFAULT_STATUS = "active"
@@ -138,11 +149,13 @@ def _find_cycle(projects: list[Project]) -> list[str] | None:
 
 
 def load_registry(root: Path, registry_file: Path | None = None) -> Registry | None:
-    """Load armoire.toml, or None when there is none.
+    """Load the registry for `root`, or None when there is none.
 
-    The registry is read from `registry_file` when given, or from
-    `root / armoire.toml` otherwise. Either way, `root` is what `paths`
-    resolve against.
+    The registry is read from `registry_file`, which is where every production
+    caller reads it from: the store, outside the served folder. `root` is only
+    what `paths` resolve against. The `root / REGISTRY_NAME` fallback, for a
+    caller that passes no file, is the Phase 2 location and survives for the
+    convenience of tests that build a registry inside the folder they serve.
 
     Structural problems raise: a malformed file, an entry or field of the wrong
     shape, or a duplicate name means the graph cannot be trusted at all. Every
@@ -206,9 +219,14 @@ def load_registry(root: Path, registry_file: Path | None = None) -> Registry | N
 
     cycle = _find_cycle(projects)
     if cycle is not None:
-        # Lead with a project name: issues are attributed to a node downstream
-        # by splitting on the first ":", so a message starting with anything
-        # else silently fails to mark the graph.
+        # Lead with a project name, followed by ": ". Downstream (roadmap.js's
+        # `flagged` set and per-node tooltip, categories.js's entry-warn) tests
+        # each issue against each project name with
+        # `issue.startsWith(`${name}:`)`, so a message starting with anything
+        # else silently fails to mark the graph. Every issue built above
+        # follows the same shape. Note this is a prefix test, not a split on
+        # the first ":" -- splitting would drop any project whose own name
+        # contains one, which is a legal registry name.
         issues.append(f"{cycle[0]}: dependency cycle via {' -> '.join(cycle)}")
 
     return Registry(projects=projects, issues=issues)
