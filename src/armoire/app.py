@@ -318,5 +318,36 @@ def create_app(root: Path) -> FastAPI:
             store.write_state(state_file, state)
         return {"name": name, "status": status}
 
+    @app.post("/api/registry/open")
+    def open_registry(request: Request) -> dict:
+        """Hand registry.toml to the user's own editor.
+
+        POST, not GET: this has a side effect, and a GET is reachable from a
+        foreign page through <img src>, which sends no custom headers and
+        would sail past the X-Armoire check. _guard's argument assumes a
+        method the browser must preflight.
+
+        The path is `registry_file`, resolved once at create_app time. No
+        request data reaches the launcher -- there is nothing here for a
+        caller to point at a file of their choosing.
+        """
+        _guard(request, writes_into_root)
+        if not registry_file.is_file():
+            # cli.prepare_store writes a stub before the server starts, so
+            # this is reachable only if the file is removed underneath a
+            # running server. The client shows the path when this comes
+            # back, which is the useful answer for a file that should exist
+            # and does not.
+            raise HTTPException(status_code=404, detail="no registry")
+        try:
+            store.open_in_editor(registry_file)
+        except OSError as exc:
+            # No handler registered for .toml, or no xdg-open on the box.
+            # The message is the only thing that distinguishes "nothing is
+            # installed" from "armoire is broken", so it travels to the UI.
+            logger.warning("could not open the registry: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from None
+        return {"opened": True}
+
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
