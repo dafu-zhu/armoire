@@ -4,7 +4,13 @@ import time
 
 import pytest
 
+from armoire.projects import STATUSES
 from conftest import folder_snapshot
+
+# The cycle order status.js's nextStatus walks. Imported from the server's own
+# tuple rather than retyped: STATUSES and STATUS_ORDER (status.js) are the same
+# four values in the same order, and the endpoint validates against STATUSES.
+STATUS_ORDER = list(STATUSES)
 
 
 def open_roadmap(page, live_server):
@@ -1109,45 +1115,149 @@ def test_a_failed_status_write_reverts_the_category_chip(live_server, page):
     assert chip.inner_text() == succeeded_glyph
 
 
-def test_rapid_clicks_on_the_category_chip_serialize_their_writes(live_server, page):
-    """writeStatus (status.js) is now a shared, module-scoped queue used by
-    both roadmap.js and categories.js -- grepping this file for
-    stale|serial|queue|token|race before this test returns nothing: the
-    ordering guarantee it exists for was never directly exercised, only
-    inferred from the rollback tests' behaviour. Each intercepted PUT is
-    held open for 150ms before responding; if the client ever let a second
-    PUT overlap the first in time, that overlap would show up directly as a
-    later request's captured start time landing before an earlier request's
-    captured end time. Three rapid clicks (no waiting between them) prove
-    the negative: every request's start is at or after the previous
-    request's end, and all three distinct statuses arrive, in click order,
-    at the server -- nothing was dropped, merged, or reordered.
+# Installed before navigation, so it is in place for the very first click.
+# Records, in the page, when each /api/status request starts and when it
+# settles, and holds each one open for SETTLE_MS after the response arrives so
+# that overlapping writes overlap by a margin no scheduling jitter can close.
+#
+# The delay lives here rather than in the route handler on purpose. Playwright's
+# Python sync API is greenlet-based and single-threaded: a route handler runs
+# inside a task on the driver's own event loop with no await, so a blocking
+# time.sleep there stalls the loop, and neither the next route event nor the
+# next driver call (a chip.click(), say) can be delivered until it returns.
+# Measured from the driver, "the second request started after the first
+# finished" is then true of the harness whatever the client does. Awaiting
+# inside the page instead measures the client.
+FETCH_PROBE = """
+window.__statusFetches = [];
+const realFetch = window.fetch;
+const settle = (entry) => new Promise((resolve) => window.setTimeout(resolve, %d)).then(() => {
+  entry.end = performance.now();
+});
+window.fetch = function (...args) {
+  const target = args[0];
+  const url = String(target && target.url ? target.url : target);
+  if (!url.includes('/api/status')) return realFetch.apply(window, args);
+  const entry = { start: performance.now() };
+  window.__statusFetches.push(entry);
+  return realFetch.apply(window, args).then(
+    (response) => settle(entry).then(() => response),
+    (error) => settle(entry).then(() => { throw error; }),
+  );
+};
+"""
+SETTLE_MS = 80
+
+
+def click_chip(page, selector, times):
+    """`times` clicks in one page turn, with no driver round trip between them.
+
+    Three separate chip.click() calls cannot prove anything about queueing:
+    each is a driver call that waits for the page to be idle, so the second
+    click cannot even be dispatched until the first click's write is long
+    settled. Dispatching them from inside one evaluate() is what makes them
+    genuinely rapid -- all three handlers run synchronously, in the same task,
+    before the page yields to anything.
     """
-    events = []
+    page.evaluate(
+        """([selector, times]) => {
+            const chip = document.querySelector(selector);
+            for (let i = 0; i < times; i += 1) chip.click();
+        }""",
+        [selector, times],
+    )
+
+
+def test_rapid_clicks_on_the_category_chip_serialize_their_writes(live_server, page):
+    """writeStatus (status.js) is a shared, module-scoped queue used by both
+    roadmap.js and categories.js, and this is the only test of the ordering
+    guarantee it exists for.
+
+    The measurement is taken in the page (FETCH_PROBE above), not in the
+    route handler, so what it observes is the client's own behaviour: when
+    each PUT left the page and when it settled. Every request's start must
+    land at or after the previous request's end -- with the queue removed,
+    all three clicks issue their fetch synchronously in the same task and the
+    three intervals overlap almost exactly.
+
+    The two payload assertions are kept but carry nothing on their own:
+    nextStatus is applied synchronously on each click before its fetch is
+    issued, so three distinct statuses all naming Standalone arrive at the
+    server whether the writes are queued or not.
+    """
+    page.add_init_script(FETCH_PROBE % SETTLE_MS)
+    bodies = []
 
     def handler(route):
-        events.append({"start": time.monotonic(), "body": route.request.post_data_json})
-        time.sleep(0.15)
-        events[-1]["end"] = time.monotonic()
+        bodies.append(route.request.post_data_json)
+        # Fulfilled immediately: the driver's loop must stay free, or the
+        # clicks and the polling below cannot be delivered while a write is
+        # in flight. The artificial latency is the page's, not the harness's.
         route.fulfill(status=200, content_type="application/json", body="{}")
 
     page.route("**/api/status", handler)
     page.goto(f"{live_server}/#/")
     page.wait_for_selector("#categories .category")
-    chip = page.locator('#categories [data-name="Standalone"] .status-chip')
+    click_chip(page, '#categories [data-name="Standalone"] .status-chip', 3)
 
-    for _ in range(3):
-        chip.click()
+    page.wait_for_function(
+        "() => window.__statusFetches.length === 3"
+        " && window.__statusFetches.every((entry) => entry.end !== undefined)",
+        timeout=15000,
+    )
+    log = page.evaluate("() => window.__statusFetches")
+    assert len(log) == 3, log
+    for earlier, later in zip(log, log[1:], strict=False):
+        assert later["start"] >= earlier["end"], log
 
-    deadline = time.monotonic() + 5
-    while len(events) < 3 and time.monotonic() < deadline:
+    assert {body["name"] for body in bodies} == {"Standalone"}, bodies
+    assert len({body["status"] for body in bodies}) == 3, bodies
+
+
+def test_a_stale_failed_write_does_not_roll_back_over_a_newer_one(live_server, page):
+    """writeToken (status.js) had no direct coverage: every rollback test
+    above exercises a failure that *is* the latest click for its project, the
+    case the guard lets through.
+
+    Two clicks in one task, with only the first write failing. By the time
+    that failure is caught, the second click has already moved the optimistic
+    state past it and queued its own write, so rolling back to what the first
+    click saw as "previous" would put the chip on a status the server never
+    held for either click -- and would then disagree with the write that
+    actually succeeded. Without the token check the rollback fires and the
+    chip lands back on its starting status.
+
+    Both requests are stubbed, so the server's state is untouched and this
+    test needs no cleanup. The expected status is derived from whatever the
+    chip starts on rather than assumed, so the test does not depend on the
+    order it runs in.
+    """
+    calls = {"n": 0}
+
+    def handler(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=500)
+        else:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/status", handler)
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    entry = page.locator('#categories [data-name="Standalone"]')
+    before = entry.get_attribute("class")
+    started = next(s for s in STATUS_ORDER if f"status-{s}" in before)
+    expected = STATUS_ORDER[(STATUS_ORDER.index(started) + 2) % len(STATUS_ORDER)]
+
+    click_chip(page, '#categories [data-name="Standalone"] .status-chip', 2)
+    deadline = time.monotonic() + 10
+    while calls["n"] < 2 and time.monotonic() < deadline:
         page.wait_for_timeout(50)
-    assert len(events) == 3, events
+    assert calls["n"] == 2, calls
+    # Long enough for a rollback to have landed if one were going to.
+    page.wait_for_timeout(300)
 
-    for earlier, later in zip(events, events[1:], strict=False):
-        assert later["start"] >= earlier["end"], events
-
-    names = {event["body"]["name"] for event in events}
-    assert names == {"Standalone"}, events
-    statuses = [event["body"]["status"] for event in events]
-    assert len(set(statuses)) == 3, statuses
+    assert entry.get_attribute("class") == f"entry status-{expected}", (
+        before,
+        entry.get_attribute("class"),
+    )
