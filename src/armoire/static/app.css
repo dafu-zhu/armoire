@@ -16,6 +16,17 @@
      uses for issue markers, so "blocked" reads as a hazard/wait colour
      rather than a seventh category. */
   --blocked-fill: #f3d9b1;
+  /* Named once, used twice: a graph node's rect and its category's container
+     in the column carry the same cat-N class (palette.js) and must resolve to
+     the same colour, which is the whole content of the spec's "coloured to
+     match that category's node colour". Two literal copies would be one
+     careless edit away from disagreeing. */
+  --cat-0-fill: #ddf4e4; --cat-0-line: #2da44e;
+  --cat-1-fill: #fff1e5; --cat-1-line: #bc4c00;
+  --cat-2-fill: #ddf4ff; --cat-2-line: #0969da;
+  --cat-3-fill: #fbefff; --cat-3-line: #8250df;
+  --cat-4-fill: #fff8c5; --cat-4-line: #9a6700;
+  --cat-5-fill: var(--subtle); --cat-5-line: var(--border);
   --radius: 6px;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -298,12 +309,12 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 .node .node-warn { font-size: 14px; font-weight: 700; fill: #bc4c00; cursor: help; }
 .node:hover rect { stroke: var(--link); }
 
-.cat-0 rect { fill: #ddf4e4; stroke: #2da44e; }
-.cat-1 rect { fill: #fff1e5; stroke: #bc4c00; }
-.cat-2 rect { fill: #ddf4ff; stroke: #0969da; }
-.cat-3 rect { fill: #fbefff; stroke: #8250df; }
-.cat-4 rect { fill: #fff8c5; stroke: #9a6700; }
-.cat-5 rect { fill: var(--subtle); stroke: var(--border); }
+.cat-0 rect { fill: var(--cat-0-fill); stroke: var(--cat-0-line); }
+.cat-1 rect { fill: var(--cat-1-fill); stroke: var(--cat-1-line); }
+.cat-2 rect { fill: var(--cat-2-fill); stroke: var(--cat-2-line); }
+.cat-3 rect { fill: var(--cat-3-fill); stroke: var(--cat-3-line); }
+.cat-4 rect { fill: var(--cat-4-fill); stroke: var(--cat-4-line); }
+.cat-5 rect { fill: var(--cat-5-fill); stroke: var(--cat-5-line); }
 
 .edge { stroke: var(--muted); stroke-width: 1.4; fill: none; }
 .edge.from-done { stroke-dasharray: 4 4; opacity: 0.5; }
@@ -333,6 +344,16 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
   padding: 12px;
 }
 .category { margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
+/* One container per category, coloured to match that category's node. The
+   cat-N class is assigned from the same shared order map the graph uses
+   (palette.js), so a category with members on both sides of app.js's
+   isolated/connected split is the same colour in both places. */
+.category.cat-0 { background: var(--cat-0-fill); border-color: var(--cat-0-line); }
+.category.cat-1 { background: var(--cat-1-fill); border-color: var(--cat-1-line); }
+.category.cat-2 { background: var(--cat-2-fill); border-color: var(--cat-2-line); }
+.category.cat-3 { background: var(--cat-3-fill); border-color: var(--cat-3-line); }
+.category.cat-4 { background: var(--cat-4-fill); border-color: var(--cat-4-line); }
+.category.cat-5 { background: var(--cat-5-fill); border-color: var(--cat-5-line); }
 .category h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .category ul { list-style: none; margin: 0; padding: 0; }
 .entry { padding: 4px 0; }

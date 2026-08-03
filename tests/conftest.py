@@ -331,7 +331,18 @@ def sample_root(tmp_path_factory, _isolated_store_session):
         'name = "Backlog"\n'
         'paths = ["notes"]\n'
         'category = "infra"\n'
-        'blocked_by = ["Vanished"]\n',
+        'blocked_by = ["Vanished"]\n'
+        "\n"
+        # Isolated, but in "research" -- Downstream's category, which does have
+        # a graph node. Standalone ("ops") and Backlog ("infra") are the only
+        # other isolated projects and neither category reaches the graph at
+        # all, so before this no category had members on both sides of app.js's
+        # isolated/connected split and nothing could check that the column and
+        # the graph agree on that category's colour.
+        "[[project]]\n"
+        'name = "Reading list"\n'
+        'paths = ["notes"]\n'
+        'category = "research"\n',
         encoding="utf-8",
         newline="",
     )

@@ -95,6 +95,10 @@ def test_every_root_renders_at_the_same_leftmost_x(page, layout_server):
         key = next(n for n in ("RootA", "RootB", "MidA", "Leaf") if n in name)
         boxes[key] = handle.bounding_box()["x"]
     assert abs(boxes["RootA"] - boxes["RootB"]) < 1, boxes
+    # Sharing an x is the load-bearing claim, but on its own it is satisfied
+    # by both roots drifting right together. Rank 0 is where they have to
+    # land, so pin them against a node that is genuinely downstream.
+    assert boxes["RootA"] < boxes["MidA"], boxes
 
 
 def test_a_due_date_appears_on_its_node(page, live_server):
@@ -1036,7 +1040,7 @@ def test_each_category_gets_its_own_container(live_server, page):
     page.goto(f"{live_server}/#/")
     page.wait_for_selector("#categories .category")
     titles = page.locator("#categories .category h3").all_text_contents()
-    assert sorted(titles) == ["infra", "ops"], titles
+    assert sorted(titles) == ["infra", "ops", "research"], titles
 
     standalone_section = page.locator(
         "#categories .category", has=page.locator('[data-name="Standalone"]')
@@ -1047,6 +1051,58 @@ def test_each_category_gets_its_own_container(live_server, page):
         "#categories .category", has=page.locator('[data-name="Backlog"]')
     )
     assert backlog_section.locator("h3").text_content() == "infra"
+
+
+def test_a_category_container_is_coloured_like_its_categorys_node(live_server, page):
+    """ "One container per category, coloured to match that category's node
+    colour" (the spec) was silently dropped: categories.js set a bare
+    `className = 'category'`.
+
+    It is not trivially recoverable, which is why it went missing.
+    roadmap.js assigned colour by insertion order over the projects it was
+    handed, and app.js hands it only the connected ones -- so a category
+    whose members are all isolated was never numbered at all, and one with
+    members on both sides would be numbered differently by each renderer.
+    app.js now builds the order map over the whole payload (palette.js) and
+    passes the same map to both.
+
+    "Reading list" (isolated, category "research") and "Downstream" (a graph
+    node, same category) are what make that testable: the assertion is on the
+    computed colour, not just the shared class name, so a cat-N class with no
+    CSS rule behind it on the column side would still fail.
+    """
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    node = page.locator('.node[data-name="Downstream"]')
+    node_class = set(node.get_attribute("class").split())
+    section = page.locator("#categories .category", has=page.locator('[data-name="Reading list"]'))
+    assert node_class & set(section.get_attribute("class").split()) & {f"cat-{n}" for n in range(6)}
+    stroke = node.locator("rect").evaluate("r => getComputedStyle(r).stroke")
+    border = section.evaluate("s => getComputedStyle(s).borderTopColor")
+    assert stroke == border, (stroke, border)
+
+
+def test_two_categories_in_the_column_are_coloured_differently(live_server, page):
+    """A shared order map that handed every category the same class would
+    satisfy the agreement test above and still be useless."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    borders = page.locator("#categories .category").evaluate_all(
+        "sections => sections.map((s) => getComputedStyle(s).borderTopColor)"
+    )
+    assert len(set(borders)) == len(borders), borders
+
+
+def test_the_category_column_is_hidden_when_nothing_is_isolated(page, layout_server):
+    """renderCategories returns early with nothing to draw when every project
+    is in the graph, and #categories was unhidden regardless -- 240px of
+    canvas lost to an empty bordered box. layout_root's four projects are all
+    connected. "Permanent, not another toggle" (the spec) is about the
+    affordance, not about rendering an empty container."""
+    page.goto(layout_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    assert page.locator("#categories .category").count() == 0
+    assert page.locator("#categories").is_hidden()
 
 
 def test_a_category_entry_opens_the_project(live_server, page):

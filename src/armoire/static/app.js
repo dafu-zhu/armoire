@@ -5,6 +5,7 @@ import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
 import { renderRoadmap } from './roadmap.js';
 import { renderCategories } from './categories.js';
+import { categoryOrder } from './palette.js';
 import { renderProject } from './project.js';
 
 const content = document.getElementById('content');
@@ -18,7 +19,6 @@ const roadmap = document.getElementById('roadmap');
 const canvas = document.getElementById('roadmap-canvas');
 const roadmapMessage = document.getElementById('roadmap-message');
 const categories = document.getElementById('categories');
-const body = document.getElementById('body');
 
 let roadmapView = null;
 let roadmapListeners = null;
@@ -143,9 +143,10 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
-// className is always 'error' here: a stub or empty registry is not a
-// failure, and takes the same exit as no registry at all -- back to the
-// file browser, rather than a message rendered in the roadmap panel.
+// The box is always an error: a stub or empty registry is not a failure, and
+// takes the same exit as no registry at all -- back to the file browser,
+// rather than a message rendered in the roadmap panel. The class used to be a
+// parameter, with 'error' the only value any caller ever passed.
 //
 // #roadmap-message is the only child of #roadmap this module writes, and
 // replaceChildren is the only way it writes to it. Appending straight to
@@ -157,22 +158,20 @@ function showError(error) {
 // return without ever reaching renderCategories, which is the only other
 // place anything writes to #categories. Without this, a category column
 // populated by an earlier successful visit would sit, stale, beside an error
-// card that says the fetch itself just failed.
-function showRoadmapMessage(message, className) {
+// card that says the fetch itself just failed. Emptied, it is also hidden --
+// a bordered 240px box with nothing in it is not a column.
+function showRoadmapError(message) {
   canvas.replaceChildren();
   categories.replaceChildren();
+  categories.hidden = true;
   const box = document.createElement('div');
-  box.className = className;
+  box.className = 'error';
   box.textContent = message;
   roadmapMessage.replaceChildren(box);
 }
 
 function clearRoadmapMessage() {
   roadmapMessage.replaceChildren();
-}
-
-function showRoadmapError(message) {
-  showRoadmapMessage(message, 'error');
 }
 
 async function showRoadmap() {
@@ -183,7 +182,9 @@ async function showRoadmap() {
   document.getElementById('divider').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
-  categories.hidden = false;
+  // #categories is unhidden below, once renderCategories reports it has
+  // something to show. A fully connected graph isolates nothing, and an empty
+  // bordered box would then take 240px off the canvas for no content.
   // Clear on entry, not on success: every path out of here either renders a
   // graph or writes exactly one message, so the previous visit's box never
   // outlives the visit that wrote it.
@@ -220,8 +221,12 @@ async function showRoadmap() {
   // categories.js). Filtering here, before renderRoadmap ever sees them,
   // keeps that one job in roadmap.js and this one in app.js.
   const connected = { ...data, projects: data.projects.filter((p) => !p.isolated) };
-  roadmapView = renderRoadmap(canvas, connected, navigateProject, roadmapListeners.signal);
-  renderCategories(categories, data, navigateProject);
+  // One order map over the *whole* payload, shared by both renderers, so a
+  // category that appears on both sides of the split gets the same colour on
+  // both. See palette.js.
+  const order = categoryOrder(data.projects);
+  roadmapView = renderRoadmap(canvas, connected, navigateProject, roadmapListeners.signal, order);
+  categories.hidden = renderCategories(categories, data, navigateProject, order) === 0;
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();
   document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
   document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);

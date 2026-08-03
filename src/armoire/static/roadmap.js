@@ -3,9 +3,9 @@
 // a static picture we would then have to fight.
 
 import { nextStatus, glyphFor, normalizeStatus, writeStatus } from './status.js';
+import { categoryClass } from './palette.js';
 
 const NODE_W = 168;
-const CATEGORIES = 6;
 const NODE_PAD_X = 12;
 const TITLE_Y = 24;
 const LINE_H = 15;
@@ -118,12 +118,6 @@ function save(root, positions) {
   }
 }
 
-function categoryClass(category, order) {
-  if (!category) return 'cat-5';
-  if (!order.has(category)) order.set(category, order.size % (CATEGORIES - 1));
-  return `cat-${order.get(category)}`;
-}
-
 function svgEl(name, attrs = {}) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', name);
   for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, value);
@@ -185,9 +179,12 @@ function layout(projects, heights, known) {
   return g;
 }
 
-export function renderRoadmap(canvas, data, onOpen, signal) {
+// `order` is the shared category->colour map (palette.js). It arrives from
+// app.js, built over the whole payload, because this function only ever sees
+// the connected half of it -- see palette.js for why building one here instead
+// puts the graph and the category column on different colours.
+export function renderRoadmap(canvas, data, onOpen, signal, order) {
   const projects = data.projects || [];
-  const order = new Map();
   const positions = new Map();
   const known = new Set(projects.map((p) => p.name));
 

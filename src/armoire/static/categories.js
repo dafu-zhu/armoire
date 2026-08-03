@@ -3,11 +3,21 @@
 // off-centre and read as part of a structure they are not in.
 
 import { glyphFor, nextStatus, normalizeStatus, writeStatus } from './status.js';
+import { categoryClass } from './palette.js';
 
-export function renderCategories(container, data, onOpen) {
+// Returns how many containers were drawn, so app.js can hide the column when
+// there are none. An empty bordered box costs 240px of canvas and says
+// nothing; "the category column is permanent, not another toggle" (the spec)
+// is about the affordance never being something the user has to switch on,
+// not about rendering a container with nothing in it.
+//
+// `order` is the shared category->colour map (palette.js), built by app.js
+// over the whole payload. This function only ever sees the isolated half, so
+// a map built here would disagree with the graph's.
+export function renderCategories(container, data, onOpen, order) {
   container.replaceChildren();
   const isolated = (data.projects || []).filter((p) => p.isolated);
-  if (!isolated.length) return;
+  if (!isolated.length) return 0;
   const issues = data.issues || [];
 
   const groups = new Map();
@@ -19,7 +29,13 @@ export function renderCategories(container, data, onOpen) {
 
   for (const [name, members] of groups) {
     const section = document.createElement('section');
-    section.className = 'category';
+    // Every member of a group shares one category by construction -- the group
+    // key is that category -- so any member answers for the whole container.
+    // members[0].category, not `name`: an uncategorised group is keyed on the
+    // display string "Uncategorised", which is not a category and must reach
+    // categoryClass as the absent value it stands for, or a real category
+    // literally called "Uncategorised" and the fallback would collide.
+    section.className = `category ${categoryClass(members[0].category, order)}`;
     const heading = document.createElement('h3');
     heading.textContent = name;
     section.append(heading);
@@ -101,4 +117,5 @@ export function renderCategories(container, data, onOpen) {
     section.append(list);
     container.append(section);
   }
+  return groups.size;
 }
