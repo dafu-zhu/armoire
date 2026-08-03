@@ -1,40 +1,85 @@
 """Composes registry, activity and directory listings into dashboard payloads.
 
-app.py stays routing-only: these two functions are what its two roadmap routes
-call. The composition needs three modules at once, which is exactly the kind of
-thing that would otherwise accrete inside a route handler.
+app.py stays routing-only: these three functions are what its three routes
+(the two roadmap routes, plus /api/tree's own use of has_roadmap) call. The
+composition needs three modules at once, which is exactly the kind of thing
+that would otherwise accrete inside a route handler.
 """
 
 from dataclasses import asdict
 from pathlib import Path
 
-from armoire.activity import activity_for, recent_commits
+from armoire import store
+from armoire.activity import recent_commits
 from armoire.paths import PathOutsideRoot
-from armoire.projects import Registry
+from armoire.projects import STATUSES, Registry, RegistryError, load_registry
 from armoire.scanner import list_dir
 
 
-def project_rows(root: Path, registry: Registry) -> list[dict]:
+def has_roadmap(root: Path, registry_file: Path) -> bool:
+    """Whether double-clicking the breadcrumb root would land on a roadmap.
+
+    Deliberately not `registry_file.is_file()`: app.js's showRoadmap takes
+    the "no roadmap, back to the browser" exit on `data.registry === false ||
+    !data.projects.length`, so a registry file that parses to zero
+    [[project]] entries is just as roadmap-less, from the user's seat, as no
+    file at all -- both must report False here or the double-click gesture
+    would claim a roadmap exists and then silently bounce back to /browse/.
+    A registry that fails to parse is different: /api/projects still renders
+    an error card for it instead of bouncing, so that case reports True.
+    """
+    try:
+        registry = load_registry(root, registry_file)
+    except RegistryError:
+        return True
+    return registry is not None and bool(registry.projects)
+
+
+def _stored_statuses(state_file: Path) -> dict:
+    """The `status` table from `state_file`, or {} when it is absent or wrong.
+
+    One reader for both payload builders below. `state.json` is a file a user
+    can edit by hand, so `status` may be any JSON value at all; every caller
+    wants the same "a dict or nothing" answer out of it.
+    """
+    stored = store.read_state(state_file).get("status", {})
+    return stored if isinstance(stored, dict) else {}
+
+
+def project_rows(registry: Registry, state_file: Path) -> list[dict]:
+    known = {p.name for p in registry.projects}
+    # Only edges that will actually be drawn count. An edge naming a project
+    # that does not exist is reported as an issue and never rendered, so the
+    # node still stands alone and belongs in a category container.
+    blocks = {b for p in registry.projects for b in p.blocked_by if b in known}
+    stored = _stored_statuses(state_file)
+
     listed = []
     for project in registry.projects:
-        merged = {"commits": 0, "last": None}
-        for relative in project.paths:
-            found = activity_for(root, relative)
-            merged["commits"] += found.commits
-            if found.last is not None:
-                merged["last"] = max(merged["last"] or 0.0, found.last)
+        connected = project.name in blocks or any(b in known for b in project.blocked_by)
+        override = stored.get(project.name)
         listed.append(
             asdict(project)
             | {"paths": list(project.paths), "blocked_by": list(project.blocked_by)}
-            | merged
+            | {
+                "isolated": not connected,
+                "status": override if override in STATUSES else project.status,
+            }
         )
     return listed
 
 
-def project_detail(root: Path, registry: Registry, name: str) -> dict | None:
+def project_detail(root: Path, registry: Registry, name: str, state_file: Path) -> dict | None:
     match = next((p for p in registry.projects if p.name == name), None)
     if match is None:
         return None
+    # The same override project_rows applies. "Once edited, state.json wins
+    # and the registry's value is not consulted again for that project" is
+    # about the project, not about one endpoint: returning asdict(match) raw
+    # here handed back the registry's status to a caller that had already
+    # been told, by /api/projects, that the stored one is authoritative.
+    override = _stored_statuses(state_file).get(name)
+    status = override if override in STATUSES else match.status
 
     files = []
     for relative in match.paths:
@@ -58,7 +103,7 @@ def project_detail(root: Path, registry: Registry, name: str) -> dict | None:
 
     return {
         "project": asdict(match)
-        | {"paths": list(match.paths), "blocked_by": list(match.blocked_by)},
+        | {"paths": list(match.paths), "blocked_by": list(match.blocked_by), "status": status},
         "blocks": [p.name for p in registry.projects if name in p.blocked_by],
         "commits": commits[:10],
         "files": files,

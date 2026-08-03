@@ -2,6 +2,16 @@
 
 import time
 
+import pytest
+
+from armoire.projects import STATUSES
+from conftest import folder_snapshot
+
+# The cycle order status.js's nextStatus walks. Imported from the server's own
+# tuple rather than retyped: STATUSES and STATUS_ORDER (status.js) are the same
+# four values in the same order, and the endpoint validates against STATUSES.
+STATUS_ORDER = list(STATUSES)
+
 
 def open_roadmap(page, live_server):
     page.goto(live_server)
@@ -61,9 +71,34 @@ def test_the_blocker_is_laid_out_before_the_blocked(page, live_server):
     assert boxes["Upstream"] < boxes["Downstream"]
 
 
-def test_a_node_shows_its_commit_badge(page, live_server):
-    open_roadmap(page, live_server)
-    assert page.locator("#roadmap .node-badge").count() >= 1
+def test_every_root_renders_at_the_same_leftmost_x(page, layout_server):
+    """Every project nothing blocks must render hard left, not merely
+    "before what it blocks".
+
+    sample_root's single edge is too simple to prove this: with only one rank
+    of depth, dagre's default 'network-simplex' ranker places its lone root
+    at rank 0 regardless, so a bug that only shows up when a root's sole
+    dependent sits several ranks away would pass unnoticed there.
+    layout_server's registry (RootA -> MidA -> Leaf, RootB -> Leaf) gives
+    RootB slack that network-simplex spends by sliding it one rank toward
+    Leaf -- off the left edge RootA sits on, even though nothing blocks RootB
+    either. roadmap.js's layout() closes that slack with a high-weight pin
+    edge from every root to a shared (and later removed) anchor node, which
+    forces every root to the same rank regardless of how far its own
+    dependents reach.
+    """
+    page.goto(layout_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    boxes = {}
+    for handle in page.locator("#roadmap .node").element_handles():
+        name = handle.text_content()
+        key = next(n for n in ("RootA", "RootB", "MidA", "Leaf") if n in name)
+        boxes[key] = handle.bounding_box()["x"]
+    assert abs(boxes["RootA"] - boxes["RootB"]) < 1, boxes
+    # Sharing an x is the load-bearing claim, but on its own it is satisfied
+    # by both roots drifting right together. Rank 0 is where they have to
+    # land, so pin them against a node that is genuinely downstream.
+    assert boxes["RootA"] < boxes["MidA"], boxes
 
 
 def test_a_due_date_appears_on_its_node(page, live_server):
@@ -106,6 +141,10 @@ def test_the_file_browser_is_not_shown_while_the_roadmap_loads(page, live_server
     page.goto(live_server)
     page.wait_for_timeout(250)
     assert page.locator("#tree").is_hidden()
+    # #divider is a third sibling of #tree and #main in #body's flex row --
+    # without pairing its `hidden` state to theirs it would render as an
+    # orphan 5px bar next to the roadmap while #tree itself is hidden.
+    assert page.locator("#divider").is_hidden()
     assert page.locator("#roadmap").is_visible()
     page.wait_for_selector("#roadmap .node", timeout=15000)
 
@@ -122,29 +161,29 @@ def test_a_failed_projects_fetch_shows_an_error_not_a_blank_screen(page, live_se
     assert_inside_viewport(page, page.locator("#roadmap .error"))
 
 
-def test_an_empty_registry_says_so_instead_of_rendering_a_blank_canvas(page, empty_registry_server):
-    """Zero [[project]] entries is valid TOML and reaches renderRoadmap."""
+def test_an_empty_registry_falls_back_to_the_file_browser_on_every_visit(
+    page, empty_registry_server
+):
+    """Zero [[project]] entries is valid TOML and reaches showRoadmap, but a
+    stub registry is the normal state for a folder nobody has described yet --
+    the same "no roadmap here" exit as no registry file at all, not a message
+    rendered in the roadmap panel. Repeated visits must keep taking that exit
+    rather than getting stuck, or leaving the roadmap panel visible, on a
+    second pass."""
     page.goto(empty_registry_server)
-    page.wait_for_selector("#roadmap .empty", timeout=15000)
-    assert page.locator("#roadmap .empty").is_visible()
-    assert page.locator("#roadmap .node").count() == 0
-    assert_inside_viewport(page, page.locator("#roadmap .empty"))
-
-
-def test_revisiting_the_roadmap_leaves_exactly_one_message_box(page, empty_registry_server):
-    """showRoadmapMessage cleared the canvas but appended to #roadmap, and
-    roadmap.js clears only the canvas -- so nothing ever removed a box and each
-    return to #/ stacked another copy of the same sentence, forever."""
-    page.goto(empty_registry_server)
-    page.wait_for_selector("#roadmap .empty", timeout=15000)
+    # empty_registry_server's served folder holds no files of its own, so the
+    # browser renders ".empty" ("This folder is empty."), not ".listing" --
+    # "#main:visible" is the one signal common to both.
+    page.wait_for_selector("#main:visible", timeout=15000)
+    assert page.locator("#roadmap").is_hidden()
+    assert page.evaluate("location.hash") == "#/browse/"
     for _ in range(2):
-        page.evaluate("window.location.hash = '/browse/'")
+        page.evaluate("window.location.hash = '/'")
         page.wait_for_function("() => location.hash === '#/browse/'")
         page.wait_for_selector("#main:visible", timeout=5000)
-        page.evaluate("window.location.hash = '/'")
-        page.wait_for_function("() => location.hash === '#/'")
-        page.wait_for_selector("#roadmap .empty", timeout=15000)
-    assert page.locator("#roadmap .empty").count() == 1
+    assert page.locator("#roadmap").is_hidden()
+    assert page.locator("#roadmap .node").count() == 0
+    assert page.locator("#roadmap .empty").count() == 0
 
 
 def test_a_stale_error_card_does_not_survive_a_successful_revisit(page, live_server):
@@ -169,6 +208,29 @@ def test_a_stale_error_card_does_not_survive_a_successful_revisit(page, live_ser
     assert page.locator("#roadmap .error").count() == 0
 
 
+def test_a_stale_category_column_does_not_survive_a_failed_revisit(page, live_server):
+    """The mirror of test_a_stale_error_card_does_not_survive_a_successful_revisit
+    above, but the other direction (a *successful* visit followed by a
+    *failed* one), and scoped to #categories rather than the error card.
+
+    showRoadmapMessage clears the canvas on every error exit (both the
+    fetch's own catch and the data.error branch route through it), but
+    nothing cleared #categories -- renderCategories is the only other writer
+    of #categories, and neither error exit ever reaches it. A transient
+    failure after a populated visit used to leave the column showing
+    isolated projects from the *previous* successful load, sitting beside a
+    card that says the fetch itself just failed.
+    """
+    open_roadmap(page, live_server)
+    page.wait_for_selector("#categories .category")
+    page.evaluate("window.location.hash = '/browse/'")
+    page.wait_for_function("() => location.hash === '#/browse/'")
+    page.route("**/api/projects", lambda route: route.abort())
+    page.evaluate("window.location.hash = '/'")
+    page.wait_for_selector("#roadmap .error", timeout=15000)
+    assert page.locator("#categories .category").count() == 0
+
+
 def test_a_throw_inside_render_shows_an_error_not_a_stuck_loading_status(page, live_server):
     """showRoadmap() was called unawaited and uncaught, so anything renderRoadmap
     threw left the screen on "Loading roadmap…" with no error card at all."""
@@ -188,13 +250,15 @@ def test_a_throw_inside_render_shows_an_error_not_a_stuck_loading_status(page, l
 
 
 def test_the_viewbox_stays_finite_for_an_empty_graph(page, empty_registry_server):
-    """app.js now never calls renderRoadmap with zero projects (it shows the
-    empty-state message first), so the above test alone cannot reach
-    roadmap.js's own fallback -- dagre leaves graph.width at -Infinity for an
-    empty graph, which `|| 800` cannot catch because -Infinity is truthy.
+    """app.js now never calls renderRoadmap with zero projects (it falls back
+    to the file browser instead), so no other test reaches roadmap.js's own
+    fallback -- dagre leaves graph.width at -Infinity for an empty graph,
+    which `|| 800` cannot catch because -Infinity is truthy.
     Call renderRoadmap directly, the way any other future caller could."""
     page.goto(empty_registry_server)
-    page.wait_for_selector("#roadmap .empty", timeout=15000)
+    # empty_registry_server's served folder holds no files of its own, so the
+    # browser renders ".empty" ("This folder is empty."), not ".listing".
+    page.wait_for_selector("#main:visible", timeout=15000)
     view_box = page.evaluate(
         """async () => {
             const { renderRoadmap } = await import('/roadmap.js');
@@ -209,10 +273,17 @@ def test_the_viewbox_stays_finite_for_an_empty_graph(page, empty_registry_server
 def test_a_colon_in_a_project_name_does_not_drop_its_marker(page, colon_name_server):
     """flagged must match issues the same way the per-node tooltip does
     (issue.startsWith(`${name}:`)), or a name containing ":" loses its
-    warning marker even though it has a real issue against it."""
+    warning marker even though it has a real issue against it.
+
+    Scoped to "Foo: Bar"'s own node, not a bare count over the whole graph:
+    colon_name_root now declares a second project ("Dependent", added so
+    "Foo: Bar" stays connected under task 9's isolation filter) that carries
+    no issue of its own. An unscoped count == 1 would still pass if a
+    regression flagged "Dependent" instead of "Foo: Bar" -- the count would
+    be right for the wrong reason."""
     page.goto(colon_name_server)
     page.wait_for_selector("#roadmap .node", timeout=15000)
-    assert page.locator("#roadmap .node-warn").count() == 1
+    assert page.locator('#roadmap .node[data-name="Foo: Bar"] .node-warn').count() == 1
 
 
 def drag_node(page, name, dx, dy):
@@ -255,28 +326,11 @@ def test_reset_restores_the_computed_layout(page, live_server):
 
 def test_dragging_does_not_write_to_the_served_folder(page, live_server, sample_root):
     """localStorage, not disk -- the read-only guarantee covers the roadmap too."""
-    import hashlib
-
-    def snapshot():
-        # mtime as well as sha256. This is the read-only test that reaches the
-        # git subprocess (open_roadmap fetches /api/projects, which runs
-        # activity_for over every declared path), and a pure-metadata touch --
-        # exactly what an ill-judged `os.utime` or a git operation that rewrites
-        # an index would produce -- is invisible to a content hash alone.
-        return {
-            p.relative_to(sample_root).as_posix(): (
-                p.stat().st_mtime_ns,
-                hashlib.sha256(p.read_bytes()).hexdigest(),
-            )
-            for p in sorted(sample_root.rglob("*"))
-            if p.is_file()
-        }
-
-    before = snapshot()
+    before = folder_snapshot(sample_root)
     open_roadmap(page, live_server)
     drag_node(page, "Upstream", 90, 40)
     page.wait_for_timeout(300)
-    assert snapshot() == before
+    assert folder_snapshot(sample_root) == before
 
 
 def test_zoom_controls_change_the_reported_level(page, live_server):
@@ -301,105 +355,6 @@ def test_clicking_a_node_without_dragging_still_opens_it(page, live_server):
     page.wait_for_function("() => location.hash === '#/project/Upstream'", timeout=5000)
 
 
-def test_the_rail_is_collapsed_by_default(page, live_server):
-    open_roadmap(page, live_server)
-    assert page.locator("#rail").is_hidden()
-
-
-def test_the_rail_toggles_open(page, live_server):
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail:visible", timeout=5000)
-    assert page.locator("#rail").is_visible()
-
-
-def test_the_rail_ranks_projects_by_commit_count(page, live_server):
-    """The brief's version asserted only that the rail was non-empty, which
-    passes with the list in any order, or reversed. sample_root's own two
-    projects both compute to zero commits -- there is no git history under
-    the pytest tmp path, confirmed by calling project_rows() against a
-    replica of the fixture -- so real fixture data ties and cannot
-    distinguish a correct sort from a reversed or removed one. This stubs
-    /api/projects with commit counts that actually differ, listed in an
-    order that is neither sorted nor reverse-sorted, so a removed or
-    inverted sort both change the rendered order."""
-    import json
-
-    stub = {
-        "root": "stub-root",
-        "projects": [
-            {
-                "name": "Mid",
-                "paths": [],
-                "blocked_by": [],
-                "category": None,
-                "due": None,
-                "note": None,
-                "commits": 5,
-                "last": None,
-            },
-            {
-                "name": "Low",
-                "paths": [],
-                "blocked_by": [],
-                "category": None,
-                "due": None,
-                "note": None,
-                "commits": 2,
-                "last": None,
-            },
-            {
-                "name": "High",
-                "paths": [],
-                "blocked_by": [],
-                "category": None,
-                "due": None,
-                "note": None,
-                "commits": 9,
-                "last": None,
-            },
-        ],
-        "issues": [],
-    }
-    page.route(
-        "**/api/projects",
-        lambda route: route.fulfill(
-            status=200, content_type="application/json", body=json.dumps(stub)
-        ),
-    )
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail li", timeout=5000)
-    items = page.locator("#rail li").all_text_contents()
-    activity = [i for i in items if "—" in i]
-    assert len(activity) == 3, activity
-    counts = [int(i.rsplit("—", 1)[1].strip()) for i in activity]
-    assert counts == [9, 5, 2], counts
-
-
-def test_the_rail_lists_blocked_projects_with_their_blocker(page, live_server):
-    """The brief's version asserted both project names appeared somewhere in
-    the rail, which passes even with an empty Blocked section: both names
-    already appear in the Activity section directly above. Scope the
-    assertion to the blocked entry rail.js actually renders, in the
-    "Downstream ← Upstream" form the sample registry's one edge produces."""
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail li", timeout=5000)
-    items = page.locator("#rail li").all_text_contents()
-    blocked = [i for i in items if "←" in i]
-    assert blocked == ["Downstream ← Upstream"], blocked
-
-
-def test_the_rail_open_state_survives_a_reload(page, live_server):
-    open_roadmap(page, live_server)
-    page.locator("#rail-toggle").click()
-    page.wait_for_selector("#rail:visible", timeout=5000)
-    page.reload()
-    page.wait_for_selector("#roadmap .node", timeout=15000)
-    assert page.locator("#rail").is_visible()
-
-
 def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_server):
     """JSON.parse('null') succeeds and yields null; Object.entries(null) throws
     unless loadSaved guards against it -- and an uncaught throw inside
@@ -414,33 +369,24 @@ def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_s
 
 
 def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server):
-    """Each visit re-runs renderRoadmap/initRail against the same persistent
-    #roadmap-canvas and #rail-toggle elements. Without aborting the previous
-    run's listeners they pile up for the lifetime of the page -- but a
-    behavioural check on either element's final visible state cannot catch
-    it: every surviving duplicate listener holds its own independent `open`
-    (rail) or `positions`/`dragging` (canvas) closure that starts at the
-    same value and evolves in lockstep with all the others on every real
-    event, so the rendered result is coincidentally correct no matter how
-    many copies are attached (verified empirically: the dispatch's own
-    suggested assertion -- click once after three revisits and require the
-    rail's visibility to have flipped -- passes against the unfixed code
-    too). The actual, catchable symptom is duplicated *work*: each surviving
-    listener independently calls its own write to localStorage, so after N
-    revisits a single canvas drag writes the layout key N+1 times, and a
-    single rail-toggle click writes the rail key N+1 times, instead of once
-    each. Spying on Storage.prototype.setItem counts both directly instead
-    of guessing at an observable side effect. Both prefixes are tracked
-    through the one wrapper rather than two separate spies -- there is only
-    one thing being proven (accumulated writes per surviving listener) and
-    one wrapper installed once reads more directly than re-deriving the same
-    instrumentation twice.
+    """Each visit re-runs renderRoadmap against the same persistent
+    #roadmap-canvas element. Without aborting the previous run's listeners
+    they pile up for the lifetime of the page -- but a behavioural check on
+    the canvas's final state cannot catch it: every surviving duplicate
+    listener holds its own independent `positions`/`dragging` closure that
+    starts at the same value and evolves in lockstep with all the others on
+    every real event, so the rendered result is coincidentally correct no
+    matter how many copies are attached. The actual, catchable symptom is
+    duplicated *work*: each surviving listener independently calls its own
+    write to localStorage, so after N revisits a single canvas drag writes
+    the layout key N+1 times instead of once. Spying on
+    Storage.prototype.setItem counts this directly instead of guessing at an
+    observable side effect.
 
-    Coordinator review of this test's first version found it exercised only
-    the canvas listeners (via the drag) and never clicked #rail-toggle, so a
-    signal dropped from only the toggle's addEventListener call in rail.js
-    would have shipped undetected -- the click below, and its own write
-    count, close that gap.
+    (This test used to also click #rail-toggle and assert its own write
+    count, closing the same gap for rail.js's toggle listener -- task 9
+    deleted the rail along with that listener, so only the canvas half
+    remains.)
 
     AbortController is wrapped only to count constructions, giving the test
     a way to wait for proof that a given revisit's abort()+render()+attach()
@@ -476,19 +422,14 @@ def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server)
 
     page.evaluate(
         """() => {
-            window.__writes = { layout: 0, rail: 0 };
+            window.__writes = { layout: 0 };
             const original = Storage.prototype.setItem;
             Storage.prototype.setItem = function (key, value) {
                 if (key.startsWith('armoire:layout:')) window.__writes.layout += 1;
-                if (key.startsWith('armoire:rail:')) window.__writes.rail += 1;
                 return original.call(this, key, value);
             };
         }"""
     )
-
-    page.locator("#rail-toggle").click()
-    rail_writes = page.evaluate("window.__writes.rail")
-    assert rail_writes == 1, rail_writes
 
     drag_node(page, "Upstream", 80, 30)
     page.wait_for_timeout(300)
@@ -621,3 +562,772 @@ def test_project_detail_commit_rows_have_sha_subject_and_when(page, committed_se
     assert first.locator(".subject").count() == 1
     assert first.locator(".when").count() == 1
     assert first.locator(".subject").inner_text() == "second worked commit"
+
+
+def test_a_long_note_stays_inside_its_node(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    for name in page.locator(".node").evaluate_all("nodes => nodes.map(n => n.dataset.name)"):
+        node = page.locator(f'.node[data-name="{name}"]')
+        rect = node.locator("rect").bounding_box()
+        for i in range(node.locator("text").count()):
+            text = node.locator("text").nth(i).bounding_box()
+            if text is None:
+                continue
+            assert text["x"] >= rect["x"] - 1, name
+            assert text["x"] + text["width"] <= rect["x"] + rect["width"] + 1, name
+            assert text["y"] + text["height"] <= rect["y"] + rect["height"] + 1, name
+
+
+def test_a_long_note_wraps_onto_several_lines(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    # Scoped to the one node with the long note. Counting tspans across every
+    # node would pass with two nodes of one line each, which proves nothing
+    # about wrapping.
+    lines = page.locator('.node[data-name="Downstream"] .node-sub tspan').count()
+    assert lines >= 2, lines
+
+
+def test_nodes_no_longer_show_a_commit_count(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    assert page.locator(".node .node-badge").count() == 0
+
+
+def test_the_wrap_probe_measures_at_the_rendered_subtitles_font_size(live_server, page):
+    """wrapLines() measures every candidate line against a probe <text>
+    standing in for the real .node-sub -- if the probe is styled differently
+    (font-size, in particular), every wrap decision, and therefore every
+    node height, is computed against the wrong width.
+
+    Regression this guards: a probe appended directly to the canvas, with no
+    `.node` ancestor, missed `.node .node-sub { font-size: 11px }` (a
+    descendant selector) entirely and silently measured at the body's 14px
+    instead. That was safe only by coincidence -- 14 > 11 means the probe
+    always over-measures and wraps early, never late -- so no containment or
+    line-count test caught it. If the two font-sizes ever swapped which was
+    larger, this would flip from "wastes space" to "overflows the box" with
+    nothing to catch it. This spies on
+    SVGTextElement.prototype.getComputedTextLength to capture the font-size
+    actually in effect at every measurement call, and asserts it always
+    matches the font-size a real rendered .node .node-sub uses, rather than
+    asserting a specific number in either place -- a future edit to the
+    shared CSS rule moves both together and keeps passing; only a probe that
+    stops reading that rule at all would fail it.
+    """
+    page.add_init_script(
+        """
+        window.__probeFontSizes = [];
+        const original = SVGTextElement.prototype.getComputedTextLength;
+        SVGTextElement.prototype.getComputedTextLength = function () {
+            window.__probeFontSizes.push(getComputedStyle(this).fontSize);
+            return original.call(this);
+        };
+        """
+    )
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    probe_sizes = set(page.evaluate("window.__probeFontSizes"))
+    rendered_size = page.locator('.node[data-name="Downstream"] .node-sub').evaluate(
+        "el => getComputedStyle(el).fontSize"
+    )
+    assert probe_sizes, "expected wrapLines to measure at least one candidate"
+    assert probe_sizes == {rendered_size}, (probe_sizes, rendered_size)
+
+
+def _status_reset_fixture(name):
+    """Build a fixture that restores `name`'s server-side status after a test
+    that changes it.
+
+    live_server and sample_root are both session-scoped (conftest.py), so a
+    status PUT from one test is visible to every test that runs afterward in
+    this file: state.json is keyed by sample_root's own path and lives on
+    disk under the session-scoped store, independent of which live_server
+    request happened to write it.
+
+    A dedicated function-scoped *server* fixture would not actually fix this
+    -- store.write_state(root, state) is keyed by `root`, not by server/app
+    instance, so a fresh app pointed at the same sample_root would read and
+    write the exact same state.json a previous server already wrote to. Only
+    a fresh *root* (its own folder plus its own registry) would truly
+    isolate the write, and building one per test would either duplicate
+    sample_root's Upstream/Downstream/blocked_by arrangement or cost an
+    index-wait plus a new server thread on every one of these tests, for a
+    fixture the ~30 other tests in this file already share for free.
+
+    Restoring in a fixture teardown instead -- functionally a `finally`
+    block, shared here rather than pasted into every mutating test -- reads
+    `name`'s actual pre-test status from the server itself, rather than
+    assuming the registry's default ("active"), so the restore is correct
+    even if a test runs alone, out of order, or a prior run in this session
+    already left `name` on some other status.
+
+    A factory, not two copies of the same fixture body, because Important 3
+    (Task 7 fix round 1) needs the same restore for Downstream, not just
+    Upstream.
+    """
+
+    @pytest.fixture
+    def _reset(live_server, page):
+        before = page.request.get(f"{live_server}/api/projects").json()
+        original = next(p["status"] for p in before["projects"] if p["name"] == name)
+        yield
+        response = page.request.put(
+            f"{live_server}/api/status",
+            headers={"X-Armoire": "1"},
+            data={"name": name, "status": original},
+        )
+        # Unchecked, a future guard change to /api/status (a stricter host
+        # check, a renamed header) could make this restore a silent no-op --
+        # the next test to touch this project would then inherit whatever
+        # status this test left it on, and the resulting failure would point
+        # nowhere near the real cause.
+        assert response.ok, (response.status, name, original)
+
+    return _reset
+
+
+reset_upstream_status = _status_reset_fixture("Upstream")
+reset_downstream_status = _status_reset_fixture("Downstream")
+
+
+def test_the_four_statuses_render_four_distinct_borders(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    seen = set()
+    for status in ["not-started", "active", "paused", "done"]:
+        page.evaluate(
+            "s => document.querySelector('.node').setAttribute('class', 'node cat-0 status-' + s)",
+            status,
+        )
+        seen.add(
+            page.locator(".node rect").first.evaluate(
+                "r => getComputedStyle(r).strokeWidth + '|' + getComputedStyle(r).strokeDasharray"
+            )
+        )
+    assert len(seen) == 4, seen
+
+
+def test_blocked_and_ready_render_different_fills_on_an_uncategorised_node(live_server, page):
+    """categoryClass() returns 'cat-5' (fill: var(--subtle)) for any project
+    with no category, and blocked_by with no category is an explicitly
+    supported registry shape (tests/test_projects.py:234). .node.blocked
+    rect used to fill with that same var(--subtle) -- since the border
+    encodes status only, a blocked, uncategorised node and a ready,
+    uncategorised node computed to the exact same fill, so the "waiting"
+    signal carried zero bits for that whole category. Scoped to a single
+    node's rect the same way test_the_four_statuses_render_four_distinct_borders
+    isolates the border signal, rather than depending on any node in
+    sample_root actually being both uncategorised and blocked."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+
+    def fill_for(class_attr):
+        page.evaluate(
+            "cls => document.querySelector('.node').setAttribute('class', cls)",
+            class_attr,
+        )
+        return page.locator(".node rect").first.evaluate("r => getComputedStyle(r).fill")
+
+    ready = fill_for("node cat-5 status-active")
+    blocked = fill_for("node cat-5 status-active blocked")
+    assert ready != blocked, (ready, blocked)
+
+
+def test_clicking_the_chip_cycles_the_status(live_server, page, reset_upstream_status):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Upstream"]')
+    before = node.get_attribute("class")
+    node.locator(".status-chip").click()
+    # Unquoted attribute value in the CSS selector: "Upstream" needs no
+    # quoting, and quoting it here would require escaping a `"` inside a
+    # Python string that is itself embedded in another string -- the
+    # brief's literal snippet (`\\"Upstream\\"`) is not valid Python (the
+    # first `\\` is a complete escape for one backslash, so the very next
+    # `"` closes the outer string early); confirmed by running it verbatim
+    # and getting `SyntaxError: unexpected character after line
+    # continuation character` at this exact line.
+    page.wait_for_function(
+        "cls => document.querySelector('.node[data-name=Upstream]').className.baseVal !== cls",
+        arg=before,
+    )
+    assert node.get_attribute("class") != before
+
+
+def test_clicking_the_chip_does_not_open_the_detail_view(live_server, page, reset_upstream_status):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.locator('.node[data-name="Upstream"] .status-chip').click()
+    page.wait_for_timeout(300)
+    assert "#/project/" not in page.url
+
+
+def test_a_status_edit_survives_a_fresh_browser_context(
+    live_server, page, browser, reset_upstream_status
+):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Upstream"]')
+    # Without a captured baseline this test can pass vacuously: if every PUT
+    # were rejected (e.g. a broken guard), the optimistic update would revert
+    # in milliseconds, `after` would equal the untouched original class, and
+    # the fresh context would read that same original from the server --
+    # green, while persistence is entirely broken.
+    before = node.get_attribute("class")
+    chip = page.locator('.node[data-name="Upstream"] .status-chip')
+    for _ in range(3):
+        chip.click()
+        page.wait_for_timeout(150)
+    after = node.get_attribute("class")
+    assert after != before, "three clicks changed nothing -- nothing left to prove persists"
+
+    # A fresh context shares no localStorage. If status survives this, it is
+    # server state -- which is the whole point of moving it out of the browser.
+    context = browser.new_context()
+    try:
+        fresh = context.new_page()
+        fresh.goto(f"{live_server}/#/")
+        fresh.wait_for_selector(".node")
+        assert fresh.locator('.node[data-name="Upstream"]').get_attribute("class") == after
+    finally:
+        context.close()
+
+
+def test_marking_the_last_blocker_done_unblocks_its_dependent(
+    live_server, page, reset_upstream_status
+):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    dependent = page.locator('.node[data-name="Downstream"]')
+    assert "blocked" in dependent.get_attribute("class")
+    blocker = page.locator('.node[data-name="Upstream"] .status-chip')
+    upstream = page.locator('.node[data-name="Upstream"]')
+    # Bounded, not `while ...: click()` -- no pytest-timeout is installed, so
+    # a chip that stopped cycling (a regression, not a hypothetical: this is
+    # exactly the class of bug fix round 1 introduced and fixed in setStatus
+    # ordering) would hang this test, and CI, forever. STATUS_ORDER has 4
+    # entries, so 4 clicks always reach "done" from any starting status; +1
+    # is slack, not a magic number.
+    for _ in range(5):
+        if "status-done" in upstream.get_attribute("class"):
+            break
+        blocker.click()
+        page.wait_for_timeout(150)
+    assert "status-done" in upstream.get_attribute("class")
+    # Same unquoted-attribute-value fix as above, for the same reason.
+    page.wait_for_function(
+        "() => !document.querySelector('.node[data-name=Downstream]')"
+        ".className.baseVal.includes('blocked')"
+    )
+
+
+def test_a_done_projects_node_collapses_on_reload(live_server, page, reset_downstream_status):
+    """buildSubtitle's early return for status === 'done' is the single place
+    the collapse is decided (roadmap.js), and it is a named spec deliverable
+    with no prior coverage -- deleting that one line left the whole suite
+    green. Targets Downstream specifically, not Upstream: Downstream is the
+    only sample_root project that carries both a due date and a wrapped
+    note, so this is the only node where "collapsed" and "never had a
+    subtitle to begin with" are actually distinguishable. Sets status via a
+    direct PUT rather than chip-clicking -- chip cycling behaviour already
+    has its own coverage above; this test is only about what a 'done'
+    payload renders after a reload, which is deliberately one render behind
+    any click (see buildSubtitle's own comment)."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    response = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Downstream", "status": "done"},
+    )
+    assert response.ok, response.status
+    page.reload()
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Downstream"]')
+    assert "status-done" in node.get_attribute("class")
+    # The raw SVG `height` attribute, not .bounding_box() -- the canvas's
+    # viewBox scales to fill its container, so on-screen pixel height is not
+    # a 1:1 reading of what nodeHeight() actually computed (confirmed
+    # empirically: bounding_box() reported ~115px here before this fix,
+    # nowhere near either the collapsed 40 or an uncollapsed value in SVG
+    # units). NODE_MIN_H (roadmap.js) is 40 for zero subtitle lines, and
+    # nodeHeight(0) has no other possible output.
+    height = float(node.locator("rect").get_attribute("height"))
+    assert height == 40, height
+    assert node.locator(".node-due").count() == 0
+    assert node.locator(".node-sub").count() == 0
+    # The marker is not part of the collapse: it costs no height (it shares
+    # the title row with the chip) and it is the only place an issue's text
+    # is readable, so hiding it would leave the status strip counting a
+    # problem the page shows nowhere. See the spec's "What `done` changes".
+    warn = node.locator(".node-warn")
+    assert warn.count() == 1, "Downstream's registry issue lost its marker on collapse"
+    assert "does not exist" in warn.locator("title").text_content()
+    # And it must not land on top of the chip. At the old bottom-right
+    # placement a collapsed node put the marker at y=30 against the chip's
+    # y=24, at the same x with the same end anchor, so the two glyphs
+    # overlapped -- invisible to every count-based assertion.
+    warn_box = warn.bounding_box()
+    chip_box = node.locator(".status-chip").bounding_box()
+    assert warn_box["x"] + warn_box["width"] <= chip_box["x"] + 0.5, (warn_box, chip_box)
+
+
+def test_a_failed_status_write_reverts_the_chip_and_its_dependents(
+    live_server, page, reset_upstream_status
+):
+    """The rollback path (cycle()'s catch in roadmap.js) had zero coverage --
+    this is the gap that let Important 2's stale-rollback race through
+    review undetected. Cycles Upstream from 'active' to 'paused' first (a
+    normal, succeeding write) so the one write this test breaks is the
+    click that would also flip Downstream's blocked-ness (paused -> done),
+    proving applyStatus()'s full recompute-on-rollback carries the
+    dependent along too, not just the clicked node itself."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    upstream = page.locator('.node[data-name="Upstream"]')
+    downstream = page.locator('.node[data-name="Downstream"]')
+    chip = upstream.locator(".status-chip")
+
+    before = upstream.get_attribute("class")
+    chip.click()
+    page.wait_for_function(
+        "cls => document.querySelector('.node[data-name=Upstream]').className.baseVal !== cls",
+        arg=before,
+    )
+    assert "status-paused" in upstream.get_attribute("class")
+    assert "blocked" in downstream.get_attribute("class")
+
+    page.route("**/api/status", lambda route: route.fulfill(status=500))
+    chip.click()
+    # The optimistic change (status-done, Downstream unblocked) must revert
+    # once the write fails -- on both the clicked node and the dependent
+    # applyStatus's full recompute carries along.
+    page.wait_for_function(
+        "() => document.querySelector('.node[data-name=Upstream]')"
+        ".className.baseVal.includes('status-paused')"
+    )
+    assert "status-paused" in upstream.get_attribute("class")
+    assert "blocked" in downstream.get_attribute("class")
+    page.unroute("**/api/status")
+
+
+def test_the_wheel_zooms_in(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.mouse.move(400, 300)
+    page.mouse.wheel(0, -240)
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) > 100
+
+
+def test_the_wheel_zooms_out(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.mouse.move(400, 300)
+    page.mouse.wheel(0, 240)
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    assert int(page.locator("#zoom-level").inner_text().rstrip("%")) < 100
+
+
+def test_the_wheel_does_not_scroll_the_page(live_server, page):
+    """Without an artificial overflow this assertion cannot fail: the app's
+    own layout (body { height: 100vh }, #main and #tree each scrolling
+    internally via their own overflow-y) never lets the outer document grow
+    taller than the viewport, so window.scrollY stays 0 regardless of
+    whether the wheel handler calls preventDefault -- confirmed empirically
+    by dropping preventDefault and setting passive: true, which left this
+    test green. Forcing document.body's min-height past the viewport here
+    makes the document genuinely scrollable, so a wheel default that reaches
+    the page (the mutation above) actually moves window.scrollY, and the
+    assertion is a real regression guard rather than a vacuous one."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.evaluate("() => { document.body.style.minHeight = '2000px'; }")
+    page.mouse.move(400, 300)
+    page.mouse.wheel(0, 240)
+    page.wait_for_timeout(200)
+    assert page.evaluate("() => window.scrollY") == 0
+
+
+def test_zoom_stays_within_its_limits(live_server, page):
+    """Both halves must first confirm the level actually moved off 100% --
+    otherwise a wheel handler that never fires at all (unregistered listener,
+    a swallowed error, anything that leaves #zoom-level stuck at '100%')
+    would satisfy `100 <= 250` and `100 >= 35` trivially and this test would
+    report green for a total regression of the feature it is named after.
+    The bound checks below only mean anything once that movement is proven."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    page.mouse.move(400, 300)
+    for _ in range(40):
+        page.mouse.wheel(0, -240)
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    level = int(page.locator("#zoom-level").inner_text().rstrip("%"))
+    assert level > 100, level
+    assert level <= 250, level
+    for _ in range(80):
+        page.mouse.wheel(0, 240)
+    page.wait_for_function(
+        "() => parseInt(document.getElementById('zoom-level').textContent, 10) < 100"
+    )
+    level = int(page.locator("#zoom-level").inner_text().rstrip("%"))
+    assert level < 100, level
+    assert level >= 35, level
+
+
+def test_the_point_under_the_cursor_stays_put(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    box = page.locator('.node[data-name="Upstream"] rect').bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(cx, cy)
+    page.mouse.wheel(0, -240)
+    page.wait_for_function("() => document.getElementById('zoom-level').textContent !== '100%'")
+    after = page.locator('.node[data-name="Upstream"] rect').bounding_box()
+    acx, acy = after["x"] + after["width"] / 2, after["y"] + after["height"] / 2
+    # Anchored zoom: the point under the pointer does not slide away from it.
+    assert abs(acx - cx) < 12 and abs(acy - cy) < 12
+
+
+def test_a_project_with_both_a_due_date_and_a_note_shows_both(live_server, page):
+    """A fixed 62px node used to force renderRoadmap to pick `project.due ||
+    project.note` for the subtitle -- a project carrying both fields showed
+    only the due date, and its note was silently dropped. Nodes now grow to
+    fit, so that tradeoff is gone: Downstream (sample_root) carries both, and
+    both must reach the node -- the due line above the wrapped note, not
+    whichever `||` would have picked."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Downstream"]')
+    # .inner_text() requires an HTMLElement; .node-due is an SVG <text>, so
+    # use .text_content(), which works on any node regardless of namespace.
+    assert node.locator(".node-due").text_content() == "Due 2026-08-17"
+    assert node.locator(".node-sub tspan").count() >= 2
+
+
+def test_isolated_projects_leave_the_graph(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    assert page.locator('.node[data-name="Standalone"]').count() == 0
+
+
+def test_isolated_projects_appear_in_a_category_container(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    assert page.locator('#categories [data-name="Standalone"]').count() == 1
+
+
+def test_each_category_gets_its_own_container(live_server, page):
+    """categories.js groups into a Map keyed on category name, so section
+    titles are unique by construction -- a bare `len(titles) ==
+    len(set(titles))` is true for every possible output of this
+    implementation, including a total collapse into one container (["ops"]
+    passes just as trivially as ["ops", "infra"] does). The real claim this
+    test's name makes is that Standalone and Backlog -- sample_root's two
+    isolated projects, in different categories -- land in *different*
+    containers, each titled after its own project's `category`. Assert that
+    directly: each project's own containing .category section, not merely
+    something present somewhere under #categories.
+
+    .text_content(), not .inner_text()/.all_inner_texts(): `.category h3` is
+    `text-transform: uppercase` (app.css), and .inner_text() reflects
+    rendered text -- it read back "OPS"/"INFRA", not the "ops"/"infra"
+    categories.js actually wrote via .textContent. .text_content() reports
+    the raw DOM text, unaffected by CSS.
+    """
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    titles = page.locator("#categories .category h3").all_text_contents()
+    assert sorted(titles) == ["infra", "ops", "research"], titles
+
+    standalone_section = page.locator(
+        "#categories .category", has=page.locator('[data-name="Standalone"]')
+    )
+    assert standalone_section.locator("h3").text_content() == "ops"
+
+    backlog_section = page.locator(
+        "#categories .category", has=page.locator('[data-name="Backlog"]')
+    )
+    assert backlog_section.locator("h3").text_content() == "infra"
+
+
+def test_a_category_container_is_coloured_like_its_categorys_node(live_server, page):
+    """ "One container per category, coloured to match that category's node
+    colour" (the spec) was silently dropped: categories.js set a bare
+    `className = 'category'`.
+
+    It is not trivially recoverable, which is why it went missing.
+    roadmap.js assigned colour by insertion order over the projects it was
+    handed, and app.js hands it only the connected ones -- so a category
+    whose members are all isolated was never numbered at all, and one with
+    members on both sides would be numbered differently by each renderer.
+    app.js now builds the order map over the whole payload (palette.js) and
+    passes the same map to both.
+
+    "Reading list" (isolated, category "research") and "Downstream" (a graph
+    node, same category) are what make that testable: the assertion is on the
+    computed colour, not just the shared class name, so a cat-N class with no
+    CSS rule behind it on the column side would still fail.
+    """
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    node = page.locator('.node[data-name="Downstream"]')
+    node_class = set(node.get_attribute("class").split())
+    section = page.locator("#categories .category", has=page.locator('[data-name="Reading list"]'))
+    assert node_class & set(section.get_attribute("class").split()) & {f"cat-{n}" for n in range(6)}
+    stroke = node.locator("rect").evaluate("r => getComputedStyle(r).stroke")
+    border = section.evaluate("s => getComputedStyle(s).borderTopColor")
+    assert stroke == border, (stroke, border)
+
+
+def test_two_categories_in_the_column_are_coloured_differently(live_server, page):
+    """A shared order map that handed every category the same class would
+    satisfy the agreement test above and still be useless."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    borders = page.locator("#categories .category").evaluate_all(
+        "sections => sections.map((s) => getComputedStyle(s).borderTopColor)"
+    )
+    assert len(set(borders)) == len(borders), borders
+
+
+def test_the_category_column_is_hidden_when_nothing_is_isolated(page, layout_server):
+    """renderCategories returns early with nothing to draw when every project
+    is in the graph, and #categories was unhidden regardless -- 240px of
+    canvas lost to an empty bordered box. layout_root's four projects are all
+    connected. "Permanent, not another toggle" (the spec) is about the
+    affordance, not about rendering an empty container."""
+    page.goto(layout_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+    assert page.locator("#categories .category").count() == 0
+    assert page.locator("#categories").is_hidden()
+
+
+def test_a_category_entry_opens_the_project(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    page.locator('#categories [data-name="Standalone"] .entry-name').click()
+    page.wait_for_url("**/#/project/Standalone")
+
+
+def test_the_details_toggle_is_gone(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    assert page.locator("#rail-toggle").count() == 0
+    assert page.locator("#rail").count() == 0
+
+
+def test_the_status_strip_reports_registry_issues(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    # sample_root's registry has at least one issue; the rail used to be the
+    # only place it was visible.
+    assert "issue" in page.locator("#status").inner_text()
+
+
+def test_backlogs_issue_is_readable_from_its_category_entry(live_server, page):
+    """The graph's own node gets a `!` marker with the issue text in a
+    <title> tooltip (roadmap.js); an isolated project has no node to carry
+    it, so without an equivalent here, Backlog's issue -- the very one
+    test_the_status_strip_reports_registry_issues depends on -- would exist
+    only as a number in the status strip, readable nowhere on the page."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    entry = page.locator('#categories [data-name="Backlog"]')
+    warn = entry.locator(".entry-warn")
+    assert warn.count() == 1
+    assert "Vanished" in warn.get_attribute("title")
+
+
+def test_a_failed_status_write_reverts_the_category_chip(live_server, page):
+    """The rollback path in categories.js's chip handler had no coverage at
+    all -- every existing rollback test targets a graph node's chip, and
+    every `.status-chip` locator in this file before this test is scoped to
+    `.node[...]`. Mirrors
+    test_a_failed_status_write_reverts_the_chip_and_its_dependents's shape
+    (a real state change first, then a broken one, so the second click has a
+    non-trivial state to revert to -- a single click against an
+    always-failing endpoint cannot distinguish "reverted correctly" from "the
+    whole click handler is inert"), but both requests are stubbed here rather
+    than letting the first one reach the real backend, so this test needs no
+    server-state cleanup afterward."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    entry = page.locator('#categories [data-name="Standalone"]')
+    chip = entry.locator(".status-chip")
+    before_class = entry.get_attribute("class")
+
+    calls = {"n": 0}
+
+    def handler(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+        else:
+            route.fulfill(status=500)
+
+    page.route("**/api/status", handler)
+
+    chip.click()
+    page.wait_for_function(
+        "cls => document.querySelector('#categories [data-name=\"Standalone\"]').className !== cls",
+        arg=before_class,
+    )
+    succeeded_class = entry.get_attribute("class")
+    succeeded_glyph = chip.inner_text()
+    assert succeeded_class != before_class
+
+    chip.click()
+    page.wait_for_timeout(300)
+    assert entry.get_attribute("class") == succeeded_class
+    assert chip.inner_text() == succeeded_glyph
+
+
+# Installed before navigation, so it is in place for the very first click.
+# Records, in the page, when each /api/status request starts and when it
+# settles, and holds each one open for SETTLE_MS after the response arrives so
+# that overlapping writes overlap by a margin no scheduling jitter can close.
+#
+# The delay lives here rather than in the route handler on purpose. Playwright's
+# Python sync API is greenlet-based and single-threaded: a route handler runs
+# inside a task on the driver's own event loop with no await, so a blocking
+# time.sleep there stalls the loop, and neither the next route event nor the
+# next driver call (a chip.click(), say) can be delivered until it returns.
+# Measured from the driver, "the second request started after the first
+# finished" is then true of the harness whatever the client does. Awaiting
+# inside the page instead measures the client.
+FETCH_PROBE = """
+window.__statusFetches = [];
+const realFetch = window.fetch;
+const settle = (entry) => new Promise((resolve) => window.setTimeout(resolve, %d)).then(() => {
+  entry.end = performance.now();
+});
+window.fetch = function (...args) {
+  const target = args[0];
+  const url = String(target && target.url ? target.url : target);
+  if (!url.includes('/api/status')) return realFetch.apply(window, args);
+  const entry = { start: performance.now() };
+  window.__statusFetches.push(entry);
+  return realFetch.apply(window, args).then(
+    (response) => settle(entry).then(() => response),
+    (error) => settle(entry).then(() => { throw error; }),
+  );
+};
+"""
+SETTLE_MS = 80
+
+
+def click_chip(page, selector, times):
+    """`times` clicks in one page turn, with no driver round trip between them.
+
+    Three separate chip.click() calls cannot prove anything about queueing:
+    each is a driver call that waits for the page to be idle, so the second
+    click cannot even be dispatched until the first click's write is long
+    settled. Dispatching them from inside one evaluate() is what makes them
+    genuinely rapid -- all three handlers run synchronously, in the same task,
+    before the page yields to anything.
+    """
+    page.evaluate(
+        """([selector, times]) => {
+            const chip = document.querySelector(selector);
+            for (let i = 0; i < times; i += 1) chip.click();
+        }""",
+        [selector, times],
+    )
+
+
+def test_rapid_clicks_on_the_category_chip_serialize_their_writes(live_server, page):
+    """writeStatus (status.js) is a shared, module-scoped queue used by both
+    roadmap.js and categories.js, and this is the only test of the ordering
+    guarantee it exists for.
+
+    The measurement is taken in the page (FETCH_PROBE above), not in the
+    route handler, so what it observes is the client's own behaviour: when
+    each PUT left the page and when it settled. Every request's start must
+    land at or after the previous request's end -- with the queue removed,
+    all three clicks issue their fetch synchronously in the same task and the
+    three intervals overlap almost exactly.
+
+    The two payload assertions are kept but carry nothing on their own:
+    nextStatus is applied synchronously on each click before its fetch is
+    issued, so three distinct statuses all naming Standalone arrive at the
+    server whether the writes are queued or not.
+    """
+    page.add_init_script(FETCH_PROBE % SETTLE_MS)
+    bodies = []
+
+    def handler(route):
+        bodies.append(route.request.post_data_json)
+        # Fulfilled immediately: the driver's loop must stay free, or the
+        # clicks and the polling below cannot be delivered while a write is
+        # in flight. The artificial latency is the page's, not the harness's.
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/status", handler)
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    click_chip(page, '#categories [data-name="Standalone"] .status-chip', 3)
+
+    page.wait_for_function(
+        "() => window.__statusFetches.length === 3"
+        " && window.__statusFetches.every((entry) => entry.end !== undefined)",
+        timeout=15000,
+    )
+    log = page.evaluate("() => window.__statusFetches")
+    assert len(log) == 3, log
+    for earlier, later in zip(log, log[1:], strict=False):
+        assert later["start"] >= earlier["end"], log
+
+    assert {body["name"] for body in bodies} == {"Standalone"}, bodies
+    assert len({body["status"] for body in bodies}) == 3, bodies
+
+
+def test_a_stale_failed_write_does_not_roll_back_over_a_newer_one(live_server, page):
+    """writeToken (status.js) had no direct coverage: every rollback test
+    above exercises a failure that *is* the latest click for its project, the
+    case the guard lets through.
+
+    Two clicks in one task, with only the first write failing. By the time
+    that failure is caught, the second click has already moved the optimistic
+    state past it and queued its own write, so rolling back to what the first
+    click saw as "previous" would put the chip on a status the server never
+    held for either click -- and would then disagree with the write that
+    actually succeeded. Without the token check the rollback fires and the
+    chip lands back on its starting status.
+
+    Both requests are stubbed, so the server's state is untouched and this
+    test needs no cleanup. The expected status is derived from whatever the
+    chip starts on rather than assumed, so the test does not depend on the
+    order it runs in.
+    """
+    calls = {"n": 0}
+
+    def handler(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=500)
+        else:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/status", handler)
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    entry = page.locator('#categories [data-name="Standalone"]')
+    before = entry.get_attribute("class")
+    started = next(s for s in STATUS_ORDER if f"status-{s}" in before)
+    expected = STATUS_ORDER[(STATUS_ORDER.index(started) + 2) % len(STATUS_ORDER)]
+
+    click_chip(page, '#categories [data-name="Standalone"] .status-chip', 2)
+    deadline = time.monotonic() + 10
+    while calls["n"] < 2 and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert calls["n"] == 2, calls
+    # Long enough for a rollback to have landed if one were going to.
+    page.wait_for_timeout(300)
+
+    assert entry.get_attribute("class") == f"entry status-{expected}", (
+        before,
+        entry.get_attribute("class"),
+    )

@@ -6,6 +6,27 @@
   --link: #0969da;
   --border: #d1d9e0;
   --subtle: #f6f8fa;
+  /* Every category fill (.cat-0..cat-4) and the uncategorised fallback
+     (.cat-5, which reuses --subtle) is a very light, low-saturation pastel
+     (~94-97% lightness). --blocked-fill has to read as "muted/waiting"
+     against all six at once, including --subtle itself -- so it cannot be
+     another pale pastel: it is meaningfully darker and more saturated
+     (~85% lightness) than every one of them, a tan/amber in the same
+     family as the pre-existing warning colour (#bc4c00) this file already
+     uses for issue markers, so "blocked" reads as a hazard/wait colour
+     rather than a seventh category. */
+  --blocked-fill: #f3d9b1;
+  /* Named once, used twice: a graph node's rect and its category's container
+     in the column carry the same cat-N class (palette.js) and must resolve to
+     the same colour, which is the whole content of the spec's "coloured to
+     match that category's node colour". Two literal copies would be one
+     careless edit away from disagreeing. */
+  --cat-0-fill: #ddf4e4; --cat-0-line: #2da44e;
+  --cat-1-fill: #fff1e5; --cat-1-line: #bc4c00;
+  --cat-2-fill: #ddf4ff; --cat-2-line: #0969da;
+  --cat-3-fill: #fbefff; --cat-3-line: #8250df;
+  --cat-4-fill: #fff8c5; --cat-4-line: #9a6700;
+  --cat-5-fill: var(--subtle); --cat-5-line: var(--border);
   --radius: 6px;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -37,7 +58,16 @@ a:hover { text-decoration: underline; }
   flex: 0 0 auto;
 }
 
-#root-name { font-weight: 600; }
+/* The served folder's absolute path, which can run far longer than the tool
+   name "armoire" ever did -- clipped rather than left to wrap the header or
+   crowd the filter box beside it. */
+#root-name {
+  font-weight: 600;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 #filter-wrap { position: relative; flex: 1; max-width: 420px; }
 
@@ -77,6 +107,9 @@ a:hover { text-decoration: underline; }
 #tree {
   flex: 0 0 280px;
   overflow-y: auto;
+  /* The divider is how you read a long name in full, so the pane no longer
+     scrolls sideways and rows truncate instead. */
+  overflow-x: hidden;
   padding: 12px 8px;
   border-right: 1px solid var(--border);
   user-select: none;
@@ -95,11 +128,31 @@ a:hover { text-decoration: underline; }
 #tree .row:hover { background: var(--subtle); }
 #tree .row[aria-current="true"] { background: var(--subtle); font-weight: 600; }
 #tree .caret { width: 12px; color: var(--muted); flex: 0 0 12px; }
+/* overflow: hidden alone already zeroes this flex item's automatic minimum
+   size (CSS Flexbox 4.5, same reasoning documented at
+   .project-detail .commit .subject below), so it can shrink below its
+   content's intrinsic width without a separate `min-width: 0`. */
+#tree .row span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: var(--border);
+  opacity: 0.5;
+}
+#divider:hover, #divider:focus { opacity: 1; outline: none; }
 
 #main { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 24px 48px; }
 
 #breadcrumb { margin-bottom: 12px; color: var(--muted); }
 #breadcrumb a { color: var(--link); }
+/* One crumb standing in for the whole served root, not a trail segment --
+   weighted like #root-name so the two read as the same thing. */
+#breadcrumb [data-root] { font-weight: 600; }
 
 .card {
   border: 1px solid var(--border);
@@ -228,21 +281,43 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
   stroke-width: 1;
   rx: 6;
 }
-.node.blocked rect { stroke: #bc4c00; stroke-width: 2; }
+/* Three signals, three channels. Phase 2 gave "blocked" a heavy outline and
+   Phase 3 gives status the border, so they would have collided: a bold border
+   would have meant both "active" and "blocked" at once. Fill and edge style
+   carry the other two. */
+.node.status-not-started rect { stroke-width: 1; stroke-dasharray: 2 3; }
+.node.status-active rect      { stroke-width: 2.5; }
+.node.status-paused rect      { stroke-width: 1.5; stroke-dasharray: 6 4; }
+.node.status-done rect        { stroke-width: 1; }
+.node.status-done             { opacity: 0.55; }
+/* :not(.status-chip):not(.node-warn) -- the strikethrough is for the title
+   and the subtitle (due/note) only. Both the chip's glyph and the warn
+   marker are themselves <text> elements inside the same .node, so an
+   unqualified `.node.status-done text` struck through the chip's own glyph
+   (e.g. a done project's ✓ rendered with a line through it) along with
+   everything it was meant for. The warn marker is named here because a done
+   node keeps it -- the collapse hides the note and the due date, which cost
+   height, and not the marker, which shares the title row (roadmap.js). */
+.node.status-done text:not(.status-chip):not(.node-warn) { text-decoration: line-through; }
+/* Distinct from every category fill, including cat-5's --subtle -- see the
+   --blocked-fill definition at the top of this file for why. */
+.node.blocked rect            { fill: var(--blocked-fill); }
+.status-chip { font-size: 12px; cursor: pointer; }
 .node text { font-family: var(--sans); font-size: 13px; fill: var(--fg); }
 .node .node-sub { font-size: 11px; fill: var(--muted); }
-.node .node-badge { font-size: 11px; fill: var(--muted); }
+.node .node-due { font-size: 11px; fill: var(--muted); }
 .node .node-warn { font-size: 14px; font-weight: 700; fill: #bc4c00; cursor: help; }
 .node:hover rect { stroke: var(--link); }
 
-.cat-0 rect { fill: #ddf4e4; stroke: #2da44e; }
-.cat-1 rect { fill: #fff1e5; stroke: #bc4c00; }
-.cat-2 rect { fill: #ddf4ff; stroke: #0969da; }
-.cat-3 rect { fill: #fbefff; stroke: #8250df; }
-.cat-4 rect { fill: #fff8c5; stroke: #9a6700; }
-.cat-5 rect { fill: var(--subtle); stroke: var(--border); }
+.cat-0 rect { fill: var(--cat-0-fill); stroke: var(--cat-0-line); }
+.cat-1 rect { fill: var(--cat-1-fill); stroke: var(--cat-1-line); }
+.cat-2 rect { fill: var(--cat-2-fill); stroke: var(--cat-2-line); }
+.cat-3 rect { fill: var(--cat-3-fill); stroke: var(--cat-3-line); }
+.cat-4 rect { fill: var(--cat-4-fill); stroke: var(--cat-4-line); }
+.cat-5 rect { fill: var(--cat-5-fill); stroke: var(--cat-5-line); }
 
 .edge { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+.edge.from-done { stroke-dasharray: 4 4; opacity: 0.5; }
 
 #roadmap-controls {
   position: absolute; right: 12px; bottom: 12px;
@@ -256,20 +331,42 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
   border-radius: var(--radius); cursor: pointer;
 }
 
-#rail-toggle {
-  position: absolute; right: 12px; top: 12px;
-  font: inherit; font-size: 12px; padding: 4px 12px;
-  color: var(--fg); background: var(--subtle);
-  border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+/* Category column ------------------------------------------------------ */
+/* A permanent sibling of #roadmap inside #body (already `display: flex`,
+   see the `#body` rule above), not an overlay inside #roadmap like the rail
+   it replaces: unconnected projects are not part of the graph, so they get
+   their own column rather than floating on top of it. */
+#categories {
+  width: 240px;
+  flex: 0 0 240px;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px;
 }
-#rail {
-  position: absolute; right: 0; top: 0; bottom: 0; width: 280px;
-  overflow-y: auto; padding: 44px 16px 16px;
-  background: var(--bg); border-left: 1px solid var(--border);
-}
-#rail h4 { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; color: var(--muted); }
-#rail ul { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.9; }
-#rail .issue { color: #bc4c00; }
+.category { margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
+/* One container per category, coloured to match that category's node. The
+   cat-N class is assigned from the same shared order map the graph uses
+   (palette.js), so a category with members on both sides of app.js's
+   isolated/connected split is the same colour in both places. */
+.category.cat-0 { background: var(--cat-0-fill); border-color: var(--cat-0-line); }
+.category.cat-1 { background: var(--cat-1-fill); border-color: var(--cat-1-line); }
+.category.cat-2 { background: var(--cat-2-fill); border-color: var(--cat-2-line); }
+.category.cat-3 { background: var(--cat-3-fill); border-color: var(--cat-3-line); }
+.category.cat-4 { background: var(--cat-4-fill); border-color: var(--cat-4-line); }
+.category.cat-5 { background: var(--cat-5-fill); border-color: var(--cat-5-line); }
+.category h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.category ul { list-style: none; margin: 0; padding: 0; }
+.entry { padding: 4px 0; }
+.entry-name { background: none; border: 0; padding: 0; color: var(--link); cursor: pointer; font: inherit; }
+/* .status-chip's other rule (above, in the roadmap block) was written for an
+   SVG <text> -- no button chrome to reset there in the first place. Here the
+   chip is a real HTML <button>, so it keeps the UA default border/background
+   unless reset the same way .entry-name already is. */
+.category .status-chip { background: none; border: 0; padding: 0; font: inherit; }
+.entry-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+.entry-warn { margin-left: 4px; font-weight: 700; color: #bc4c00; cursor: help; }
+.entry.status-done { opacity: 0.55; }
+.entry.status-done .entry-name { text-decoration: line-through; }
 
 /* Project detail ------------------------------------------------------ */
 .project-detail { max-width: 900px; }

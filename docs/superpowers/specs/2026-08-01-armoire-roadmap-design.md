@@ -1,7 +1,12 @@
 # armoire roadmap — design
 
 **Date:** 2026-08-01
-**Status:** Approved
+**Status:** Phase 2 shipped. Its registry location — `armoire.toml` at the
+folder root — is **superseded** by
+[`2026-08-02-armoire-phase3-design.md`](2026-08-02-armoire-phase3-design.md),
+which moves the registry into a per-user store instead. It was written before
+that store existed. Everything else below remains current and describes what
+shipped.
 **Supersedes:** the Phase 2 section of [`2026-08-01-armoire-design.md`](2026-08-01-armoire-design.md)
 
 ## Problem

@@ -1,19 +1,32 @@
 """The project registry.
 
-armoire.toml declares what a project is and what blocks it. Neither can be
+The registry declares what a project is and what blocks it. Neither can be
 inferred: a project may span several folders, and the dependency edges exist
 only in the author's head. A tool that guesses structure is worse than one that
 admits it does not know, so no registry means no roadmap.
+
+The file itself lives in armoire's own store, outside the folder it describes
+-- store.registry_path(folder), i.e. registry.toml under a per-folder
+directory. Nothing here resolves that path: every production caller passes the
+file to load_registry explicitly (app.create_app resolves it once, at creation
+time). REGISTRY_NAME below is not that file. It is the Phase 2 filename, kept
+only so cli.prepare_store can find a registry sitting in a served folder and
+copy it into the store; once copied, the folder's own armoire.toml is never
+read again.
 """
 
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
 from armoire.paths import PathOutsideRoot, resolve_in_root
 
+# The legacy filename to migrate *from*, not the file production reads. See
+# the module docstring.
 REGISTRY_NAME = "armoire.toml"
+STATUSES = ("not-started", "active", "paused", "done")
+DEFAULT_STATUS = "active"
 
 
 class RegistryError(Exception):
@@ -28,6 +41,7 @@ class Project:
     category: str | None = None
     due: str | None = None
     note: str | None = None
+    status: str = DEFAULT_STATUS
 
 
 @dataclass
@@ -47,21 +61,27 @@ def _as_str_tuple(value, field_name: str, project: str) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
-def _project_entries(raw: dict) -> list:
+def _project_entries(raw: dict, path: Path) -> list:
     """The `project` key as a list of entries, or a RegistryError explaining it.
 
     `[project]` with one bracket is the most likely typo in the file and it is
     valid TOML, so it never reaches the TOMLDecodeError arm: it parses to a
     string-keyed table, and iterating that yields the *key names*. Checking only
     for "a list containing a non-dict" would miss it entirely.
+
+    Labelled with `path`, the file actually read, rather than the constant
+    REGISTRY_NAME ("armoire.toml"): once the registry lives in the store,
+    that constant no longer names the file on disk at all (it is
+    registry.toml, under a per-folder store directory), and on the migration
+    path the served folder may hold a real, stale armoire.toml that armoire
+    is deliberately ignoring -- naming that file here would send the user to
+    edit the wrong one.
     """
     declared = raw.get("project", [])
     if isinstance(declared, dict):
-        raise RegistryError(
-            f"{REGISTRY_NAME}: project must be declared as [[project]], not [project]"
-        )
+        raise RegistryError(f"{path}: project must be declared as [[project]], not [project]")
     if not isinstance(declared, list):
-        raise RegistryError(f"{REGISTRY_NAME}: project must be a list of [[project]] tables")
+        raise RegistryError(f"{path}: project must be a list of [[project]] tables")
     return declared
 
 
@@ -90,6 +110,7 @@ def _parse_project(entry, position: int) -> Project:
         category=entry.get("category"),
         due=due,
         note=entry.get("note"),
+        status=entry.get("status", DEFAULT_STATUS),
     )
 
 
@@ -127,8 +148,14 @@ def _find_cycle(projects: list[Project]) -> list[str] | None:
     return None
 
 
-def load_registry(root: Path) -> Registry | None:
-    """Load armoire.toml, or None when there is none.
+def load_registry(root: Path, registry_file: Path | None = None) -> Registry | None:
+    """Load the registry for `root`, or None when there is none.
+
+    The registry is read from `registry_file`, which is where every production
+    caller reads it from: the store, outside the served folder. `root` is only
+    what `paths` resolve against. The `root / REGISTRY_NAME` fallback, for a
+    caller that passes no file, is the Phase 2 location and survives for the
+    convenience of tests that build a registry inside the folder they serve.
 
     Structural problems raise: a malformed file, an entry or field of the wrong
     shape, or a duplicate name means the graph cannot be trusted at all. Every
@@ -138,18 +165,18 @@ def load_registry(root: Path) -> Registry | None:
     unknown blocker or a missing folder still leaves a drawable graph, and
     reporting them beats refusing to render.
     """
-    path = root / REGISTRY_NAME
+    path = registry_file if registry_file is not None else root / REGISTRY_NAME
     if not path.is_file():
         return None
 
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as exc:
-        raise RegistryError(f"{REGISTRY_NAME}: {exc}") from exc
+        raise RegistryError(f"{path}: {exc}") from exc
 
     projects: list[Project] = []
     seen: dict[str, int] = {}
-    for position, entry in enumerate(_project_entries(raw), start=1):
+    for position, entry in enumerate(_project_entries(raw, path), start=1):
         project = _parse_project(entry, position)
         if project.name in seen:
             raise RegistryError(
@@ -161,7 +188,20 @@ def load_registry(root: Path) -> Registry | None:
 
     issues: list[str] = []
     known = {p.name for p in projects}
-    for project in projects:
+    for position, project in enumerate(projects):
+        if project.status not in STATUSES:
+            # An issue, not a raise: a typo in one optional field must not
+            # remove the project from the graph.
+            issues.append(
+                f"{project.name}: unknown status {project.status!r}, using {DEFAULT_STATUS!r}"
+            )
+            projects[position] = replace(project, status=DEFAULT_STATUS)
+        if not project.blocked_by and not project.category:
+            # With neither, the project is in no graph and in no container:
+            # there is nowhere on screen for it to be.
+            issues.append(
+                f"{project.name}: declares neither blocked_by nor category, so it cannot be placed"
+            )
         for blocker in project.blocked_by:
             if blocker not in known:
                 issues.append(f"{project.name}: blocked_by names unknown project {blocker!r}")
@@ -179,9 +219,14 @@ def load_registry(root: Path) -> Registry | None:
 
     cycle = _find_cycle(projects)
     if cycle is not None:
-        # Lead with a project name: issues are attributed to a node downstream
-        # by splitting on the first ":", so a message starting with anything
-        # else silently fails to mark the graph.
+        # Lead with a project name, followed by ": ". Downstream (roadmap.js's
+        # `flagged` set and per-node tooltip, categories.js's entry-warn) tests
+        # each issue against each project name with
+        # `issue.startsWith(`${name}:`)`, so a message starting with anything
+        # else silently fails to mark the graph. Every issue built above
+        # follows the same shape. Note this is a prefix test, not a split on
+        # the first ":" -- splitting would drop any project whose own name
+        # contains one, which is a legal registry name.
         issues.append(f"{cycle[0]}: dependency cycle via {' -> '.join(cycle)}")
 
     return Registry(projects=projects, issues=issues)

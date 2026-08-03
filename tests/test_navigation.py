@@ -1,5 +1,7 @@
 """Tree, filter and routing, exercised in a real browser."""
 
+from conftest import folder_snapshot
+
 
 def test_tree_lists_the_root_folder(page, live_server):
     # A registry exists in the fixture, so "#/" is now the roadmap; the tree
@@ -261,3 +263,222 @@ def test_a_stale_nested_url_migrates(page, live_server):
     page.goto(f"{live_server}/#/notes/deep/buried.md")
     page.wait_for_selector(".markdown-body h1", timeout=10000)
     assert page.evaluate("location.hash") == "#/browse/notes/deep/buried.md"
+
+
+def test_the_breadcrumb_root_shows_the_served_path(live_server, page, sample_root):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    shown = page.locator("#breadcrumb [data-root]").inner_text()
+    assert shown == str(sample_root).replace("\\", "/")
+
+
+def test_the_root_crumb_is_one_element_not_a_trail(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    assert page.locator("#breadcrumb [data-root]").count() == 1
+
+
+def test_clicking_the_root_crumb_goes_to_the_root_listing(live_server, page):
+    page.goto(f"{live_server}/#/browse/notes")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    page.locator("#breadcrumb [data-root]").click()
+    page.wait_for_url("**/#/browse/")
+
+
+def test_double_clicking_the_root_crumb_returns_to_the_roadmap(live_server, page):
+    page.goto(f"{live_server}/#/browse/notes")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    page.locator("#breadcrumb [data-root]").dblclick()
+    page.wait_for_selector(".node")
+    assert page.locator("#roadmap").is_visible()
+
+
+def test_a_folder_with_no_registry_says_the_gesture_is_inert(bare_server, page):
+    """Checks the promise (the title) and the behaviour it describes (a
+    double click actually does nothing) together: the two currently derive
+    from the same `hasRegistry` value and cannot drift, but a regression that
+    broke only the dblclick guard while leaving the tooltip ternary intact
+    would still pass a title-only check.
+
+    An end-state-only check (hash == "#/browse/", #roadmap hidden) is not
+    enough on its own: on a folder with no registry, showRoadmap's own
+    `registry === false` fallback bounces `#/` straight back to `#/browse/`
+    and hides #roadmap too, so a dblclick handler that wrongly navigates to
+    `#/` converges on exactly the same end state 400ms later -- the bounce
+    just adds a flicker and two extra history entries nothing here checks.
+    Recording every hash the page actually visits, via a hashchange listener
+    installed before the gesture, catches that: a correctly-guarded dblclick
+    never writes `#/` at all, so it can never appear in the recording, no
+    matter what happens afterwards.
+    """
+    page.goto(f"{bare_server}/#/browse/")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    crumb = page.locator("#breadcrumb [data-root]")
+    assert "no roadmap" in (crumb.get_attribute("title") or "").lower()
+    page.evaluate(
+        "() => { "
+        "window.__hashes = []; "
+        "window.addEventListener('hashchange', () => window.__hashes.push(location.hash)); "
+        "}"
+    )
+    crumb.dblclick()
+    # Nothing to wait_for_selector on for "stayed put" -- give the click
+    # half's deferred timer (see the leak-guard test below) a window to have
+    # fired wrongly before checking nothing moved.
+    page.wait_for_timeout(400)
+    assert page.evaluate("location.hash") == "#/browse/"
+    assert page.locator("#roadmap").is_hidden()
+    assert "#/" not in page.evaluate("window.__hashes")
+
+
+def test_a_pending_single_click_does_not_leak_into_a_later_roadmap_visit(live_server, page):
+    """A click on the root crumb defers its own navigation by
+    ROOT_CLICK_DELAY (app.js) so a following dblclick can still cancel it.
+    If the roadmap is reached by some route *other* than that dblclick before
+    the timer fires -- browser Back onto a prior roadmap entry, for instance
+    -- the stale timer must not survive to fire later and drag the user back
+    off the page they just reached."""
+    page.goto(f"{live_server}/#/browse/notes")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    page.locator("#breadcrumb [data-root]").click()
+    # Reach the roadmap by a route other than the crumb's own dblclick,
+    # before the deferred single-click timer (250ms) would fire.
+    page.evaluate("() => { window.location.hash = '/'; }")
+    page.wait_for_selector(".node")
+    # Give the stale timer, if any survived, a window to fire wrongly.
+    page.wait_for_timeout(400)
+    assert page.evaluate("location.hash") == "#/"
+    assert page.locator("#roadmap").is_visible()
+
+
+def test_the_tree_has_no_horizontal_scrollbar(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree .row")
+    overflow = page.locator("#tree").evaluate("el => getComputedStyle(el).overflowX")
+    assert overflow == "hidden"
+
+
+def test_a_long_name_truncates_rather_than_widening_the_tree(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree .row")
+    assert page.locator("#tree").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+
+
+def test_dragging_the_divider_widens_the_tree(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    before = page.locator("#tree").bounding_box()["width"]
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert page.locator("#tree").bounding_box()["width"] > before + 50
+
+
+def test_the_divider_refuses_to_go_below_its_minimum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(0, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert page.locator("#tree").bounding_box()["width"] >= 180
+
+
+def test_the_divider_refuses_to_go_above_its_maximum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(2000, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert page.locator("#tree").bounding_box()["width"] <= 600
+
+
+def test_the_divider_width_survives_a_reload(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    width = page.locator("#tree").bounding_box()["width"]
+    page.reload()
+    page.wait_for_selector("#divider")
+    assert abs(page.locator("#tree").bounding_box()["width"] - width) < 2
+
+
+def test_the_arrow_keys_move_the_divider(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    before = page.locator("#tree").bounding_box()["width"]
+    page.locator("#divider").focus()
+    for _ in range(5):
+        page.keyboard.press("ArrowRight")
+    assert page.locator("#tree").bounding_box()["width"] > before
+
+
+def test_dragging_the_divider_does_not_write_to_the_served_folder(live_server, page, sample_root):
+    before = folder_snapshot(sample_root)
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert folder_snapshot(sample_root) == before
+
+
+def test_the_home_key_jumps_the_divider_to_its_minimum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    page.locator("#divider").focus()
+    page.keyboard.press("Home")
+    assert abs(page.locator("#tree").bounding_box()["width"] - 180) <= 2
+
+
+def test_the_end_key_jumps_the_divider_to_its_maximum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    page.locator("#divider").focus()
+    page.keyboard.press("End")
+    assert abs(page.locator("#tree").bounding_box()["width"] - 600) <= 2
+
+
+def test_the_divider_reports_its_aria_attributes(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    divider = page.locator("#divider")
+    assert divider.get_attribute("role") == "separator"
+    assert divider.get_attribute("aria-orientation") == "vertical"
+    assert divider.get_attribute("aria-valuemin") == "180"
+    assert divider.get_attribute("aria-valuemax") == "600"
+
+
+def test_aria_valuenow_tracks_the_width_after_a_drag(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    width = page.locator("#tree").bounding_box()["width"]
+    valuenow = int(page.locator("#divider").get_attribute("aria-valuenow"))
+    assert abs(valuenow - width) <= 2
+
+
+def test_aria_valuenow_tracks_the_width_after_a_keyboard_move(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    page.locator("#divider").focus()
+    for _ in range(3):
+        page.keyboard.press("ArrowRight")
+    width = page.locator("#tree").bounding_box()["width"]
+    valuenow = int(page.locator("#divider").get_attribute("aria-valuenow"))
+    assert abs(valuenow - width) <= 2

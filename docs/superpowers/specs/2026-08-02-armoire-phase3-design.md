@@ -226,9 +226,24 @@ truncated file where a valid one was.
 ### What `done` changes
 
 A `done` project **collapses** to a single title line: name, struck through,
-plus its chip. Its note, due date and warning marker are hidden. The node is
-dimmed. Collapsing feeds a smaller height into dagre, so the layout reflows and
+plus its chip. Its note and due date are hidden. The node is dimmed.
+Collapsing feeds a smaller height into dagre, so the layout reflows and
 finished work stops consuming canvas.
+
+**The warning marker is not hidden.** This paragraph originally listed it
+alongside the note and the due date, and that was wrong on both counts.
+Hiding it buys nothing the collapse is for: the collapse exists to stop
+finished work consuming canvas *height*, and the marker shares the title row
+with the chip at any height, so suppressing it reclaims no space. And it
+costs the only readable account of a registry problem — "Removing the
+activity rail" below makes the node's `!`, with the full text in its `title`,
+the one place an issue is legible, with the status strip carrying nothing but
+a count that names no project. A `done` project is also the likeliest to have
+one: a path stops existing exactly when the work finishes and the folder is
+archived. The marker therefore moves off the node's bottom-right corner and
+onto the title row, immediately left of the chip, on every node — at
+`NODE_MIN_H` the corner placement sat directly under the chip, same `x`, same
+anchor, and the two glyphs overlapped.
 
 A `done` project's **outgoing edges** render dashed and dimmed.
 
@@ -261,10 +276,40 @@ The commit-count badge is removed.
 
 ## Layout
 
-`rankdir: LR` with `align: 'UL'`, so rank 0 sits hard left and rows start at
-the top. With isolated projects moved to the category column, rank 0 is exactly
-the set of projects nothing blocks — which is what "align the unblocked ones
-left" means.
+`rankdir: LR` with `align: 'UL'` puts rank 0 on the left and top-aligns each
+rank's rows, but it does not by itself decide *which* projects land on rank 0.
+With isolated projects moved to the category column, rank 0 is meant to be
+exactly the set of projects nothing blocks — "align the unblocked ones left"
+— and neither of dagre's rankers gets there on its own. The default,
+`network-simplex`, minimises total edge length: a root whose only dependent
+sits several ranks away has slack, and the ranker spends it by sliding that
+root rightward, off the rank its blocker-free siblings sit on. `longest-path`
+does not fix this either — despite the name, dagre's implementation of it
+schedules every node as late as possible relative to a sink it can reach, not
+as early as possible from a source, so a root with a short reach gets pushed
+right the same way. (This surfaced on the real registry: `STAT 31450` and
+`FINM 33000` block something one rank away and stayed pinned left; `STAT
+31511` blocks only `Calibration paper`, three ranks away, and drifted one
+rank right of them under both rankers.)
+
+`layout()` (`static/roadmap.js`) closes that gap itself: every root — a
+project with no drawn incoming edge — gets a high-weight (`100`, against the
+default `1` on every real edge), one-rank (`minlen: 1`) edge to a shared,
+invisible anchor node. Deviating from the rank that arrangement implies then
+costs far more than any edge-length saving elsewhere in the graph could
+offset, which is enough to force every root to the same rank regardless of
+how far its own dependents reach. The edges point root → anchor, not anchor →
+root, so the anchor only has to clear a rank the graph's real edges already
+reach — pinning roots this way costs no extra rank of its own, and so no
+extra width, on the real registry, though the more balanced left column can
+still add height (the real registry's 3 ranks stayed 696px wide and grew from
+632.5px to 847.5px tall gaining `STAT 31511` as a fourth rank-0 row). A
+same-rank (`minlen: 0`) edge between two distinct nodes was tried first and
+rejected: dagre's position phase does not give such an edge any points, and
+the graph crashes when the coordinate system pass touches it later. The
+anchor node and its pin edges are removed from the graph again before
+`layout()` returns, so nothing downstream — rendering, positions, the edge
+count — ever sees them.
 
 ### Zoom
 

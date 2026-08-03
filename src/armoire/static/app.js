@@ -1,9 +1,11 @@
 import { initTree } from './tree.js';
+import { initDivider } from './divider.js';
 import { initFilter } from './filter.js';
 import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
 import { renderRoadmap } from './roadmap.js';
-import { initRail } from './rail.js';
+import { renderCategories } from './categories.js';
+import { categoryOrder } from './palette.js';
 import { renderProject } from './project.js';
 
 const content = document.getElementById('content');
@@ -16,10 +18,32 @@ const PROJECT = 'project';
 const roadmap = document.getElementById('roadmap');
 const canvas = document.getElementById('roadmap-canvas');
 const roadmapMessage = document.getElementById('roadmap-message');
-const body = document.getElementById('body');
+const categories = document.getElementById('categories');
 
 let roadmapView = null;
 let roadmapListeners = null;
+
+// Set once, from initTree's own first fetch (see tree.ready.then below) --
+// never refetched per navigation.
+let rootLabel = null;
+let hasRegistry = false;
+// The pending single-click navigation for the root crumb, if any. Module
+// scope, not local to renderBreadcrumb: a stale timer from a crumb that has
+// since been replaced (the user navigated elsewhere before it fired) must
+// still be reachable to cancel, or it goes off later and yanks the URL back
+// to the root listing out of nowhere.
+let rootClickTimer = null;
+// Comfortably above the gap between the two clicks of a genuine double
+// click (Playwright's included), so the second click's dblclick always has
+// a live timer left to cancel; short enough that a real single click still
+// feels immediate.
+const ROOT_CLICK_DELAY = 250;
+
+function displayRoot(path) {
+  // Forward slashes on every platform. Display only -- resolution stays
+  // pathlib's job behind resolve_in_root, and this string is never sent back.
+  return String(path).replace(/\\/g, '/');
+}
 
 function decodeSegments(raw) {
   return raw
@@ -58,9 +82,45 @@ export function navigateProject(name) {
 
 function renderBreadcrumb(path) {
   breadcrumb.replaceChildren();
+  // Any single-click navigation still pending from a previous crumb is
+  // already cancelled by showRoute (see its own comment) before this ever
+  // runs -- rootClickTimer is guaranteed null here.
   const rootLink = document.createElement('a');
   rootLink.href = `#/${BROWSE}/`;
-  rootLink.textContent = document.getElementById('root-name').textContent;
+  rootLink.setAttribute('data-root', '');
+  rootLink.textContent = rootLabel || 'armoire';
+  rootLink.title = hasRegistry
+    ? // "the roadmap" undersells it: a registry that exists but fails to
+      // parse also reports hasRegistry true (see dashboard.has_roadmap),
+      // and double-clicking there lands on that parse error, not a graph.
+      'Click for the root listing, double-click for the roadmap (or its error, if the registry does not parse)'
+    : 'Click for the root listing. This folder has no roadmap.';
+  // One crumb, not a trail: "D:" and "GitHub" name places outside the served
+  // root that armoire cannot show, so they must not look clickable.
+  //
+  // Both listeners preventDefault unconditionally: a double click fires
+  // click, click, dblclick on the same target, so a click handler that
+  // navigates immediately would let the first click's own hashchange
+  // re-render (and replace) this element out from under the click/dblclick
+  // pair that follows. Deferring the single-click navigation instead keeps
+  // this element -- and its listeners -- alive for the whole gesture, so
+  // dblclick can always find and cancel it.
+  rootLink.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (rootClickTimer) return; // second click of a double click; dblclick decides
+    rootClickTimer = window.setTimeout(() => {
+      rootClickTimer = null;
+      window.location.hash = `/${BROWSE}/`;
+    }, ROOT_CLICK_DELAY);
+  });
+  rootLink.addEventListener('dblclick', (event) => {
+    event.preventDefault();
+    if (rootClickTimer) {
+      window.clearTimeout(rootClickTimer);
+      rootClickTimer = null;
+    }
+    if (hasRegistry) window.location.hash = '/';
+  });
   breadcrumb.append(rootLink);
 
   let accumulated = '';
@@ -83,19 +143,29 @@ function showError(error) {
   status.textContent = 'Error';
 }
 
-// className is 'error' for a genuine failure (fetch/network, malformed
-// registry) or 'empty' for a valid-but-empty registry, which is not a
-// failure and should not read like one. 'empty' reuses the same neutral
-// style preview.js already uses for "no preview for this file".
+// The box is always an error: a stub or empty registry is not a failure, and
+// takes the same exit as no registry at all -- back to the file browser,
+// rather than a message rendered in the roadmap panel. The class used to be a
+// parameter, with 'error' the only value any caller ever passed.
 //
 // #roadmap-message is the only child of #roadmap this module writes, and
 // replaceChildren is the only way it writes to it. Appending straight to
 // #roadmap meant nothing ever removed a box: they stacked one per visit, and a
 // stale error card survived underneath a later successful render.
-function showRoadmapMessage(message, className) {
+//
+// #categories gets the same treatment as the canvas, and for the same
+// reason: both error exits below (the fetch's own catch, and data.error)
+// return without ever reaching renderCategories, which is the only other
+// place anything writes to #categories. Without this, a category column
+// populated by an earlier successful visit would sit, stale, beside an error
+// card that says the fetch itself just failed. Emptied, it is also hidden --
+// a bordered 240px box with nothing in it is not a column.
+function showRoadmapError(message) {
   canvas.replaceChildren();
+  categories.replaceChildren();
+  categories.hidden = true;
   const box = document.createElement('div');
-  box.className = className;
+  box.className = 'error';
   box.textContent = message;
   roadmapMessage.replaceChildren(box);
 }
@@ -104,17 +174,17 @@ function clearRoadmapMessage() {
   roadmapMessage.replaceChildren();
 }
 
-function showRoadmapError(message) {
-  showRoadmapMessage(message, 'error');
-}
-
 async function showRoadmap() {
   // Commit to the roadmap before the fetch, not after: /api/projects walks
   // git across every declared path -- seconds on a large folder -- and
   // showing the file browser meanwhile reads as opening on the wrong screen.
   document.getElementById('tree').hidden = true;
+  document.getElementById('divider').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
+  // #categories is unhidden below, once renderCategories reports it has
+  // something to show. A fully connected graph isolates nothing, and an empty
+  // bordered box would then take 240px off the canvas for no content.
   // Clear on entry, not on success: every path out of here either renders a
   // graph or writes exactly one message, so the previous visit's box never
   // outlives the visit that wrote it.
@@ -129,49 +199,63 @@ async function showRoadmap() {
     return;
   }
 
-  if (data.registry === false) {
-    // No registry: this folder has no roadmap, so hand back to the browser.
-    hideRoadmap();
-    window.location.hash = `/${BROWSE}/`;
-    return;
-  }
   if (data.error) {
     showRoadmapError(data.error);
     return;
   }
-  if (!data.projects.length) {
-    // Zero [[project]] entries is valid TOML and reaches here with neither
-    // registry: false nor error -- an empty graph, not a failure.
-    showRoadmapMessage('No projects declared in armoire.toml.', 'empty');
-    status.textContent = 'no projects';
+  if (data.registry === false || !data.projects.length) {
+    // A stub registry is the normal state for a folder nobody has described
+    // yet, so "no projects" means the same thing "no file" used to: there is
+    // no roadmap here, hand back to the browser.
+    hideRoadmap();
+    window.location.hash = `/${BROWSE}/`;
     return;
   }
-  // Every visit re-runs this against the same persistent #roadmap-canvas and
-  // #rail-toggle elements. Without aborting the previous run's listeners they
-  // accumulate for the lifetime of the page.
+  // Every visit re-runs this against the same persistent #roadmap-canvas
+  // element. Without aborting the previous run's listeners they accumulate
+  // for the lifetime of the page.
   if (roadmapListeners) roadmapListeners.abort();
   roadmapListeners = new AbortController();
-  roadmapView = renderRoadmap(canvas, data, navigateProject, roadmapListeners.signal);
-  initRail(
-    document.getElementById('rail-toggle'),
-    document.getElementById('rail'),
-    data,
-    navigateProject,
-    roadmapListeners.signal,
-  );
+  // Projects that participate in no edge that will actually be drawn have no
+  // place in the graph -- they belong in the category column instead (see
+  // categories.js). Filtering here, before renderRoadmap ever sees them,
+  // keeps that one job in roadmap.js and this one in app.js.
+  const connected = { ...data, projects: data.projects.filter((p) => !p.isolated) };
+  // One order map over the *whole* payload, shared by both renderers, so a
+  // category that appears on both sides of the split gets the same colour on
+  // both. See palette.js.
+  const order = categoryOrder(data.projects);
+  roadmapView = renderRoadmap(canvas, connected, navigateProject, roadmapListeners.signal, order);
+  categories.hidden = renderCategories(categories, data, navigateProject, order) === 0;
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();
   document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
   document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);
-  status.textContent = `${data.projects.length} projects`;
+  const issues = (data.issues || []).length;
+  status.textContent = issues
+    ? `${data.projects.length} projects · ${issues} issue${issues === 1 ? '' : 's'}`
+    : `${data.projects.length} projects`;
 }
 
 function hideRoadmap() {
   roadmap.hidden = true;
+  categories.hidden = true;
   document.getElementById('tree').hidden = false;
+  document.getElementById('divider').hidden = false;
   document.getElementById('main').hidden = false;
 }
 
 async function showRoute(route) {
+  // A pending single-click navigation belongs to whatever crumb armed it.
+  // Clearing it only inside renderBreadcrumb misses the 'home' route below,
+  // which never calls renderBreadcrumb at all: reaching the roadmap by any
+  // means other than the crumb's own dblclick (browser Back onto a prior
+  // roadmap entry, for instance) would otherwise leave the timer alive to
+  // fire later and silently pull the user back off the page they just
+  // reached. Every route change cancels it, unconditionally.
+  if (rootClickTimer) {
+    window.clearTimeout(rootClickTimer);
+    rootClickTimer = null;
+  }
   if (route.kind === 'home') {
     try {
       await showRoadmap();
@@ -232,7 +316,11 @@ window.addEventListener('hashchange', () => {
 });
 
 tree.ready
-  .then(() => {
+  .then((rootMeta) => {
+    rootLabel = displayRoot(rootMeta.root);
+    hasRegistry = rootMeta.hasRegistry;
+    document.getElementById('root-name').textContent = rootLabel;
+    initDivider(document.getElementById('divider'), document.getElementById('tree'), rootLabel);
     const route = currentRoute();
     if (route.kind === 'unknown') {
       window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;

@@ -1,17 +1,129 @@
 """A small sample folder, and a live server in front of it."""
 
+import hashlib
 import json
 import os
 import socket
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import polars as pl
 import pytest
 import uvicorn
 
+from armoire import store
 from armoire.app import create_app
+
+
+def folder_snapshot(root: Path) -> dict[str, tuple[int, str]]:
+    """Every file under root, keyed by relative path, with mtime and content.
+
+    mtime as well as sha256: a pure-metadata touch -- an ill-judged os.utime,
+    or a git operation that rewrites an index -- is invisible to a content hash
+    alone, and the read-only guarantee has to catch both.
+
+    Keyed by relative path, not by name: two files called README.md in
+    different directories collapsed to one entry under the old keying and one
+    of them went unchecked.
+    """
+    return {
+        p.relative_to(root).as_posix(): (
+            p.stat().st_mtime_ns,
+            hashlib.sha256(p.read_bytes()).hexdigest(),
+        )
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _redirect_config_root(setenv, setattr_, base) -> None:
+    """Point config_root() at `base`, on every platform, without replacing
+    config_root() itself.
+
+    tests/test_store.py exercises config_root()'s own platform-dispatch logic
+    directly -- each of its platform tests sets sys.platform plus whichever of
+    APPDATA / XDG_CONFIG_HOME / store._home that platform's branch reads, and
+    asserts the *real* function computes the right path. Replacing
+    config_root() wholesale (`monkeypatch.setattr(store, "config_root", ...)`)
+    would make every one of those tests observe a stub instead of the function
+    they mean to test. Patching what the real implementation reads instead
+    keeps that logic intact: a test that overrides one of these three itself
+    simply layers its own patch on top of this one, for the one platform
+    branch it cares about, exactly as if this fixture were not here.
+
+    All three are set regardless of the platform actually running these
+    tests, so the suite stays isolated on whichever of the six CI platform
+    combinations runs it.
+    """
+    setenv("APPDATA", str(base))
+    setenv("XDG_CONFIG_HOME", str(base))
+    setattr_(store, "_home", lambda: base)
+
+
+@pytest.fixture(scope="session")
+def _isolated_store_session(tmp_path_factory):
+    """One store base for the whole test session -- shared by every test,
+    function-scoped or session-scoped alike, via `_isolated_store` below.
+
+    This used to be a *separate* store from `_isolated_store`'s own
+    per-test directory, which review caught as a real bug in the making:
+    task-4-brief.md already has dashboard.project_rows call
+    store.read_state(root) per request, and app.py calls that per request
+    too. Once that lands, a Playwright test against a session-scoped server
+    (whose app was created once, against this session store) would read its
+    registry from here but its state.json from wherever *that test's own*
+    `_isolated_store` pointed -- silently returning {} instead of erroring,
+    in a way that would look like a dashboard.py bug rather than a fixture
+    one. `folder_dir` already keys by `sha256(realpath(folder))`, and every
+    test's served folder is its own distinct tmp_path/mktemp directory, so
+    there is no collision between tests to isolate against by giving each
+    one a separate base -- sharing this one removes the disagreement
+    entirely, for free.
+
+    The session-scoped fixtures below build their registry file, and their
+    server's app (which bakes in that registry's path at creation time), once,
+    long before any single test's function-scoped `monkeypatch` exists -- and
+    that server keeps running for the rest of the session. A function-scoped
+    monkeypatch cannot reach back far enough to cover that: it does not exist
+    yet when this setup runs, and it is torn down at the end of whichever
+    test happens to trigger this fixture's first use, long before the session
+    ends.
+
+    pytest.MonkeyPatch.context() is used directly, as its own context manager,
+    rather than the `monkeypatch` fixture (which is function-scoped and cannot
+    be requested here). Held open for the whole session by yielding from
+    inside the `with` block, so config_root() keeps returning this directory
+    for as long as any session-scoped root or server fixture is alive --
+    which, once a request registers a background thread serving one of them,
+    is the rest of the test run.
+
+    Uses the same environment-redirection as `_redirect_config_root` rather
+    than replacing config_root() itself, for the same reason `_isolated_store`
+    does: a wholesale replacement held open for the rest of the session would
+    just as surely break tests/test_store.py's platform tests whenever they
+    happen to run after this fixture's first use.
+    """
+    base = tmp_path_factory.mktemp("armoire-store-session")
+    with pytest.MonkeyPatch.context() as mp:
+        _redirect_config_root(mp.setenv, mp.setattr, base)
+        yield base
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(_isolated_store_session):
+    """No test may read or write the developer's real armoire store.
+
+    Depends on -- and simply reuses -- _isolated_store_session's one shared
+    base rather than pointing at a fresh directory of its own each time (see
+    that fixture's docstring for why a separate base was itself a bug).
+    Autouse, function-scoped, so it forces the session fixture to be set up
+    before the very first test in the run, regardless of whether that test
+    is one of the session-scoped Playwright fixtures below.
+    """
+    return _isolated_store_session
+
 
 MINIMAL_PDF = b"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
@@ -61,7 +173,7 @@ NOTEBOOK = {
 
 
 @pytest.fixture(scope="session")
-def sample_root(tmp_path_factory):
+def sample_root(tmp_path_factory, _isolated_store_session):
     root = tmp_path_factory.mktemp("sample")
     # newline="" avoids Windows' universal-newline translation on write, so
     # the markdown renderer's exact `\n`-anchored mermaid-fence regex sees
@@ -116,6 +228,20 @@ def sample_root(tmp_path_factory):
     )
     (root / "links.md").write_text("# Links\n\n[percent](100%.md)\n", encoding="utf-8", newline="")
 
+    # No other root-level name here reaches even 20 characters, so nothing
+    # would ever overflow the tree pane's default 280px width -- task 11's
+    # truncation test needs a name long enough that it genuinely cannot fit,
+    # or an ellipsis rule with no effect would pass it for free. This one
+    # sits at the root (not nested) so it renders on the very first paint,
+    # before anything is expanded, and it deliberately carries no "b" so it
+    # cannot become a tighter subsequence match than "buried.md" for the
+    # filter tests that query "buried".
+    (root / "a-very-long-filename-that-should-overflow-the-tree-pane-width-check.md").write_text(
+        "# Long name\n\nExists to overflow the tree pane's default width.\n",
+        encoding="utf-8",
+        newline="",
+    )
+
     notes = root / "notes"
     notes.mkdir()
     (notes / "README.md").write_text(
@@ -136,18 +262,87 @@ def sample_root(tmp_path_factory):
 
     # A registry makes the roadmap appear. Two nodes and one edge is the
     # smallest graph that exercises layout, an edge, and a blocked node.
-    (root / "armoire.toml").write_text(
+    # Written into the store, not the served folder: describing a folder must
+    # not modify it.
+    #
+    # Downstream carries both `due` and a long `note` (>= 120 chars, task 6).
+    # Round 1 of task 6 moved `due` off Downstream because roadmap.js then
+    # picked `project.due || project.note` for the subtitle, so a `due` on
+    # the same project would have won and the note would never reach the
+    # node. Round 2 renders both (the due line, unwrapped, above the wrapped
+    # note), so that tradeoff is gone -- Downstream carrying both is now the
+    # arrangement that best exercises the new behaviour: a single node proves
+    # the due line, the wrapped note, and containment together.
+    # test_a_due_date_appears_on_its_node only asserts the date string
+    # appears somewhere on the roadmap, not which node carries it, so this
+    # does not disturb that test.
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         "[[project]]\n"
         'name = "Downstream"\n'
-        'paths = ["notes"]\n'
+        # "notes/archived" does not exist, which makes a registry issue
+        # ("path ... does not exist") attributable to Downstream. Every other
+        # issue this fixture carries belongs to Backlog, which is isolated and
+        # therefore has no graph node -- so before this, no node in sample_root
+        # ever rendered a `.node-warn` and nothing here could check what
+        # happens to that marker when the node collapses. It is also the issue
+        # a real registry acquires most often: a path stops existing when the
+        # work finishes and its folder is archived. list_dir raises
+        # FileNotFoundError for it and dashboard.project_detail skips it, so
+        # the detail view's file list is unchanged.
+        'paths = ["notes", "notes/archived"]\n'
         'blocked_by = ["Upstream"]\n'
         'category = "research"\n'
         "due = 2026-08-17\n"
+        'note = "This note is intentionally long so that the roadmap node has to wrap '
+        "it across multiple lines rather than letting it spill outside the box "
+        'boundary."\n'
         "\n"
         "[[project]]\n"
         'name = "Upstream"\n'
         'paths = ["notes/deep"]\n'
-        'category = "learning"\n',
+        'category = "learning"\n'
+        "\n"
+        # Standalone and Backlog participate in no edge that will actually be
+        # drawn (dashboard.project_rows's "isolated"), so task 9's category
+        # column -- not the graph -- is where they must appear. Both carry a
+        # category: declaring neither blocked_by nor category is itself a
+        # registry issue (projects.py), and that is not the issue this
+        # fixture means to exercise. They sit in different categories so
+        # test_each_category_gets_its_own_container is not vacuous with a
+        # single container.
+        "[[project]]\n"
+        'name = "Standalone"\n'
+        'paths = ["notes"]\n'
+        'category = "ops"\n'
+        'note = "Nothing depends on this project, and it depends on nothing."\n'
+        "\n"
+        # Backlog's blocked_by names a project that does not exist anywhere in
+        # this registry. dashboard.py counts only edges that will actually be
+        # drawn, so an edge to an unknown project leaves Backlog just as
+        # isolated as Standalone -- but projects.py still reports it as a
+        # registry issue (blocked_by names unknown project), which is what
+        # gives sample_root the "at least one issue"
+        # test_the_status_strip_reports_registry_issues needs: the rail used
+        # to be the only place that was visible, and this task moves it into
+        # the status strip instead.
+        "[[project]]\n"
+        'name = "Backlog"\n'
+        'paths = ["notes"]\n'
+        'category = "infra"\n'
+        'blocked_by = ["Vanished"]\n'
+        "\n"
+        # Isolated, but in "research" -- Downstream's category, which does have
+        # a graph node. Standalone ("ops") and Backlog ("infra") are the only
+        # other isolated projects and neither category reaches the graph at
+        # all, so before this no category had members on both sides of app.js's
+        # isolated/connected split and nothing could check that the column and
+        # the graph agree on that category's colour.
+        "[[project]]\n"
+        'name = "Reading list"\n'
+        'paths = ["notes"]\n'
+        'category = "research"\n',
         encoding="utf-8",
         newline="",
     )
@@ -182,8 +377,14 @@ def live_server(sample_root):
 
 
 @pytest.fixture(scope="session")
-def bare_root(tmp_path_factory):
-    """A folder with no armoire.toml -- the state every folder starts in."""
+def bare_root(tmp_path_factory, _isolated_store_session):
+    """A folder with no registry -- the state every folder starts in.
+
+    Depends on _isolated_store_session even though it writes nothing there:
+    bare_server's create_app() call still resolves store.registry_path(root)
+    at creation time, and that must resolve under the session's isolated
+    store rather than the developer's real one.
+    """
     root = tmp_path_factory.mktemp("bare")
     (root / "README.md").write_bytes(b"# Bare\n\nNo registry here.\n")
     return root
@@ -208,11 +409,15 @@ def bare_server(bare_root):
 
 
 @pytest.fixture(scope="session")
-def empty_registry_root(tmp_path_factory):
+def empty_registry_root(tmp_path_factory, _isolated_store_session):
     """Zero [[project]] entries -- valid TOML, no RegistryError, but nothing
-    for renderRoadmap to lay out."""
+    for renderRoadmap to lay out. app.js never calls renderRoadmap with this:
+    it falls back to the file browser, the same exit a missing registry
+    file takes."""
     root = tmp_path_factory.mktemp("empty-registry")
-    (root / "armoire.toml").write_text(
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         "# No [[project]] entries -- still a valid registry.\n",
         encoding="utf-8",
         newline="",
@@ -239,13 +444,27 @@ def empty_registry_server(empty_registry_root):
 
 
 @pytest.fixture(scope="session")
-def colon_name_root(tmp_path_factory):
+def colon_name_root(tmp_path_factory, _isolated_store_session):
     """A project whose name contains a colon, with a genuine issue against it
     (a missing path) -- the fixture Finding 2's flagged-set fix needs to
-    prove itself against."""
+    prove itself against.
+
+    "Foo: Bar" carries no `blocked_by` of its own, but task 9 filters
+    isolated projects out of the graph entirely, and this fixture's test
+    (test_a_colon_in_a_project_name_does_not_drop_its_marker) checks a
+    *graph* node's warning marker -- it would otherwise have nothing to
+    check against. "Dependent" exists only to give "Foo: Bar" a real inbound
+    edge (dashboard.py's `isolated` looks at edges that will actually be
+    drawn, not at category) so it stays connected and keeps rendering as a
+    node.
+    """
     root = tmp_path_factory.mktemp("colon-name")
-    (root / "armoire.toml").write_text(
-        '[[project]]\nname = "Foo: Bar"\npaths = ["missing"]\n',
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "Foo: Bar"\npaths = ["missing"]\n'
+        "\n"
+        '[[project]]\nname = "Dependent"\npaths = ["."]\nblocked_by = ["Foo: Bar"]\n',
         encoding="utf-8",
         newline="",
     )
@@ -264,6 +483,64 @@ def colon_name_server(colon_name_root):
     while not server.started:
         if time.monotonic() > deadline:
             raise RuntimeError("colon-name server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def layout_root(tmp_path_factory, _isolated_store_session):
+    """Two roots, one of them with a dependent several ranks deep.
+
+    sample_root's only edge (Upstream -> Downstream) is one rank long, which
+    dagre's default 'network-simplex' ranker places correctly regardless --
+    its lone root has no slack to spend, so a bug that only shows up when a
+    root's dependent sits several ranks away would pass unnoticed there. This
+    fixture adds the shape the real registry (D:\\GitHub\\summer-26) exposed:
+    RootB blocks nothing but Leaf, and Leaf sits two ranks away (via
+    RootA -> MidA -> Leaf), so RootB has slack to be pushed off the left
+    edge. network-simplex minimises total edge length and spends that slack
+    -- it places RootB one rank right of RootA, not level with it, even
+    though nothing blocks RootB either. roadmap.js's layout() closes that
+    slack with a pin edge from every root to a shared anchor node, which
+    forces both RootA and RootB to the same rank.
+
+    All four projects use paths = ["."] (the fixture's own root, which always
+    exists) so the registry carries no path-related issues to confound the
+    layout assertion, and each carries a category so the blocked_by-or-
+    category rule adds no issue of its own either.
+    """
+    root = tmp_path_factory.mktemp("layout")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "RootA"\npaths = ["."]\ncategory = "a"\n'
+        "\n"
+        '[[project]]\nname = "MidA"\npaths = ["."]\nblocked_by = ["RootA"]\ncategory = "a"\n'
+        "\n"
+        '[[project]]\nname = "Leaf"\npaths = ["."]\n'
+        'blocked_by = ["MidA", "RootB"]\ncategory = "a"\n'
+        "\n"
+        '[[project]]\nname = "RootB"\npaths = ["."]\ncategory = "a"\n',
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def layout_server(layout_root):
+    app = create_app(layout_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("layout server did not start within 10s")
         time.sleep(0.05)
     yield f"http://127.0.0.1:{port}"
     server.should_exit = True
@@ -312,7 +589,7 @@ def _git(cwd, *args):
 
 
 @pytest.fixture(scope="session")
-def committed_root(tmp_path_factory):
+def committed_root(tmp_path_factory, _isolated_store_session):
     """A registry with one project whose folder has real git history.
 
     sample_root has none at all -- confirmed by reading its own fixture code,
@@ -331,7 +608,9 @@ def committed_root(tmp_path_factory):
     (project / "a.txt").write_text("2", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "second worked commit")
-    (root / "armoire.toml").write_text(
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         '[[project]]\nname = "Worked"\npaths = ["worked"]\n',
         encoding="utf-8",
         newline="",

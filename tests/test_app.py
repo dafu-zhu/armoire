@@ -1,12 +1,22 @@
-import hashlib
 import json
 import sys
+import threading
+import time
 
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from armoire import app as app_module
+from armoire import store
 from armoire.app import create_app
+from armoire.projects import STATUSES
+from conftest import folder_snapshot
+
+# Every /api/status request must carry this, or the guard refuses it. Defined
+# here, not just where the guard tests live, because test_serving_never_
+# writes_to_disk also needs it for the PUT inside its checksum window.
+HEADERS = {"X-Armoire": "1"}
 
 # A minimal but valid notebook: nbformat_minor 5 requires every cell to carry
 # an "id". Deliberately distinct from bad.ipynb (which fails at nbformat.read
@@ -74,6 +84,64 @@ def test_tree_outside_root_is_403(client):
 
 def test_tree_missing_is_404(client):
     assert client.get("/api/tree", params={"path": "nope"}).status_code == 404
+
+
+def test_tree_reports_the_served_root(client, root):
+    body = client.get("/api/tree", params={"path": ""}).json()
+    assert body["root"] == str(root)
+
+
+def test_tree_omits_root_metadata_for_a_non_root_path(client):
+    """root/has_registry are only ever read from the path="" response (see
+    tree.js's initTree and app.js's tree.ready handling) -- nothing
+    downstream refetches them per navigation. has_registry in particular
+    parses the registry, so computing it (and including it) on every
+    subdirectory expansion too would be pure waste for a value nothing there
+    consults."""
+    body = client.get("/api/tree", params={"path": "docs"}).json()
+    assert "root" not in body
+    assert "has_registry" not in body
+
+
+def test_tree_reports_no_registry_when_there_is_none(client):
+    # `root` carries no registry at all -- the state every served folder
+    # starts in, and the one bare_server exercises through the browser.
+    body = client.get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is False
+
+
+def test_tree_reports_has_registry_when_the_registry_declares_a_project(registry_client):
+    body = registry_client.get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is True
+
+
+def test_tree_reports_no_registry_for_a_registry_with_zero_projects(root):
+    """Not `registry_path(root).is_file()`: showRoadmap's own fallback
+    (`data.registry === false || !data.projects.length`) treats a stub
+    registry the same as no file at all, so has_registry must agree -- a
+    double-click that lands on this folder must not claim a roadmap exists
+    and then silently bounce back to the browser."""
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("# valid TOML, no [[project]] entries\n", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is False
+
+
+def test_tree_reports_has_registry_for_a_registry_that_fails_to_parse(root):
+    """A malformed registry is not "no roadmap": /api/projects still renders
+    an error card for it (test_malformed_registry_is_200_with_an_error_field)
+    rather than taking showRoadmap's bounce-back exit, so the double-click
+    gesture must still offer to go there."""
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("[[project]\nname = ", encoding="utf-8")
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/tree", params={"path": ""}).json()
+    assert body["has_registry"] is True
 
 
 def test_index_reports_paths(client):
@@ -200,37 +268,32 @@ def test_index_html_is_served_at_root(client):
 
 
 def test_serving_never_writes_to_disk(root):
-    # Written here rather than into the shared `root` fixture, which has no
-    # registry: adding one there would perturb the ~40 tree and index tests
-    # that count what is in the folder. But without one, the two Phase 2 calls
-    # below get `registry: false` and a 404 -- load_registry never parses,
-    # dashboard never composes, activity never invokes git -- so the only
-    # write-capable surface Phase 2 added would sit outside the checksum
-    # window entirely. "docs" is a real directory in the fixture, so
-    # activity_for and list_dir both do real work against it.
-    (root / "armoire.toml").write_text(
-        '[[project]]\nname = "Docs"\npaths = ["docs"]\n', encoding="utf-8"
+    # Written into the store, not the shared `root` fixture: the registry no
+    # longer lives inside the served folder at all, and writing it there would
+    # also perturb the ~40 tree and index tests that count what is in the
+    # folder. But without one, the two Phase 2 calls below get `registry:
+    # false` and a 404 -- load_registry never parses, dashboard never
+    # composes, activity never invokes git -- so the only write-capable
+    # surface Phase 2 added would sit outside the checksum window entirely.
+    # "docs" is a real directory in the fixture, so recent_commits and list_dir
+    # both do real work against it, via project_detail below.
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "Docs"\npaths = ["docs"]\ncategory = "docs"\n', encoding="utf-8"
     )
-
-    def snapshot():
-        return {
-            p.relative_to(root).as_posix(): (
-                p.stat().st_mtime_ns,
-                hashlib.sha256(p.read_bytes()).hexdigest(),
-            )
-            for p in sorted(root.rglob("*"))
-            if p.is_file()
-        }
 
     # Deliberately does not depend on the `client` fixture: that fixture
     # already calls create_app() and index.wait() before the test body runs,
     # which would put the background index build -- the walk most likely to
     # touch the filesystem -- outside the measured window. Snapshotting
     # first and only then creating the app keeps the whole build inside it.
-    before = snapshot()
+    before = folder_snapshot(root)
     app = create_app(root)
     app.state.index.wait(timeout=10)
-    client = TestClient(app)
+    # base_url so the PUT below clears the Host allowlist -- the default
+    # TestClient host ("testserver") is not a loopback address.
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     client.get("/api/tree", params={"path": ""})
     client.get("/api/index")
@@ -250,7 +313,8 @@ def test_serving_never_writes_to_disk(root):
         client.get("/api/raw", params={"path": name})
     projects = client.get("/api/projects")
     detail = client.get("/api/project/Docs")
-    # The snapshot is only as strong as what ran inside it. Assert both calls
+    status = client.put("/api/status", json={"name": "Docs", "status": "done"}, headers=HEADERS)
+    # The snapshot is only as strong as what ran inside it. Assert every call
     # actually reached their work, so this test cannot quietly go back to
     # checksumming a `registry: false` and a 404 the way it used to.
     assert projects.json()["projects"], projects.json()
@@ -259,7 +323,8 @@ def test_serving_never_writes_to_disk(root):
     # not prove list_dir walked anything. The files are what put the scan
     # inside the window.
     assert detail.json()["files"], detail.json()
-    assert snapshot() == before
+    assert status.status_code == 200, status.text
+    assert folder_snapshot(root) == before
 
 
 REGISTRY = """
@@ -274,12 +339,15 @@ note = "a note"
 [[project]]
 name = "Upstream"
 paths = ["docs"]
+category = "core"
 """
 
 
 @pytest.fixture
 def registry_root(root):
-    (root / "armoire.toml").write_text(REGISTRY, encoding="utf-8")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(REGISTRY, encoding="utf-8")
     return root
 
 
@@ -305,9 +373,13 @@ def test_projects_endpoint_carries_optional_fields(registry_client):
     assert downstream["note"] == "a note"
 
 
-def test_projects_endpoint_includes_activity_so_the_graph_needs_one_call(registry_client):
+def test_projects_endpoint_reports_isolation_and_status_so_the_graph_needs_one_call(
+    registry_client,
+):
     body = registry_client.get("/api/projects").json()
-    assert all("commits" in p and "last" in p for p in body["projects"])
+    assert all(isinstance(p["isolated"], bool) for p in body["projects"])
+    assert all(p["status"] in STATUSES for p in body["projects"])
+    assert all("commits" not in p and "last" not in p for p in body["projects"])
 
 
 def test_no_registry_reports_that_rather_than_erroring(client):
@@ -316,8 +388,30 @@ def test_no_registry_reports_that_rather_than_erroring(client):
     assert body["projects"] == []
 
 
+def test_the_stores_registry_wins_over_a_stale_copy_in_the_served_folder(root):
+    """prepare_store's migration message claims the folder's own copy is
+    ignored once the store already has a registry -- this is what proves it,
+    at the layer that actually serves requests: app.py reads exclusively from
+    store.registry_path(root) and never looks at the served folder's own
+    armoire.toml at all, regardless of what it contains."""
+    (root / "armoire.toml").write_text(
+        '[[project]]\nname = "Folder"\npaths = ["docs"]\ncategory = "x"\n', encoding="utf-8"
+    )
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "Store"\npaths = ["docs"]\ncategory = "x"\n', encoding="utf-8"
+    )
+    app = create_app(root)
+    app.state.index.wait(timeout=10)
+    body = TestClient(app).get("/api/projects").json()
+    assert [p["name"] for p in body["projects"]] == ["Store"]
+
+
 def test_malformed_registry_is_200_with_an_error_field(root):
-    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("[[project]\nname = ", encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/projects")
@@ -330,9 +424,9 @@ def test_a_structurally_wrong_registry_is_200_with_an_error_field(root):
     TOMLDecodeError arm. It used to escape load_registry as an AttributeError
     and 500 with a text/plain body, which app.js then failed to parse as JSON.
     The documented contract is 200 plus the message."""
-    (root / "armoire.toml").write_text(
-        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
-    )
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text('[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/projects")
@@ -342,9 +436,9 @@ def test_a_structurally_wrong_registry_is_200_with_an_error_field(root):
 
 
 def test_project_detail_on_a_structurally_wrong_registry_is_404_not_500(root):
-    (root / "armoire.toml").write_text(
-        '[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8"
-    )
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text('[project]\nname = "A"\npaths = ["docs"]\n', encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/project/A")
@@ -353,12 +447,18 @@ def test_project_detail_on_a_structurally_wrong_registry_is_404_not_500(root):
 
 
 def test_project_detail_on_a_malformed_registry_is_404_carrying_the_parse_error(root):
-    (root / "armoire.toml").write_text("[[project]\nname = ", encoding="utf-8")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text("[[project]\nname = ", encoding="utf-8")
     app = create_app(root)
     app.state.index.wait(timeout=10)
     response = TestClient(app).get("/api/project/Anything")
     assert response.status_code == 404
-    assert "armoire.toml" in response.json()["detail"]
+    # The store path, not the literal string "armoire.toml": that constant no
+    # longer names the file actually read once the registry lives in the
+    # store, and pinning it here would hide a regression back to mislabelling
+    # the error with the wrong filename.
+    assert str(registry_file) in response.json()["detail"]
 
 
 def test_project_detail_reports_what_it_blocks(registry_client):
@@ -401,7 +501,9 @@ def test_a_registry_path_escaping_the_root_yields_no_files(tmp_path):
     (outside / "secret.md").write_bytes(b"# Secret\n")
     served = tmp_path / "a" / "b"
     served.mkdir(parents=True)
-    (served / "armoire.toml").write_text(
+    registry_file = store.registry_path(served)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
         '[[project]]\nname = "Evil"\npaths = ["../../outside"]\n', encoding="utf-8"
     )
     app = create_app(served)
@@ -410,3 +512,252 @@ def test_a_registry_path_escaping_the_root_yields_no_files(tmp_path):
     assert (served / ".." / ".." / "outside" / "secret.md").exists()
     assert response.status_code == 200
     assert response.json()["files"] == []
+
+
+def _client_with_registry(tmp_path):
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    store.registry_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    store.registry_path(tmp_path).write_text(REGISTRY, encoding="utf-8")
+    # base_url, not the TestClient default of "http://testserver": the Host
+    # allowlist in set_status must see a real loopback address, and Starlette
+    # derives both the request's Host header and request.base_url from it.
+    return TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+
+def test_a_status_edit_is_stored(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    assert response.status_code == 200
+    assert store.read_state(store.state_path(tmp_path))["status"]["Downstream"] == "done"
+
+
+def test_the_stored_status_comes_back_from_the_projects_endpoint(tmp_path):
+    client = _client_with_registry(tmp_path)
+    client.put("/api/status", json={"name": "Downstream", "status": "paused"}, headers=HEADERS)
+    rows = {r["name"]: r for r in client.get("/api/projects").json()["projects"]}
+    assert rows["Downstream"]["status"] == "paused"
+
+
+def test_an_unknown_status_is_rejected(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "finished"}, headers=HEADERS
+    )
+    assert response.status_code == 400
+    assert store.read_state(store.state_path(tmp_path)) == {}
+
+
+def test_an_unknown_project_is_rejected(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put("/api/status", json={"name": "Ghost", "status": "done"}, headers=HEADERS)
+    assert response.status_code == 404
+    assert store.read_state(store.state_path(tmp_path)) == {}
+
+
+def test_a_request_without_the_header_is_refused(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put("/api/status", json={"name": "Downstream", "status": "done"})
+    # 127.0.0.1 keeps other machines out; it does not keep other tabs out.
+    assert response.status_code == 403
+    assert store.read_state(store.state_path(tmp_path)) == {}
+
+
+def test_a_request_from_a_foreign_origin_is_refused(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status",
+        json={"name": "Downstream", "status": "done"},
+        headers=HEADERS | {"Origin": "http://evil.example"},
+    )
+    assert response.status_code == 403
+    assert store.read_state(store.state_path(tmp_path)) == {}
+
+
+def test_a_request_from_our_own_origin_is_allowed(tmp_path):
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status",
+        json={"name": "Downstream", "status": "done"},
+        headers=HEADERS | {"Origin": "http://127.0.0.1"},
+    )
+    assert response.status_code == 200
+
+
+def test_a_rebound_host_is_refused_even_when_origin_matches_it(tmp_path):
+    """DNS rebinding: request.base_url is derived from this same request's own
+    Host header, so an attacker whose hostname resolves to 127.0.0.1 can send
+    Origin equal to that same hostname and "Origin == base_url" holds
+    tautologically -- the same-origin check alone would let it through. The
+    Host header itself must name a real loopback address."""
+    client = _client_with_registry(tmp_path)
+    response = client.put(
+        "/api/status",
+        json={"name": "Downstream", "status": "done"},
+        headers=HEADERS | {"Host": "evil.example", "Origin": "http://evil.example"},
+    )
+    assert response.status_code == 403
+    assert store.read_state(store.state_path(tmp_path)) == {}
+
+
+def test_the_host_allowlist_covers_all_loopback_forms_and_refuses_a_foreign_one(tmp_path):
+    """127.0.0.1 and localhost are what armoire's own frontend sends; [::1]:8420
+    is the bracketed IPv6 loopback literal a real client sends on the wire.
+    request.url.hostname unwraps the brackets before the allowlist ever sees
+    it, so this exercises the header form a client actually transmits, not
+    just the value the parser produces from it."""
+    client = _client_with_registry(tmp_path)
+    for host, accepted in [
+        ("127.0.0.1", True),
+        ("localhost", True),
+        ("[::1]:8420", True),
+        ("evil.example", False),
+    ]:
+        response = client.put(
+            "/api/status",
+            json={"name": "Downstream", "status": "done"},
+            headers=HEADERS | {"Host": host},
+        )
+        assert (response.status_code == 200) is accepted, (host, response.status_code)
+
+
+def test_the_testclients_default_host_is_refused(tmp_path):
+    """Starlette's TestClient defaults to Host: testserver when no base_url is
+    given -- the same foreign-host case as above, through the client's own
+    default rather than an explicit override."""
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    store.registry_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    store.registry_path(tmp_path).write_text(REGISTRY, encoding="utf-8")
+    response = TestClient(create_app(tmp_path)).put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    assert response.status_code == 403
+
+
+def test_a_store_inside_the_served_folder_refuses_the_status_write(tmp_path, monkeypatch):
+    """Endpoint-level analogue of store.writes_inside's own unit tests and
+    cli.prepare_store's refusal. The weaker question -- does config_root()
+    sit inside root -- would miss this: it is False here, because root is a
+    *descendant* of config_root(), the other way around, so a regression back
+    to that predicate would let the write through and land state.json inside
+    the served tree, exactly the hole Task 3's review found for the registry
+    write."""
+    config_root = tmp_path / "store"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    registry_file = store.registry_path(served)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(REGISTRY, encoding="utf-8")
+
+    client = TestClient(create_app(served), base_url="http://127.0.0.1")
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    assert response.status_code == 403
+    assert not store.state_path(served).exists()
+
+
+def test_a_status_edit_preserves_other_stored_data(tmp_path):
+    """ "kept, not pruned": an existing status for a project this request does
+    not name -- renamed away, or never in the registry to begin with -- must
+    survive, and so must any sibling top-level key store.read_state returns
+    that this endpoint has no business touching (a future "layout" key, most
+    likely)."""
+    client = _client_with_registry(tmp_path)
+    store.write_state(
+        store.state_path(tmp_path), {"status": {"Ghost": "done"}, "layout": {"Downstream": [1, 2]}}
+    )
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "paused"}, headers=HEADERS
+    )
+    assert response.status_code == 200
+    state = store.read_state(store.state_path(tmp_path))
+    assert state["status"] == {"Ghost": "done", "Downstream": "paused"}
+    assert state["layout"] == {"Downstream": [1, 2]}
+
+
+def test_two_concurrent_status_writes_both_survive(tmp_path, monkeypatch):
+    """state.json is rewritten whole, so the read-merge-write in set_status is
+    a critical section: two threads that both read before either writes each
+    produce a document carrying only their own edit, and whichever renames
+    last silently drops the other's.
+
+    FastAPI runs `def` handlers in a threadpool, so two PUTs arriving
+    together really are two parallel threads. The frontend's write queue does
+    not close this -- it is keyed per project (status.js), by design, so two
+    chips clicked in quick succession, or two tabs on one folder, overlap
+    exactly this way.
+
+    The two hooks are what make the race deterministic rather than lucky:
+
+    - the barrier in load_registry (the last step before the critical
+      section, and outside it, so the lock cannot deadlock against it) holds
+      each request until the other has arrived. It also keeps this test
+      honest -- if the harness ran the two PUTs one after the other, the
+      barrier would time out and this would fail loudly instead of passing
+      without ever testing anything.
+    - the sleep inside read_state widens the window between the read and the
+      write, so an unguarded pair of handlers reliably both read the same
+      state.
+    """
+    client = _client_with_registry(tmp_path)
+    both_in_flight = threading.Barrier(2)
+    real_load_registry = app_module.load_registry
+    real_read_state = store.read_state
+
+    def load_registry(root, registry_file=None):
+        registry = real_load_registry(root, registry_file)
+        both_in_flight.wait(timeout=15)
+        return registry
+
+    def read_state(state_file):
+        state = real_read_state(state_file)
+        time.sleep(0.1)
+        return state
+
+    monkeypatch.setattr(app_module, "load_registry", load_registry)
+    monkeypatch.setattr(store, "read_state", read_state)
+
+    responses = {}
+
+    def put(name, status):
+        responses[name] = client.put(
+            "/api/status", json={"name": name, "status": status}, headers=HEADERS
+        )
+
+    writers = [
+        threading.Thread(target=put, args=("Downstream", "done")),
+        threading.Thread(target=put, args=("Upstream", "paused")),
+    ]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(timeout=20)
+
+    assert sorted(responses) == ["Downstream", "Upstream"], responses
+    for name, response in responses.items():
+        assert response.status_code == 200, (name, response.status_code, response.text)
+    monkeypatch.undo()
+    assert store.read_state(store.state_path(tmp_path))["status"] == {
+        "Downstream": "done",
+        "Upstream": "paused",
+    }
+
+
+def test_a_status_edit_does_not_write_to_the_served_folder(tmp_path):
+    client = _client_with_registry(tmp_path)
+    # A real file, not just the empty "docs" directory _client_with_registry
+    # creates: folder_snapshot({}) == folder_snapshot({}) can only ever prove
+    # a file was not *created*, never that one already there was left alone.
+    (tmp_path / "docs" / "readme.md").write_text("hello\n", encoding="utf-8")
+    before = folder_snapshot(tmp_path)
+    response = client.put(
+        "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
+    )
+    # The snapshot equality is only as strong as what happened before it was
+    # taken again: assert the edit actually went through, so this test cannot
+    # quietly pass on a rejected write it never noticed.
+    assert response.status_code == 200, response.text
+    assert folder_snapshot(tmp_path) == before
