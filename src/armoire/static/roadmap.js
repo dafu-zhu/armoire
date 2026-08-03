@@ -10,6 +10,11 @@ const NODE_PAD_X = 12;
 const TITLE_Y = 24;
 const LINE_H = 15;
 const NODE_MIN_H = 40;
+// The width reserved on the title row for the status chip, so the warning
+// marker can sit beside it rather than under it. The chip is 12px and
+// end-anchored at NODE_W - NODE_PAD_X; 18 leaves the widest glyph (the filled
+// and half-filled circles) clear of the marker with a few pixels to spare.
+const CHIP_SLOT = 18;
 
 // SVG <text> does not wrap. Measure in the live SVG rather than guessing from
 // character counts: font metrics are not knowable ahead of time, and the
@@ -312,9 +317,27 @@ export function renderRoadmap(canvas, data, onOpen, signal) {
       group.append(sub);
     }
 
+    // The marker keeps its place on a `done` node, and it sits on the title
+    // row -- beside the chip, not under it -- on every node regardless of
+    // height.
+    //
+    // At the bottom-right corner (`y: height - 10`) it collided with the chip
+    // the moment a node collapsed: a `done` project's height is NODE_MIN_H,
+    // 40, which puts the marker at y=30 against the chip's y=24, at the same
+    // x, with the same end anchor, at 14px and 12px. That is not an unlikely
+    // combination -- a project acquires a "path does not exist" issue exactly
+    // when it is finished and its folder is archived.
+    //
+    // Hiding it on a `done` node (which is what the spec first said) would
+    // have removed the collision by removing the only place an issue's text
+    // is readable: the count in the status strip names no project, and this
+    // marker's <title> is what carries the message. The collapse exists to
+    // stop finished work consuming canvas *height*, and the marker costs
+    // none -- it shares the title row either way. See the spec's "What `done`
+    // changes".
     if (flagged.has(project.name)) {
       const warn = svgEl('text', {
-        x: NODE_W - 12, y: height - 10, class: 'node-warn', 'text-anchor': 'end',
+        x: NODE_W - NODE_PAD_X - CHIP_SLOT, y: TITLE_Y, class: 'node-warn', 'text-anchor': 'end',
       });
       warn.textContent = '!';
       const reason = svgEl('title');

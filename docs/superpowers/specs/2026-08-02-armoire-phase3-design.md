@@ -226,9 +226,24 @@ truncated file where a valid one was.
 ### What `done` changes
 
 A `done` project **collapses** to a single title line: name, struck through,
-plus its chip. Its note, due date and warning marker are hidden. The node is
-dimmed. Collapsing feeds a smaller height into dagre, so the layout reflows and
+plus its chip. Its note and due date are hidden. The node is dimmed.
+Collapsing feeds a smaller height into dagre, so the layout reflows and
 finished work stops consuming canvas.
+
+**The warning marker is not hidden.** This paragraph originally listed it
+alongside the note and the due date, and that was wrong on both counts.
+Hiding it buys nothing the collapse is for: the collapse exists to stop
+finished work consuming canvas *height*, and the marker shares the title row
+with the chip at any height, so suppressing it reclaims no space. And it
+costs the only readable account of a registry problem — "Removing the
+activity rail" below makes the node's `!`, with the full text in its `title`,
+the one place an issue is legible, with the status strip carrying nothing but
+a count that names no project. A `done` project is also the likeliest to have
+one: a path stops existing exactly when the work finishes and the folder is
+archived. The marker therefore moves off the node's bottom-right corner and
+onto the title row, immediately left of the chip, on every node — at
+`NODE_MIN_H` the corner placement sat directly under the chip, same `x`, same
+anchor, and the two glyphs overlapped.
 
 A `done` project's **outgoing edges** render dashed and dimmed.
 

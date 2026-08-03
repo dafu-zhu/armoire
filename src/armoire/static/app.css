@@ -284,7 +284,9 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
    marker are themselves <text> elements inside the same .node, so an
    unqualified `.node.status-done text` struck through the chip's own glyph
    (e.g. a done project's ✓ rendered with a line through it) along with
-   everything it was meant for. */
+   everything it was meant for. The warn marker is named here because a done
+   node keeps it -- the collapse hides the note and the due date, which cost
+   height, and not the marker, which shares the title row (roadmap.js). */
 .node.status-done text:not(.status-chip):not(.node-warn) { text-decoration: line-through; }
 /* Distinct from every category fill, including cat-5's --subtle -- see the
    --blocked-fill definition at the top of this file for why. */

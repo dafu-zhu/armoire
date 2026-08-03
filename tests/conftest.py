@@ -281,7 +281,17 @@ def sample_root(tmp_path_factory, _isolated_store_session):
     registry_file.write_text(
         "[[project]]\n"
         'name = "Downstream"\n'
-        'paths = ["notes"]\n'
+        # "notes/archived" does not exist, which makes a registry issue
+        # ("path ... does not exist") attributable to Downstream. Every other
+        # issue this fixture carries belongs to Backlog, which is isolated and
+        # therefore has no graph node -- so before this, no node in sample_root
+        # ever rendered a `.node-warn` and nothing here could check what
+        # happens to that marker when the node collapses. It is also the issue
+        # a real registry acquires most often: a path stops existing when the
+        # work finishes and its folder is archived. list_dir raises
+        # FileNotFoundError for it and dashboard.project_detail skips it, so
+        # the detail view's file list is unchanged.
+        'paths = ["notes", "notes/archived"]\n'
         'blocked_by = ["Upstream"]\n'
         'category = "research"\n'
         "due = 2026-08-17\n"

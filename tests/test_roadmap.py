@@ -854,6 +854,20 @@ def test_a_done_projects_node_collapses_on_reload(live_server, page, reset_downs
     assert height == 40, height
     assert node.locator(".node-due").count() == 0
     assert node.locator(".node-sub").count() == 0
+    # The marker is not part of the collapse: it costs no height (it shares
+    # the title row with the chip) and it is the only place an issue's text
+    # is readable, so hiding it would leave the status strip counting a
+    # problem the page shows nowhere. See the spec's "What `done` changes".
+    warn = node.locator(".node-warn")
+    assert warn.count() == 1, "Downstream's registry issue lost its marker on collapse"
+    assert "does not exist" in warn.locator("title").text_content()
+    # And it must not land on top of the chip. At the old bottom-right
+    # placement a collapsed node put the marker at y=30 against the chip's
+    # y=24, at the same x with the same end anchor, so the two glyphs
+    # overlapped -- invisible to every count-based assertion.
+    warn_box = warn.bounding_box()
+    chip_box = node.locator(".status-chip").bounding_box()
+    assert warn_box["x"] + warn_box["width"] <= chip_box["x"] + 0.5, (warn_box, chip_box)
 
 
 def test_a_failed_status_write_reverts_the_chip_and_its_dependents(
