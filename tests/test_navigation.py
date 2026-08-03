@@ -292,7 +292,39 @@ def test_double_clicking_the_root_crumb_returns_to_the_roadmap(live_server, page
 
 
 def test_a_folder_with_no_registry_says_the_gesture_is_inert(bare_server, page):
+    """Checks the promise (the title) and the behaviour it describes (a
+    double click actually does nothing) together: the two currently derive
+    from the same `hasRegistry` value and cannot drift, but a regression that
+    broke only the dblclick guard while leaving the tooltip ternary intact
+    would still pass a title-only check."""
     page.goto(f"{bare_server}/#/browse/")
     page.wait_for_selector("#breadcrumb [data-root]")
     crumb = page.locator("#breadcrumb [data-root]")
     assert "no roadmap" in (crumb.get_attribute("title") or "").lower()
+    crumb.dblclick()
+    # Nothing to wait_for_selector on for "stayed put" -- give the click
+    # half's deferred timer (see the leak-guard test below) a window to have
+    # fired wrongly before checking nothing moved.
+    page.wait_for_timeout(400)
+    assert page.evaluate("location.hash") == "#/browse/"
+    assert page.locator("#roadmap").is_hidden()
+
+
+def test_a_pending_single_click_does_not_leak_into_a_later_roadmap_visit(live_server, page):
+    """A click on the root crumb defers its own navigation by
+    ROOT_CLICK_DELAY (app.js) so a following dblclick can still cancel it.
+    If the roadmap is reached by some route *other* than that dblclick before
+    the timer fires -- browser Back onto a prior roadmap entry, for instance
+    -- the stale timer must not survive to fire later and drag the user back
+    off the page they just reached."""
+    page.goto(f"{live_server}/#/browse/notes")
+    page.wait_for_selector("#breadcrumb [data-root]")
+    page.locator("#breadcrumb [data-root]").click()
+    # Reach the roadmap by a route other than the crumb's own dblclick,
+    # before the deferred single-click timer (250ms) would fire.
+    page.evaluate("() => { window.location.hash = '/'; }")
+    page.wait_for_selector(".node")
+    # Give the stale timer, if any survived, a window to fire wrongly.
+    page.wait_for_timeout(400)
+    assert page.evaluate("location.hash") == "#/"
+    assert page.locator("#roadmap").is_visible()

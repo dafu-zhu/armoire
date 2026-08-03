@@ -88,6 +88,18 @@ def test_tree_reports_the_served_root(client, root):
     assert body["root"] == str(root)
 
 
+def test_tree_omits_root_metadata_for_a_non_root_path(client):
+    """root/has_registry are only ever read from the path="" response (see
+    tree.js's initTree and app.js's tree.ready handling) -- nothing
+    downstream refetches them per navigation. has_registry in particular
+    parses the registry, so computing it (and including it) on every
+    subdirectory expansion too would be pure waste for a value nothing there
+    consults."""
+    body = client.get("/api/tree", params={"path": "docs"}).json()
+    assert "root" not in body
+    assert "has_registry" not in body
+
+
 def test_tree_reports_no_registry_when_there_is_none(client):
     # `root` carries no registry at all -- the state every served folder
     # starts in, and the one bare_server exercises through the browser.

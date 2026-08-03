@@ -81,20 +81,18 @@ export function navigateProject(name) {
 
 function renderBreadcrumb(path) {
   breadcrumb.replaceChildren();
-  // A render in flight replaces this crumb's element outright below, so any
-  // single-click navigation still pending from it must be cancelled here --
-  // otherwise it fires later, against whatever route the user has since
-  // moved to, and silently drags them back to the root listing.
-  if (rootClickTimer) {
-    window.clearTimeout(rootClickTimer);
-    rootClickTimer = null;
-  }
+  // Any single-click navigation still pending from a previous crumb is
+  // already cancelled by showRoute (see its own comment) before this ever
+  // runs -- rootClickTimer is guaranteed null here.
   const rootLink = document.createElement('a');
   rootLink.href = `#/${BROWSE}/`;
   rootLink.setAttribute('data-root', '');
   rootLink.textContent = rootLabel || 'armoire';
   rootLink.title = hasRegistry
-    ? 'Click for the root listing, double-click for the roadmap'
+    ? // "the roadmap" undersells it: a registry that exists but fails to
+      // parse also reports hasRegistry true (see dashboard.has_roadmap),
+      // and double-clicking there lands on that parse error, not a graph.
+      'Click for the root listing, double-click for the roadmap (or its error, if the registry does not parse)'
     : 'Click for the root listing. This folder has no roadmap.';
   // One crumb, not a trail: "D:" and "GitHub" name places outside the served
   // root that armoire cannot show, so they must not look clickable.
@@ -239,6 +237,17 @@ function hideRoadmap() {
 }
 
 async function showRoute(route) {
+  // A pending single-click navigation belongs to whatever crumb armed it.
+  // Clearing it only inside renderBreadcrumb misses the 'home' route below,
+  // which never calls renderBreadcrumb at all: reaching the roadmap by any
+  // means other than the crumb's own dblclick (browser Back onto a prior
+  // roadmap entry, for instance) would otherwise leave the timer alive to
+  // fire later and silently pull the user back off the page they just
+  // reached. Every route change cancels it, unconditionally.
+  if (rootClickTimer) {
+    window.clearTimeout(rootClickTimer);
+    rootClickTimer = null;
+  }
   if (route.kind === 'home') {
     try {
       await showRoadmap();
