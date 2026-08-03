@@ -595,5 +595,3 @@ def _git(cwd, *args):
             "GIT_CONFIG_SYSTEM": os.devnull,
         },
     )
-
-

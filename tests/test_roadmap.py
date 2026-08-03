@@ -615,9 +615,7 @@ def test_status_chips_render_four_distinct_colours(live_server, page):
             "s => document.querySelector('.node').setAttribute('class', 'node cat-0 status-' + s)",
             status,
         )
-        seen.add(
-            page.locator(".node .status-chip").first.evaluate("c => getComputedStyle(c).fill")
-        )
+        seen.add(page.locator(".node .status-chip").first.evaluate("c => getComputedStyle(c).fill"))
     assert len(seen) == 4, seen
 
 
