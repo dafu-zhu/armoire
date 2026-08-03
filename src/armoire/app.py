@@ -2,6 +2,7 @@
 
 import logging
 import mimetypes
+import threading
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import quote
@@ -24,6 +25,20 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Serialises the read-merge-write in set_status. Module level, not per app:
+# the state file is keyed by the served folder, and two apps created for the
+# same folder in one process (the test suite does exactly this) write the same
+# file. FastAPI runs `def` handlers in a threadpool, so two PUTs arriving
+# together really do run in parallel threads -- without this they both read
+# the same state, each merges only its own project into it, and whichever
+# writes last silently drops the other's edit. Held across the read and the
+# write, since that whole span is the critical section; a lock around the
+# write alone would still lose the update.
+#
+# "Writes are last-write-wins" (the spec) is a statement about two edits to
+# the *same* project, not permission to lose an edit to a different one.
+_state_lock = threading.Lock()
+
 
 def _resolve(root: Path, path: str) -> Path:
     try:
@@ -34,13 +49,22 @@ def _resolve(root: Path, path: str) -> Path:
 
 def create_app(root: Path) -> FastAPI:
     root = root.resolve()
-    # Resolved once, here, rather than inside each handler: store.registry_path
-    # calls store.config_root(), which reads an environment variable that a
-    # long-lived server must not have to keep re-reading correctly for the
-    # rest of the process's life. Freezing it at creation time is also what
-    # makes the store's location a creation-time concern rather than a
-    # per-request one.
-    registry_file = store.registry_path(root)
+    # The store's location is a creation-time concern, and this is the one
+    # place it is decided. store.folder_dir() calls store.config_root(),
+    # which reads an environment variable; a long-lived server must not have
+    # to keep re-reading it correctly for the rest of the process's life.
+    #
+    # Everything downstream is derived from this one resolved directory --
+    # the registry read, the state read, the state write, and the refusal
+    # that guards the write (store.writes_inside asks its question about
+    # exactly this directory). No handler re-enters config_root(). Half of
+    # this used to be frozen and half resolved per request, which made
+    # test isolation depend on patching config_root() *before* create_app and
+    # would have half-applied, silently, if written the other way round.
+    store_dir = store.folder_dir(root)
+    registry_file = store_dir / store.REGISTRY_FILE
+    state_file = store_dir / store.STATE_FILE
+    writes_into_root = store.writes_inside(root)
     app = FastAPI(title="armoire", docs_url=None, redoc_url=None)
 
     index = PathIndex(root)
@@ -159,7 +183,7 @@ def create_app(root: Path) -> FastAPI:
             return envelope | {"registry": False}
 
         return envelope | {
-            "projects": dashboard.project_rows(root, registry),
+            "projects": dashboard.project_rows(registry, state_file),
             "issues": registry.issues,
         }
 
@@ -176,7 +200,7 @@ def create_app(root: Path) -> FastAPI:
         if registry is None:
             raise HTTPException(status_code=404, detail="no registry")
 
-        detail = dashboard.project_detail(root, registry, name)
+        detail = dashboard.project_detail(root, registry, name, state_file)
         if detail is None:
             raise HTTPException(status_code=404, detail="no such project")
         return detail
@@ -217,15 +241,15 @@ def create_app(root: Path) -> FastAPI:
         origin = request.headers.get("Origin")
         if origin is not None and origin != str(request.base_url).rstrip("/"):
             raise HTTPException(status_code=403, detail="foreign origin")
-        # writes_inside, not store_is_inside: the question here is whether the
-        # file this handler is about to write -- store.state_path(root), under
-        # folder_dir(root) -- lands inside the served folder, not whether
-        # config_root() as a whole does. Serving a descendant of config_root()
-        # (config_root() itself, or its own "folders" tree) puts folder_dir(root)
-        # inside root even though config_root() is not inside root -- the other
-        # way around -- so store_is_inside would miss it and this handler would
-        # write into the tree it is serving.
-        if store.writes_inside(root):
+        # Decided at creation time, with the paths it protects, rather than
+        # re-asked here: state_file is fixed for this app's lifetime, so
+        # whether writing it lands inside the served folder is fixed too.
+        # The question is about that write target and not about config_root()
+        # as a whole -- serving a descendant of config_root() (config_root()
+        # itself, or its own "folders" tree) puts the store directory inside
+        # root even though config_root() is not inside root, the other way
+        # around, and this handler would write into the tree it is serving.
+        if writes_into_root:
             raise HTTPException(
                 status_code=403, detail="the armoire store is inside the served folder"
             )
@@ -242,13 +266,17 @@ def create_app(root: Path) -> FastAPI:
         if registry is None or not any(p.name == name for p in registry.projects):
             raise HTTPException(status_code=404, detail="no such project")
 
-        state = store.read_state(root)
-        # An entry naming a project the registry no longer has is kept, not
-        # pruned: renaming a project and renaming it back should not lose its
-        # status.
-        statuses = state.get("status")
-        state["status"] = (statuses if isinstance(statuses, dict) else {}) | {name: status}
-        store.write_state(root, state)
+        # Read, merge and write under one lock: state.json is rewritten
+        # whole, so two threads that read it before either writes each
+        # produce a document missing the other's edit. See _state_lock.
+        with _state_lock:
+            state = store.read_state(state_file)
+            # An entry naming a project the registry no longer has is kept, not
+            # pruned: renaming a project and renaming it back should not lose its
+            # status.
+            statuses = state.get("status")
+            state["status"] = (statuses if isinstance(statuses, dict) else {}) | {name: status}
+            store.write_state(state_file, state)
         return {"name": name, "status": status}
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

@@ -1,10 +1,13 @@
 import json
 import sys
+import threading
+import time
 
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from armoire import app as app_module
 from armoire import store
 from armoire.app import create_app
 from armoire.projects import STATUSES
@@ -527,7 +530,7 @@ def test_a_status_edit_is_stored(tmp_path):
         "/api/status", json={"name": "Downstream", "status": "done"}, headers=HEADERS
     )
     assert response.status_code == 200
-    assert store.read_state(tmp_path)["status"]["Downstream"] == "done"
+    assert store.read_state(store.state_path(tmp_path))["status"]["Downstream"] == "done"
 
 
 def test_the_stored_status_comes_back_from_the_projects_endpoint(tmp_path):
@@ -543,14 +546,14 @@ def test_an_unknown_status_is_rejected(tmp_path):
         "/api/status", json={"name": "Downstream", "status": "finished"}, headers=HEADERS
     )
     assert response.status_code == 400
-    assert store.read_state(tmp_path) == {}
+    assert store.read_state(store.state_path(tmp_path)) == {}
 
 
 def test_an_unknown_project_is_rejected(tmp_path):
     client = _client_with_registry(tmp_path)
     response = client.put("/api/status", json={"name": "Ghost", "status": "done"}, headers=HEADERS)
     assert response.status_code == 404
-    assert store.read_state(tmp_path) == {}
+    assert store.read_state(store.state_path(tmp_path)) == {}
 
 
 def test_a_request_without_the_header_is_refused(tmp_path):
@@ -558,7 +561,7 @@ def test_a_request_without_the_header_is_refused(tmp_path):
     response = client.put("/api/status", json={"name": "Downstream", "status": "done"})
     # 127.0.0.1 keeps other machines out; it does not keep other tabs out.
     assert response.status_code == 403
-    assert store.read_state(tmp_path) == {}
+    assert store.read_state(store.state_path(tmp_path)) == {}
 
 
 def test_a_request_from_a_foreign_origin_is_refused(tmp_path):
@@ -569,7 +572,7 @@ def test_a_request_from_a_foreign_origin_is_refused(tmp_path):
         headers=HEADERS | {"Origin": "http://evil.example"},
     )
     assert response.status_code == 403
-    assert store.read_state(tmp_path) == {}
+    assert store.read_state(store.state_path(tmp_path)) == {}
 
 
 def test_a_request_from_our_own_origin_is_allowed(tmp_path):
@@ -595,7 +598,7 @@ def test_a_rebound_host_is_refused_even_when_origin_matches_it(tmp_path):
         headers=HEADERS | {"Host": "evil.example", "Origin": "http://evil.example"},
     )
     assert response.status_code == 403
-    assert store.read_state(tmp_path) == {}
+    assert store.read_state(store.state_path(tmp_path)) == {}
 
 
 def test_the_host_allowlist_covers_all_loopback_forms_and_refuses_a_foreign_one(tmp_path):
@@ -634,12 +637,12 @@ def test_the_testclients_default_host_is_refused(tmp_path):
 
 def test_a_store_inside_the_served_folder_refuses_the_status_write(tmp_path, monkeypatch):
     """Endpoint-level analogue of store.writes_inside's own unit tests and
-    cli.prepare_store's refusal. store_is_inside(root) would miss this: it
-    only asks whether config_root() sits inside root, which is False here --
-    root is a *descendant* of config_root(), the other way around -- so a
-    regression back to that predicate would let the write through and land
-    state.json inside the served tree, exactly the hole Task 3's review
-    found for the registry write."""
+    cli.prepare_store's refusal. The weaker question -- does config_root()
+    sit inside root -- would miss this: it is False here, because root is a
+    *descendant* of config_root(), the other way around, so a regression back
+    to that predicate would let the write through and land state.json inside
+    the served tree, exactly the hole Task 3's review found for the registry
+    write."""
     config_root = tmp_path / "store"
     monkeypatch.setattr(store, "config_root", lambda: config_root)
     served = config_root / "folders"
@@ -663,14 +666,84 @@ def test_a_status_edit_preserves_other_stored_data(tmp_path):
     that this endpoint has no business touching (a future "layout" key, most
     likely)."""
     client = _client_with_registry(tmp_path)
-    store.write_state(tmp_path, {"status": {"Ghost": "done"}, "layout": {"Downstream": [1, 2]}})
+    store.write_state(
+        store.state_path(tmp_path), {"status": {"Ghost": "done"}, "layout": {"Downstream": [1, 2]}}
+    )
     response = client.put(
         "/api/status", json={"name": "Downstream", "status": "paused"}, headers=HEADERS
     )
     assert response.status_code == 200
-    state = store.read_state(tmp_path)
+    state = store.read_state(store.state_path(tmp_path))
     assert state["status"] == {"Ghost": "done", "Downstream": "paused"}
     assert state["layout"] == {"Downstream": [1, 2]}
+
+
+def test_two_concurrent_status_writes_both_survive(tmp_path, monkeypatch):
+    """state.json is rewritten whole, so the read-merge-write in set_status is
+    a critical section: two threads that both read before either writes each
+    produce a document carrying only their own edit, and whichever renames
+    last silently drops the other's.
+
+    FastAPI runs `def` handlers in a threadpool, so two PUTs arriving
+    together really are two parallel threads. The frontend's write queue does
+    not close this -- it is keyed per project (status.js), by design, so two
+    chips clicked in quick succession, or two tabs on one folder, overlap
+    exactly this way.
+
+    The two hooks are what make the race deterministic rather than lucky:
+
+    - the barrier in load_registry (the last step before the critical
+      section, and outside it, so the lock cannot deadlock against it) holds
+      each request until the other has arrived. It also keeps this test
+      honest -- if the harness ran the two PUTs one after the other, the
+      barrier would time out and this would fail loudly instead of passing
+      without ever testing anything.
+    - the sleep inside read_state widens the window between the read and the
+      write, so an unguarded pair of handlers reliably both read the same
+      state.
+    """
+    client = _client_with_registry(tmp_path)
+    both_in_flight = threading.Barrier(2)
+    real_load_registry = app_module.load_registry
+    real_read_state = store.read_state
+
+    def load_registry(root, registry_file=None):
+        registry = real_load_registry(root, registry_file)
+        both_in_flight.wait(timeout=15)
+        return registry
+
+    def read_state(state_file):
+        state = real_read_state(state_file)
+        time.sleep(0.1)
+        return state
+
+    monkeypatch.setattr(app_module, "load_registry", load_registry)
+    monkeypatch.setattr(store, "read_state", read_state)
+
+    responses = {}
+
+    def put(name, status):
+        responses[name] = client.put(
+            "/api/status", json={"name": name, "status": status}, headers=HEADERS
+        )
+
+    writers = [
+        threading.Thread(target=put, args=("Downstream", "done")),
+        threading.Thread(target=put, args=("Upstream", "paused")),
+    ]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(timeout=20)
+
+    assert sorted(responses) == ["Downstream", "Upstream"], responses
+    for name, response in responses.items():
+        assert response.status_code == 200, (name, response.status_code, response.text)
+    monkeypatch.undo()
+    assert store.read_state(store.state_path(tmp_path))["status"] == {
+        "Downstream": "done",
+        "Upstream": "paused",
+    }
 
 
 def test_a_status_edit_does_not_write_to_the_served_folder(tmp_path):

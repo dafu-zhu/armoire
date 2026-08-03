@@ -35,9 +35,9 @@ def prepare_store(folder: Path) -> list[str]:
     directory, %APPDATA% itself, or (per review) a folder inside the store's
     own "folders" tree. In that case armoire serves read-only and says so,
     rather than quietly breaking the one guarantee it makes. writes_inside
-    asks exactly that question -- store_is_inside only asks whether
-    config_root() sits inside folder, which misses the case where folder is a
-    descendant of config_root() instead.
+    asks exactly that question, about the write target rather than about
+    config_root() as a whole; see its docstring for why the weaker question
+    misses the descendant case.
     """
     if store.writes_inside(folder):
         return [
@@ -90,7 +90,11 @@ def main() -> None:
 )
 @click.option("--port", default=DEFAULT_PORT, show_default=True, help="Port to listen on.")
 def serve(folder: Path, port: int) -> None:
-    """Browse FOLDER at http://127.0.0.1:PORT. Never writes to disk."""
+    """Browse FOLDER at http://127.0.0.1:PORT. Never writes to FOLDER.
+
+    armoire's registry and project statuses live in its own per-user store,
+    outside the served folder, and that store is the only thing it writes.
+    """
     root = folder.resolve()
     click.echo(f"armoire serving {root}")
     click.echo(f"  http://127.0.0.1:{port}")

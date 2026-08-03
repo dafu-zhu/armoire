@@ -141,11 +141,11 @@ def test_the_refusal_leaves_the_served_folder_untouched(tmp_path, monkeypatch):
 
 
 def test_a_folder_inside_the_stores_own_tree_refuses_to_write(tmp_path, monkeypatch):
-    """store_is_inside asks whether config_root() sits inside the served
-    folder -- true only when the served folder is an *ancestor* of the store.
+    """The weaker question -- does config_root() sit inside the served folder
+    -- is true only when the served folder is an *ancestor* of the store.
     Serving config_root()'s own "folders" directory is the opposite relation
-    (the served folder is a *descendant* of the store), and store_is_inside
-    says False there: config_root() is not inside a folder that is itself
+    (the served folder is a *descendant* of the store), and that question
+    answers False there: config_root() is not inside a folder that is itself
     inside config_root(). prepare_store must still refuse, because
     registry_path(served) -- folder_dir(served)/"registry.toml", keyed off
     served's own hash -- lands inside `served` regardless of which direction
