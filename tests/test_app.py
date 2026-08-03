@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import threading
 import time
@@ -147,6 +148,50 @@ def test_tree_reports_has_registry_for_a_registry_that_fails_to_parse(root):
 def test_index_reports_paths(client):
     body = client.get("/api/index").json()
     assert "docs/readme.md" in body["paths"]
+
+
+def test_the_page_points_at_an_icon_it_actually_serves(client):
+    """Reads the href out of the page and fetches that, rather than asserting
+    a filename twice: a <link rel="icon"> naming a file that is not there
+    fails silently -- the tab falls back to the browser default and nothing
+    anywhere reports a 404 the user would see."""
+    html = client.get("/").text
+    href = re.search(r'<link rel="icon" href="([^"]+)"', html)
+    assert href, "index.html declares no icon"
+    icon = client.get(href.group(1))
+    assert icon.status_code == 200
+    # Any image type: which one the artwork happens to be is a matter of
+    # taste and gets swapped, and a test that pinned the format would have to
+    # be edited every time the picture changed without ever having caught
+    # anything the status code above did not.
+    assert icon.headers["content-type"].startswith("image/")
+
+
+def test_exists_names_only_the_paths_that_are_missing(client):
+    body = client.get(
+        "/api/exists", params={"path": ["code.py", "docs", "gone.md", "docs/gone.md"]}
+    ).json()
+    assert body["missing"] == ["gone.md", "docs/gone.md"]
+
+
+def test_exists_counts_a_directory_as_present(client):
+    """A relative markdown link to a folder is a link armoire can open (the
+    listing), so `exists`, not `is_file`, is the question this endpoint asks."""
+    assert client.get("/api/exists", params={"path": ["docs"]}).json()["missing"] == []
+
+
+def test_exists_calls_a_path_outside_the_root_missing_rather_than_403(client):
+    """Every other endpoint refuses these with a 403, which is right for a
+    request the client meant to make. This one is a batch question about
+    links the *document author* wrote, and one traversing link must not fail
+    the whole batch -- unreachable and non-existent are the same answer here,
+    since both make the link inert."""
+    body = client.get("/api/exists", params={"path": ["../secret", "code.py"]}).json()
+    assert body["missing"] == ["../secret"]
+
+
+def test_exists_with_no_paths_is_an_empty_answer(client):
+    assert client.get("/api/exists").json()["missing"] == []
 
 
 def test_preview_markdown(client):

@@ -26,7 +26,10 @@ from armoire.paths import PathOutsideRoot, resolve_in_root
 # the module docstring.
 REGISTRY_NAME = "armoire.toml"
 STATUSES = ("not-started", "active", "paused", "done")
-DEFAULT_STATUS = "active"
+# A project's status walks not-started -> active -> paused -> done; a project
+# with no `status` field at all has not been picked up yet, which is the
+# first of those, not the second.
+DEFAULT_STATUS = "not-started"
 
 
 class RegistryError(Exception):

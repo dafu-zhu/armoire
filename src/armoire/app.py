@@ -5,6 +5,7 @@ import mimetypes
 import threading
 from dataclasses import asdict
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -99,6 +100,37 @@ def create_app(root: Path) -> FastAPI:
     @app.get("/api/index")
     def flat_index() -> dict:
         return {"ready": index.ready, "paths": index.paths}
+
+    @app.get("/api/exists")
+    # `path`, repeated, so the spelling matches the single-valued `?path=`
+    # every other endpoint takes. Annotated rather than `= Query(default=...)`
+    # -- the one signature here whose default would be a list, and a mutable
+    # default in a signature is a shared object however little FastAPI
+    # intends to mutate it (ruff's B008). None, then, and never a list.
+    def exists(path: Annotated[list[str] | None, Query()] = None) -> dict:
+        """Which of these paths armoire cannot open, for a batch of them.
+
+        A relative link in a rendered markdown document is written by whoever
+        wrote the document, not by the client, so a batch routinely contains
+        paths that lead nowhere -- that is the entire question being asked.
+        This endpoint therefore never refuses: a path outside the served root
+        comes back in `missing` alongside one that simply is not there, since
+        both make the link inert and a 403 for one would take the answer for
+        every other path in the same request with it.
+
+        Answers about names only. It reports nothing a directory listing
+        would not already have shown, and reads no file's contents.
+        """
+        missing = []
+        for candidate in path or []:
+            try:
+                target = resolve_in_root(root, candidate)
+            except PathOutsideRoot:
+                missing.append(candidate)
+                continue
+            if not target.exists():
+                missing.append(candidate)
+        return {"missing": missing}
 
     @app.get("/api/preview")
     def preview(path: str = Query(...), page: int = Query(0)) -> dict:

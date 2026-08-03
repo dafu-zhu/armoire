@@ -35,6 +35,13 @@
   --status-paused: #9a6700;
   --status-done: #2da44e;
   --radius: 6px;
+  /* Scrollbar greys, sampled from the palette above rather than invented: the
+     track is --subtle (the same fill as #status and .card-head) and the thumb
+     is one step darker than --border, so a resting scrollbar reads as part of
+     the chrome and only the hover state asks for attention. */
+  --scroll-track: var(--subtle);
+  --scroll-thumb: #c8d1da;
+  --scroll-thumb-hover: #9aa5b1;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -52,6 +59,60 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+/* Scrollbars in the same grammar as everything else: square, flat, hairline.
+   Every pane that scrolls (#tree, #main, #categories, #project-panel,
+   .table-scroll, pre.code) is styled from here, so a new scroll container
+   inherits the look without a rule of its own. Square on purpose: --radius
+   rounds cards and buttons, which sit on the page, and a scrollbar sits in the
+   chrome beside them.
+
+   The standard properties and the ::-webkit- pseudo-elements are alternatives,
+   not complements. From Chromium 121 an element that specifies scrollbar-color
+   or scrollbar-width ignores its ::-webkit-scrollbar-* rules entirely, and the
+   standard pair on its own can set colours but cannot square a corner or drop a
+   stepper. Declaring both unconditionally therefore throws away every rule
+   below and hands back Chromium's default rounded thumb with its arrows, which
+   is what the first draft of this block did. @supports gates the standard pair
+   to engines that have no ::-webkit-scrollbar to gate: Firefox takes the block
+   and gets thin colour-matched bars, Chromium skips it and gets the rest. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+  }
+  /* The Firefox half of the #tree::-webkit-scrollbar rule below, and it has
+     to live in here with the declaration it overrides: `scrollbar-width:
+     none` outside this block would be exactly the unconditional standard
+     property the comment above warns about, and would cost Chromium every
+     ::-webkit- rule on the tree pane to hide a bar Chromium hides its own
+     way. The suite runs Chromium only, so nothing here covers this line. */
+  #tree { scrollbar-width: none; }
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--scroll-track); }
+/* The stepper arrows at each end. Chromium still draws them once the bar is
+   styled at all, and they come back as native widgets: a tinted triangle with
+   its own hover fill, at odds with the flat track it now sits in. */
+::-webkit-scrollbar-button { display: none; }
+/* border-radius: 0 is written out rather than left to the initial value. The
+   UA default is already square, but the declaration is what stops a future
+   `* { border-radius: var(--radius) }` from quietly rounding these. */
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+/* The square where a vertical and a horizontal bar meet. Left unstyled it
+   renders as a raised OS widget, which is the one piece of native chrome that
+   survives the rules above and the only thing that would still look bevelled. */
+::-webkit-scrollbar-corner { background: var(--scroll-track); }
+/* Every pane above gets a bar; the tree gets none. Its right edge already
+   carries the divider, and a 10px bar landing against that 5px strip reads as
+   one thick smudged border rather than as a scrollbar beside a handle -- the
+   two are the same grey, touching, and only one of them is draggable. The
+   tree is also the one pane whose width the reader sets by hand, so the 10px
+   is worth more as content than as chrome.
+   Hidden, not removed: overflow-y stays auto and the wheel, the keyboard and
+   revealPath's scrollIntoView all still reach the bottom of a long tree. */
+#tree::-webkit-scrollbar { display: none; }
 
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -110,11 +171,7 @@ a:hover { text-decoration: underline; }
 #filter-results li[aria-selected="true"] { background: var(--subtle); }
 #filter-results .dir { color: var(--muted); }
 
-/* position: relative so #project-panel (an absolutely positioned overlay,
-   below) can anchor to the whole roadmap+categories area regardless of
-   which of the two triggered it, rather than being confined inside just
-   one of its flex siblings. */
-#body { display: flex; flex: 1; min-height: 0; position: relative; }
+#body { display: flex; flex: 1; min-height: 0; }
 
 #tree {
   flex: 0 0 280px;
@@ -158,7 +215,17 @@ a:hover { text-decoration: underline; }
 }
 #divider:hover, #divider:focus { opacity: 1; outline: none; }
 
-#main { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 24px 48px; }
+/* position: relative is load-bearing, not decoration. KaTeX emits an
+   accessibility-only MathML copy of every formula as a `position: absolute`
+   span clipped to 1px (vendor/katex.css, .katex-mathml). Absolutely positioned
+   descendants are clipped by an ancestor's overflow only when that ancestor is
+   their containing block, so while #main was static those spans resolved
+   against the initial containing block instead, escaped the scroll container,
+   and each one stretched the document past body's 100vh. On a maths-heavy
+   markdown file that showed up as a second scrollbar down the right edge of
+   the window -- 2313px of document behind an 876px viewport -- scrolling the
+   whole app, header and status bar included, off the top. */
+#main { position: relative; flex: 1; min-width: 0; overflow-y: auto; padding: 16px 24px 48px; }
 
 #breadcrumb { margin-bottom: 12px; color: var(--muted); }
 #breadcrumb a { color: var(--link); }
@@ -231,6 +298,16 @@ a:hover { text-decoration: underline; }
 .markdown-body table td, .markdown-body table th {
   padding: 6px 13px;
   border: 1px solid var(--border);
+}
+/* A relative link whose target does not exist. markDeadLinks (in
+   renderers/markdown.js) has already taken the href off it, so this is no
+   longer a link to anything -- it just has to look like it. The :hover half
+   is not redundant: `a:hover` matches an anchor with no href just as
+   readily, and the rule above it would put an underline back on. */
+.markdown-body a.broken, .markdown-body a.broken:hover {
+  color: var(--muted);
+  text-decoration: line-through;
+  cursor: default;
 }
 .markdown-body img { max-width: 100%; }
 .markdown-body blockquote {
@@ -365,41 +442,91 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
   overflow-y: auto;
   padding: 12px;
 }
-.category { margin-bottom: 16px; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
-/* One container per category, coloured to match that category's node. The
-   cat-N class is assigned from the same shared order map the graph uses
-   (palette.js), so a category with members on both sides of app.js's
-   isolated/connected split is the same colour in both places. */
-.category.cat-0 { background: var(--cat-0-fill); border-color: var(--cat-0-line); }
-.category.cat-1 { background: var(--cat-1-fill); border-color: var(--cat-1-line); }
-.category.cat-2 { background: var(--cat-2-fill); border-color: var(--cat-2-line); }
-.category.cat-3 { background: var(--cat-3-fill); border-color: var(--cat-3-line); }
-.category.cat-4 { background: var(--cat-4-fill); border-color: var(--cat-4-line); }
-.category.cat-5 { background: var(--cat-5-fill); border-color: var(--cat-5-line); }
-.category h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+/* A plain heading, not a coloured box -- the colour that used to sit on this
+   container now sits on each entry below instead (an .entry is styled to
+   match a graph node, and a category can span the graph/column split, so
+   the colour has to live at the level that is actually comparable to a
+   node -- see the .entry.cat-N rules below). */
+.category { margin: 0 0 8px; }
+.category + .category { margin-top: 20px; }
+.category h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
 .category ul { list-style: none; margin: 0; padding: 0; }
-.entry { padding: 4px 0; }
-.entry-name { background: none; border: 0; padding: 0; color: var(--link); cursor: pointer; font: inherit; }
+
+/* Each entry is styled as a graph node's box would be -- same category fill
+   and border colour, same border-weight/style-per-status language -- so the
+   column reads as "more of the same graph", not a different kind of list.
+   The whole box (an <li role="button">, mirroring the SVG node's own
+   <g role="button">) is the click target, not just a title inside it; the
+   status chip nested inside it still needs its own stopPropagation to keep
+   a status click from also being read as a click on the box
+   (categories.js). */
+.entry {
+  display: block;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.entry:hover { border-color: var(--link); }
+.entry.cat-0 { background: var(--cat-0-fill); border-color: var(--cat-0-line); }
+.entry.cat-1 { background: var(--cat-1-fill); border-color: var(--cat-1-line); }
+.entry.cat-2 { background: var(--cat-2-fill); border-color: var(--cat-2-line); }
+.entry.cat-3 { background: var(--cat-3-fill); border-color: var(--cat-3-line); }
+.entry.cat-4 { background: var(--cat-4-fill); border-color: var(--cat-4-line); }
+.entry.cat-5 { background: var(--cat-5-fill); border-color: var(--cat-5-line); }
+/* Mirrors .node.status-* rect (roadmap block, above): four distinct
+   border treatments, one per status, in addition to the chip's own colour.
+   CSS border-style has no dasharray equivalent, so "dashed" (not-started)
+   and "dotted" (paused) stand in for the SVG's two different dash lengths. */
+.entry.status-not-started { border-style: dashed; border-width: 1px; }
+.entry.status-active      { border-style: solid; border-width: 2.5px; }
+.entry.status-paused      { border-style: dotted; border-width: 2px; }
+.entry.status-done        { border-style: solid; border-width: 1px; opacity: 0.55; }
+.entry-head { display: flex; align-items: flex-start; gap: 6px; }
+.entry-name { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--fg); }
+.entry.status-done .entry-name { text-decoration: line-through; }
 /* .status-chip's other rule (above, in the roadmap block) was written for an
    SVG <text> -- no button chrome to reset there in the first place. Here the
    chip is a real HTML <button>, so it keeps the UA default border/background
    unless reset the same way .entry-name already is. */
-.category .status-chip { background: none; border: 0; padding: 0; font: inherit; }
+.category .status-chip { flex: 0 0 auto; background: none; border: 0; padding: 0; font: inherit; }
 /* Same colour-by-status rule as the graph node's chip, keyed the same way
    off the entry's own status-* class (categories.js). */
 .entry.status-not-started .status-chip { color: var(--status-not-started); }
 .entry.status-active .status-chip      { color: var(--status-active); }
 .entry.status-paused .status-chip      { color: var(--status-paused); }
 .entry.status-done .status-chip        { color: var(--status-done); }
-.entry-note { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
-.entry-warn { margin-left: 4px; font-weight: 700; color: #bc4c00; cursor: help; }
-.entry.status-done { opacity: 0.55; }
-.entry.status-done .entry-name { text-decoration: line-through; }
+.entry-due { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+.entry-note { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+.entry-warn { flex: 0 0 auto; font-weight: 700; color: #bc4c00; cursor: help; }
 
 /* Project panel --------------------------------------------------------- */
-/* A right-anchored overlay, absolutely positioned against #body (not
-   #roadmap) so it sits above both the graph and the category column
-   regardless of which one opened it. */
+/* Nested inside #roadmap (index.html), not #body: an overlay anchored to
+   #body's own right edge sat on top of #categories and hid it behind the
+   panel any time both were visible at once. Scoped to #roadmap instead, it
+   can only ever cover part of the graph -- never #categories, which sits
+   outside #roadmap entirely.
+
+   Deliberately still an absolute overlay rather than a flex sibling that
+   would shrink #roadmap to make room: that alternative was tried and
+   reverted -- it resizes #roadmap-canvas (and, for #categories, shifts its
+   on-screen position) the instant the panel opens, so a real double click
+   already in progress has its second click land on whatever moved into the
+   cursor's fixed screen position instead of the entry it started on. An
+   overlay changes nothing about any other element's layout, so nothing can
+   move out from under a click mid-gesture. */
 #project-panel {
   position: absolute;
   top: 0;

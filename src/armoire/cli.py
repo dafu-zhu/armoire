@@ -22,7 +22,7 @@ STUB = """\
 # paths = ["some/folder"]          # relative to the served folder
 # blocked_by = ["Another project"] # optional
 # category = "research"            # required when blocked_by is absent
-# status = "active"                # not-started | active | paused | done
+# status = "not-started"           # not-started | active | paused | done
 # note = "One line about it."
 """
 

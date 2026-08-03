@@ -553,7 +553,7 @@ def _status_reset_fixture(name):
     Restoring in a fixture teardown instead -- functionally a `finally`
     block, shared here rather than pasted into every mutating test -- reads
     `name`'s actual pre-test status from the server itself, rather than
-    assuming the registry's default ("active"), so the restore is correct
+    assuming the registry's default ("not-started"), so the restore is correct
     even if a test runs alone, out of order, or a prior run in this session
     already left `name` on some other status.
 
@@ -809,23 +809,25 @@ def test_a_failed_status_write_reverts_the_chip_and_its_dependents(
 ):
     """The rollback path (cycle()'s catch in roadmap.js) had zero coverage --
     this is the gap that let Important 2's stale-rollback race through
-    review undetected. Cycles Upstream from 'active' to 'paused' first (a
-    normal, succeeding write) so the one write this test breaks is the
-    click that would also flip Downstream's blocked-ness (paused -> done),
-    proving applyStatus()'s full recompute-on-rollback carries the
-    dependent along too, not just the clicked node itself."""
+    review undetected. Cycles Upstream from its default 'not-started' through
+    'active' to 'paused' first (two normal, succeeding writes) so the write
+    this test actually breaks is the one that would also flip Downstream's
+    blocked-ness (paused -> done), proving applyStatus()'s full
+    recompute-on-rollback carries the dependent along too, not just the
+    clicked node itself."""
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
     upstream = page.locator('.node[data-name="Upstream"]')
     downstream = page.locator('.node[data-name="Downstream"]')
     chip = upstream.locator(".status-chip")
 
-    before = upstream.get_attribute("class")
-    chip.click()
-    page.wait_for_function(
-        "cls => document.querySelector('.node[data-name=Upstream]').className.baseVal !== cls",
-        arg=before,
-    )
+    for _ in range(2):
+        before = upstream.get_attribute("class")
+        chip.click()
+        page.wait_for_function(
+            "cls => document.querySelector('.node[data-name=Upstream]').className.baseVal !== cls",
+            arg=before,
+        )
     assert "status-paused" in upstream.get_attribute("class")
     assert "blocked" in downstream.get_attribute("class")
 
@@ -1005,10 +1007,13 @@ def test_a_category_container_is_coloured_like_its_categorys_node(live_server, p
     page.wait_for_selector("#categories .category")
     node = page.locator('.node[data-name="Downstream"]')
     node_class = set(node.get_attribute("class").split())
-    section = page.locator("#categories .category", has=page.locator('[data-name="Reading list"]'))
-    assert node_class & set(section.get_attribute("class").split()) & {f"cat-{n}" for n in range(6)}
+    # The colour now lives on each entry box (app.css's .entry.cat-N),
+    # matching a graph node's own .cat-N rect -- not on the group's heading
+    # container, which is deliberately uncoloured (a "non-box title").
+    entry = page.locator('#categories [data-name="Reading list"]')
+    assert node_class & set(entry.get_attribute("class").split()) & {f"cat-{n}" for n in range(6)}
     stroke = node.locator("rect").evaluate("r => getComputedStyle(r).stroke")
-    border = section.evaluate("s => getComputedStyle(s).borderTopColor")
+    border = entry.evaluate("e => getComputedStyle(e).borderTopColor")
     assert stroke == border, (stroke, border)
 
 
@@ -1017,8 +1022,8 @@ def test_two_categories_in_the_column_are_coloured_differently(live_server, page
     satisfy the agreement test above and still be useless."""
     page.goto(f"{live_server}/#/")
     page.wait_for_selector("#categories .category")
-    borders = page.locator("#categories .category").evaluate_all(
-        "sections => sections.map((s) => getComputedStyle(s).borderTopColor)"
+    borders = page.locator("#categories .entry").evaluate_all(
+        "entries => entries.map((e) => getComputedStyle(e).borderTopColor)"
     )
     assert len(set(borders)) == len(borders), borders
 
@@ -1258,6 +1263,11 @@ def test_a_stale_failed_write_does_not_roll_back_over_a_newer_one(live_server, p
     before = entry.get_attribute("class")
     started = next(s for s in STATUS_ORDER if f"status-{s}" in before)
     expected = STATUS_ORDER[(STATUS_ORDER.index(started) + 2) % len(STATUS_ORDER)]
+    # The entry's cat-N class never changes across a status write -- only its
+    # status-* class does (categories.js) -- so read it once from the
+    # baseline rather than hardcoding a category index the registry's own
+    # ordering assigns.
+    cat_class = next(c for c in before.split() if c.startswith("cat-"))
 
     click_chip(page, '#categories [data-name="Standalone"] .status-chip', 2)
     deadline = time.monotonic() + 10
@@ -1267,7 +1277,7 @@ def test_a_stale_failed_write_does_not_roll_back_over_a_newer_one(live_server, p
     # Long enough for a rollback to have landed if one were going to.
     page.wait_for_timeout(300)
 
-    assert entry.get_attribute("class") == f"entry status-{expected}", (
+    assert entry.get_attribute("class") == f"entry {cat_class} status-{expected}", (
         before,
         entry.get_attribute("class"),
     )

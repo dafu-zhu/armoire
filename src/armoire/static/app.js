@@ -234,8 +234,7 @@ async function showRoadmap() {
   const onSelect = (project) => openPanel(panel, project, onOpenFolder);
   const callbacks = { onSelect, onOpenFolder };
   roadmapView = renderRoadmap(canvas, connected, callbacks, roadmapListeners.signal, order);
-  categories.hidden =
-    renderCategories(categories, data, callbacks, roadmapListeners.signal, order) === 0;
+  categories.hidden = renderCategories(categories, data, callbacks, order) === 0;
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();
   document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
   document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);
