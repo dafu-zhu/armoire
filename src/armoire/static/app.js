@@ -10,7 +10,11 @@ import { openPanel, closePanel } from './panel.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
-const status = document.getElementById('status');
+// The span, not the footer: every write below is `status.textContent = …`,
+// which replaces all children. The footer also holds the registry button
+// (registry.js), and a textContent write on the footer would delete it on the
+// next navigation. The message owns the span; the footer owns the row.
+const status = document.getElementById('status-text');
 
 const BROWSE = 'browse';
 const PROJECT = 'project';
