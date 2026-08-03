@@ -23,6 +23,7 @@ function makeRow(label, caret) {
   arrow.textContent = caret;
   const text = document.createElement('span');
   text.textContent = label;
+  text.title = label;
   row.append(arrow, text);
   return { row, arrow };
 }

@@ -228,6 +228,20 @@ def sample_root(tmp_path_factory, _isolated_store_session):
     )
     (root / "links.md").write_text("# Links\n\n[percent](100%.md)\n", encoding="utf-8", newline="")
 
+    # No other root-level name here reaches even 20 characters, so nothing
+    # would ever overflow the tree pane's default 280px width -- task 11's
+    # truncation test needs a name long enough that it genuinely cannot fit,
+    # or an ellipsis rule with no effect would pass it for free. This one
+    # sits at the root (not nested) so it renders on the very first paint,
+    # before anything is expanded, and it deliberately carries no "b" so it
+    # cannot become a tighter subsequence match than "buried.md" for the
+    # filter tests that query "buried".
+    (root / "a-very-long-filename-that-should-overflow-the-tree-pane-width-check.md").write_text(
+        "# Long name\n\nExists to overflow the tree pane's default width.\n",
+        encoding="utf-8",
+        newline="",
+    )
+
     notes = root / "notes"
     notes.mkdir()
     (notes / "README.md").write_text(

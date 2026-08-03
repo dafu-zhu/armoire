@@ -1,4 +1,5 @@
 import { initTree } from './tree.js';
+import { initDivider } from './divider.js';
 import { initFilter } from './filter.js';
 import { renderPreview } from './preview.js';
 import { encodeHashPath } from './format.js';
@@ -179,6 +180,7 @@ async function showRoadmap() {
   // git across every declared path -- seconds on a large folder -- and
   // showing the file browser meanwhile reads as opening on the wrong screen.
   document.getElementById('tree').hidden = true;
+  document.getElementById('divider').hidden = true;
   document.getElementById('main').hidden = true;
   roadmap.hidden = false;
   categories.hidden = false;
@@ -233,6 +235,7 @@ function hideRoadmap() {
   roadmap.hidden = true;
   categories.hidden = true;
   document.getElementById('tree').hidden = false;
+  document.getElementById('divider').hidden = false;
   document.getElementById('main').hidden = false;
 }
 
@@ -312,6 +315,7 @@ tree.ready
     rootLabel = displayRoot(rootMeta.root);
     hasRegistry = rootMeta.hasRegistry;
     document.getElementById('root-name').textContent = rootLabel;
+    initDivider(document.getElementById('divider'), document.getElementById('tree'), rootLabel);
     const route = currentRoute();
     if (route.kind === 'unknown') {
       window.location.hash = `/${BROWSE}/${encodeHashPath(route.path)}`;

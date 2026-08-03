@@ -1,5 +1,7 @@
 """Tree, filter and routing, exercised in a real browser."""
 
+from conftest import folder_snapshot
+
 
 def test_tree_lists_the_root_folder(page, live_server):
     # A registry exists in the fixture, so "#/" is now the roadmap; the tree
@@ -347,3 +349,86 @@ def test_a_pending_single_click_does_not_leak_into_a_later_roadmap_visit(live_se
     page.wait_for_timeout(400)
     assert page.evaluate("location.hash") == "#/"
     assert page.locator("#roadmap").is_visible()
+
+
+def test_the_tree_has_no_horizontal_scrollbar(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree .row")
+    overflow = page.locator("#tree").evaluate("el => getComputedStyle(el).overflowX")
+    assert overflow == "hidden"
+
+
+def test_a_long_name_truncates_rather_than_widening_the_tree(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree .row")
+    assert page.locator("#tree").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+
+
+def test_dragging_the_divider_widens_the_tree(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    before = page.locator("#tree").bounding_box()["width"]
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert page.locator("#tree").bounding_box()["width"] > before + 50
+
+
+def test_the_divider_refuses_to_go_below_its_minimum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(0, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert page.locator("#tree").bounding_box()["width"] >= 180
+
+
+def test_the_divider_refuses_to_go_above_its_maximum(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(2000, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert page.locator("#tree").bounding_box()["width"] <= 600
+
+
+def test_the_divider_width_survives_a_reload(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    width = page.locator("#tree").bounding_box()["width"]
+    page.reload()
+    page.wait_for_selector("#divider")
+    assert abs(page.locator("#tree").bounding_box()["width"] - width) < 2
+
+
+def test_the_arrow_keys_move_the_divider(live_server, page):
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    before = page.locator("#tree").bounding_box()["width"]
+    page.locator("#divider").focus()
+    for _ in range(5):
+        page.keyboard.press("ArrowRight")
+    assert page.locator("#tree").bounding_box()["width"] > before
+
+
+def test_dragging_the_divider_does_not_write_to_the_served_folder(live_server, page, sample_root):
+    before = folder_snapshot(sample_root)
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#divider")
+    box = page.locator("#divider").bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 100, steps=10)
+    page.mouse.up()
+    assert folder_snapshot(sample_root) == before
