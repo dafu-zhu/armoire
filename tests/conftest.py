@@ -555,9 +555,9 @@ def _git(cwd, *args):
     replacement environment carrying only PATH drops HOME, SYSTEMROOT and
     everything else git may need, and the platform that first minds is not the
     one you develop on -- CI runs six platform/version combinations. The
-    failure also lands badly: this runs inside session-scoped fixtures, so one
-    CalledProcessError whose captured output nobody prints takes out every
-    Playwright test depending on committed_server at once.
+    failure also lands badly: a fixture built from a series of these calls
+    (e.g. test_activity's `repo`) has no obvious line to blame a
+    CalledProcessError whose captured output nobody prints on.
 
     The four identity variables stay explicit so the isolation intent survives:
     commits must not be attributed to whoever is running the suite.
@@ -588,49 +588,3 @@ def _git(cwd, *args):
     )
 
 
-@pytest.fixture(scope="session")
-def committed_root(tmp_path_factory, _isolated_store_session):
-    """A registry with one project whose folder has real git history.
-
-    sample_root has none at all -- confirmed by reading its own fixture code,
-    which never calls `git init` -- so neither of its two projects can
-    exercise the commit-row markup project.js renders from `/api/project`'s
-    `commits` list. This fixture exists so that markup has something real to
-    render against.
-    """
-    root = tmp_path_factory.mktemp("committed")
-    project = root / "worked"
-    project.mkdir()
-    (project / "a.txt").write_text("1", encoding="utf-8")
-    _git(root, "init", "-q", "-b", "main")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "first worked commit")
-    (project / "a.txt").write_text("2", encoding="utf-8")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "second worked commit")
-    registry_file = store.registry_path(root)
-    registry_file.parent.mkdir(parents=True, exist_ok=True)
-    registry_file.write_text(
-        '[[project]]\nname = "Worked"\npaths = ["worked"]\n',
-        encoding="utf-8",
-        newline="",
-    )
-    return root
-
-
-@pytest.fixture(scope="session")
-def committed_server(committed_root):
-    app = create_app(committed_root)
-    app.state.index.wait(timeout=10)
-    port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + 10
-    while not server.started:
-        if time.monotonic() > deadline:
-            raise RuntimeError("committed server did not start within 10s")
-        time.sleep(0.05)
-    yield f"http://127.0.0.1:{port}"
-    server.should_exit = True
-    thread.join(timeout=5)

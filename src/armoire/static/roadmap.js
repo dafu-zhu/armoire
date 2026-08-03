@@ -15,6 +15,10 @@ const NODE_MIN_H = 40;
 // end-anchored at NODE_W - NODE_PAD_X; 18 leaves the widest glyph (the filled
 // and half-filled circles) clear of the marker with a few pixels to spare.
 const CHIP_SLOT = 18;
+// Mirrors app.js's ROOT_CLICK_DELAY: comfortably above the gap between the
+// two clicks of a genuine double click (Playwright's included), short enough
+// that a real single click still feels immediate.
+const CLICK_DELAY = 250;
 
 // SVG <text> does not wrap. Measure in the live SVG rather than guessing from
 // character counts: font metrics are not knowable ahead of time, and the
@@ -183,7 +187,12 @@ function layout(projects, heights, known) {
 // app.js, built over the whole payload, because this function only ever sees
 // the connected half of it -- see palette.js for why building one here instead
 // puts the graph and the category column on different colours.
-export function renderRoadmap(canvas, data, onOpen, signal, order) {
+//
+// `callbacks` is `{ onSelect, onOpenFolder }`: a single click opens the quick
+// -look side panel (onSelect), a double click navigates into the project's
+// folder (onOpenFolder) -- see the click/dblclick wiring below.
+export function renderRoadmap(canvas, data, callbacks, signal, order) {
+  const { onSelect, onOpenFolder } = callbacks;
   const projects = data.projects || [];
   const positions = new Map();
   const known = new Set(projects.map((p) => p.name));
@@ -277,6 +286,19 @@ export function renderRoadmap(canvas, data, onOpen, signal, order) {
   // read once by the click that immediately follows in the same gesture.
   let dragging = null;
   let suppressClick = false;
+  // The pending single-click open for whichever node armed it, if any --
+  // module-local like `dragging`/`suppressClick` above, not per-node: only
+  // one gesture happens at a time. Cleared on the render's own abort so a
+  // render torn down mid-gesture (a revisit before the timer fires) cannot
+  // pop the panel open later for a node that no longer exists on screen --
+  // the same leak app.js's rootClickTimer guards against for the breadcrumb.
+  let openTimer = null;
+  signal?.addEventListener('abort', () => {
+    if (openTimer) {
+      window.clearTimeout(openTimer);
+      openTimer = null;
+    }
+  });
   for (const project of projects) {
     const pos = positions.get(project.name);
     if (!pos) continue;
@@ -292,7 +314,7 @@ export function renderRoadmap(canvas, data, onOpen, signal, order) {
     });
     group.append(svgEl('rect', { width: NODE_W, height }));
 
-    const title = svgEl('text', { x: NODE_PAD_X, y: TITLE_Y });
+    const title = svgEl('text', { x: NODE_PAD_X, y: TITLE_Y, class: 'node-title' });
     title.textContent = project.name;
     group.append(title);
 
@@ -379,12 +401,28 @@ export function renderRoadmap(canvas, data, onOpen, signal, order) {
     });
     group.append(chip);
 
+    // A double click fires click, click, dblclick on the same target -- a
+    // click handler that opens the panel immediately would let the first
+    // click's own work run before dblclick ever gets a chance to cancel it.
+    // Deferring by CLICK_DELAY, the same way app.js's breadcrumb root crumb
+    // does, keeps a genuine double click from ever opening the panel at all.
     group.addEventListener('click', () => {
       if (suppressClick) return;
-      onOpen(project.name);
+      if (openTimer) return; // second click of a double click; dblclick decides
+      openTimer = window.setTimeout(() => {
+        openTimer = null;
+        onSelect(project);
+      }, CLICK_DELAY);
+    });
+    group.addEventListener('dblclick', () => {
+      if (openTimer) {
+        window.clearTimeout(openTimer);
+        openTimer = null;
+      }
+      onOpenFolder(project);
     });
     group.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') onOpen(project.name);
+      if (event.key === 'Enter' || event.key === ' ') onSelect(project);
     });
     nodeLayer.append(group);
   }

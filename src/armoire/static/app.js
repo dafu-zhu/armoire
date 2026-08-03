@@ -6,7 +6,7 @@ import { encodeHashPath } from './format.js';
 import { renderRoadmap } from './roadmap.js';
 import { renderCategories } from './categories.js';
 import { categoryOrder } from './palette.js';
-import { renderProject } from './project.js';
+import { openPanel, closePanel } from './panel.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -19,6 +19,7 @@ const roadmap = document.getElementById('roadmap');
 const canvas = document.getElementById('roadmap-canvas');
 const roadmapMessage = document.getElementById('roadmap-message');
 const categories = document.getElementById('categories');
+const panel = document.getElementById('project-panel');
 
 let roadmapView = null;
 let roadmapListeners = null;
@@ -74,10 +75,6 @@ function currentRoute() {
 
 export function navigate(path) {
   window.location.hash = `/${BROWSE}/${encodeHashPath(path)}`;
-}
-
-export function navigateProject(name) {
-  window.location.hash = `/${PROJECT}/${encodeURIComponent(name)}`;
 }
 
 function renderBreadcrumb(path) {
@@ -225,8 +222,20 @@ async function showRoadmap() {
   // category that appears on both sides of the split gets the same colour on
   // both. See palette.js.
   const order = categoryOrder(data.projects);
-  roadmapView = renderRoadmap(canvas, connected, navigateProject, roadmapListeners.signal, order);
-  categories.hidden = renderCategories(categories, data, navigateProject, order) === 0;
+  // Shared by both renderers (the roadmap graph and the category column): a
+  // single click opens the quick-look panel in place, a double click hands
+  // off to the same browse view the file tree uses -- no bespoke project
+  // page any more. `project.paths[0]` is always present: the registry
+  // parser refuses an empty `paths` list (projects.py).
+  const onOpenFolder = (project) => {
+    closePanel(panel);
+    navigate(project.paths[0]);
+  };
+  const onSelect = (project) => openPanel(panel, project, onOpenFolder);
+  const callbacks = { onSelect, onOpenFolder };
+  roadmapView = renderRoadmap(canvas, connected, callbacks, roadmapListeners.signal, order);
+  categories.hidden =
+    renderCategories(categories, data, callbacks, roadmapListeners.signal, order) === 0;
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();
   document.getElementById('zoom-in').onclick = () => roadmapView.zoomBy(1.2);
   document.getElementById('zoom-out').onclick = () => roadmapView.zoomBy(1 / 1.2);
@@ -239,6 +248,11 @@ async function showRoadmap() {
 function hideRoadmap() {
   roadmap.hidden = true;
   categories.hidden = true;
+  // #project-panel is a sibling of #roadmap/#categories, not scoped inside
+  // either -- without this, leaving the roadmap by any route other than the
+  // panel's own "Open project files" button (a typed URL, the filter, a
+  // tree click) would leave it sitting open over the file browser.
+  closePanel(panel);
   document.getElementById('tree').hidden = false;
   document.getElementById('divider').hidden = false;
   document.getElementById('main').hidden = false;
@@ -269,10 +283,19 @@ async function showRoute(route) {
   }
   hideRoadmap();
   if (route.kind === 'project') {
+    // No page of its own any more -- a bookmarked #/project/<name> resolves
+    // the name against the same payload the roadmap uses and hands off to
+    // the folder's normal browse view. Nothing in this app writes this route
+    // any more (see onOpenFolder in showRoadmap); it exists only so an old
+    // link still lands somewhere useful instead of a dead page.
     renderBreadcrumb('');
     status.textContent = 'Loading…';
     try {
-      status.textContent = await renderProject(content, route.name, navigate);
+      const data = await (await fetch('/api/projects')).json();
+      if (data.error) throw new Error(data.error);
+      const match = (data.projects || []).find((p) => p.name === route.name);
+      if (!match) throw new Error(`no such project: ${route.name}`);
+      window.location.hash = `/${BROWSE}/${encodeHashPath(match.paths[0])}`;
     } catch (error) {
       showError(error);
     }
@@ -319,7 +342,24 @@ tree.ready
   .then((rootMeta) => {
     rootLabel = displayRoot(rootMeta.root);
     hasRegistry = rootMeta.hasRegistry;
-    document.getElementById('root-name').textContent = rootLabel;
+    const rootNameEl = document.getElementById('root-name');
+    rootNameEl.textContent = rootLabel;
+    // A single click, unlike the breadcrumb root crumb's click/dblclick
+    // split: this label has only one destination (the roadmap), so there is
+    // nothing for a second click to disambiguate.
+    rootNameEl.tabIndex = 0;
+    rootNameEl.setAttribute('role', 'button');
+    rootNameEl.title = 'Go to the roadmap';
+    const goToRoadmap = () => {
+      window.location.hash = '/';
+    };
+    rootNameEl.addEventListener('click', goToRoadmap);
+    rootNameEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        goToRoadmap();
+      }
+    });
     initDivider(document.getElementById('divider'), document.getElementById('tree'), rootLabel);
     const route = currentRoute();
     if (route.kind === 'unknown') {

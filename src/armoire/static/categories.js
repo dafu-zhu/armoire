@@ -5,6 +5,11 @@
 import { glyphFor, nextStatus, normalizeStatus, writeStatus } from './status.js';
 import { categoryClass } from './palette.js';
 
+// Mirrors roadmap.js's own CLICK_DELAY (and app.js's ROOT_CLICK_DELAY):
+// comfortably above the gap between the two clicks of a genuine double
+// click, short enough that a real single click still feels immediate.
+const CLICK_DELAY = 250;
+
 // Returns how many containers were drawn, so app.js can hide the column when
 // there are none. An empty bordered box costs 240px of canvas and says
 // nothing; "the category column is permanent, not another toggle" (the spec)
@@ -14,11 +19,28 @@ import { categoryClass } from './palette.js';
 // `order` is the shared category->colour map (palette.js), built by app.js
 // over the whole payload. This function only ever sees the isolated half, so
 // a map built here would disagree with the graph's.
-export function renderCategories(container, data, onOpen, order) {
+//
+// `callbacks` is `{ onSelect, onOpenFolder }`, the same shape roadmap.js
+// takes: a single click opens the quick-look side panel, a double click
+// navigates into the project's folder.
+export function renderCategories(container, data, callbacks, signal, order) {
+  const { onSelect, onOpenFolder } = callbacks;
   container.replaceChildren();
   const isolated = (data.projects || []).filter((p) => p.isolated);
   if (!isolated.length) return 0;
   const issues = data.issues || [];
+
+  // Mirrors roadmap.js's own openTimer: one pending single-click open at a
+  // time, cleared on the render's own abort so a stale timer from a
+  // torn-down render cannot pop the panel open later for an entry that no
+  // longer exists on screen.
+  let openTimer = null;
+  signal?.addEventListener('abort', () => {
+    if (openTimer) {
+      window.clearTimeout(openTimer);
+      openTimer = null;
+    }
+  });
 
   const groups = new Map();
   for (const project of isolated) {
@@ -87,7 +109,25 @@ export function renderCategories(container, data, onOpen, order) {
       label.type = 'button';
       label.className = 'entry-name';
       label.textContent = project.name;
-      label.addEventListener('click', () => onOpen(project.name));
+      // Same click/dblclick split as roadmap.js's node group: a single click
+      // opens the side panel, a double click (which fires click, click,
+      // dblclick on the same target) navigates straight into the folder --
+      // deferring the single click by CLICK_DELAY lets dblclick cancel it
+      // before the panel ever opens.
+      label.addEventListener('click', () => {
+        if (openTimer) return; // second click of a double click; dblclick decides
+        openTimer = window.setTimeout(() => {
+          openTimer = null;
+          onSelect(project);
+        }, CLICK_DELAY);
+      });
+      label.addEventListener('dblclick', () => {
+        if (openTimer) {
+          window.clearTimeout(openTimer);
+          openTimer = null;
+        }
+        onOpenFolder(project);
+      });
 
       item.append(chip, label);
 

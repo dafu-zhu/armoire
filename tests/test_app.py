@@ -275,8 +275,8 @@ def test_serving_never_writes_to_disk(root):
     # false` and a 404 -- load_registry never parses, dashboard never
     # composes, activity never invokes git -- so the only write-capable
     # surface Phase 2 added would sit outside the checksum window entirely.
-    # "docs" is a real directory in the fixture, so recent_commits and list_dir
-    # both do real work against it, via project_detail below.
+    # "docs" is a real directory in the fixture, so list_dir does real work
+    # against it, via project_detail below.
     registry_file = store.registry_path(root)
     registry_file.parent.mkdir(parents=True, exist_ok=True)
     registry_file.write_text(
@@ -469,6 +469,11 @@ def test_project_detail_reports_what_it_blocks(registry_client):
 def test_project_detail_lists_files_under_its_paths(registry_client):
     body = registry_client.get("/api/project/Downstream").json()
     assert any(f["name"] == "readme.md" for f in body["files"])
+
+
+def test_project_detail_no_longer_carries_commits(registry_client):
+    body = registry_client.get("/api/project/Downstream").json()
+    assert "commits" not in body
 
 
 def test_unknown_project_is_404(registry_client):

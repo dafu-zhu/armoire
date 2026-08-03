@@ -106,11 +106,21 @@ def test_a_due_date_appears_on_its_node(page, live_server):
     assert "2026-08-17" in page.locator("#roadmap").inner_text()
 
 
-def test_clicking_a_node_opens_the_project_route(page, live_server):
+def test_clicking_a_node_opens_the_side_panel(page, live_server):
     open_roadmap(page, live_server)
     page.locator("#roadmap .node", has_text="Upstream").first.click()
-    page.wait_for_function("() => location.hash.startsWith('#/project/')", timeout=5000)
-    assert page.evaluate("location.hash") == "#/project/Upstream"
+    page.wait_for_selector("#project-panel:visible", timeout=5000)
+    assert page.locator("#project-panel h2").inner_text() == "Upstream"
+    # A single click previews in place; it never navigates away.
+    assert page.evaluate("location.hash") in ("", "#/")
+
+
+def test_double_clicking_a_node_opens_its_folder(page, live_server):
+    open_roadmap(page, live_server)
+    page.locator('#roadmap .node[data-name="Upstream"]').dblclick()
+    page.wait_for_function("() => location.hash.startsWith('#/browse/')", timeout=5000)
+    page.wait_for_selector(".listing", timeout=5000)
+    assert page.locator("#project-panel").is_hidden()
 
 
 def test_a_folder_with_no_registry_opens_on_the_file_browser(page, bare_server):
@@ -340,19 +350,24 @@ def test_zoom_controls_change_the_reported_level(page, live_server):
 
 
 def test_dragging_a_node_does_not_open_its_project(page, live_server):
-    """The whole point of suppressClick: a reposition must not navigate away."""
+    """The whole point of suppressClick: a reposition must not navigate away,
+    and must not open the side panel either -- a drag's pointerup still
+    dispatches a native click, which suppressClick must swallow before it
+    ever reaches the click-open scheduling."""
     open_roadmap(page, live_server)
     drag_node(page, "Upstream", 120, 60)
     page.wait_for_timeout(400)
     assert page.evaluate("location.hash") in ("", "#/")
     assert page.locator("#roadmap .node").first.is_visible()
+    assert page.locator("#project-panel").is_hidden()
 
 
-def test_clicking_a_node_without_dragging_still_opens_it(page, live_server):
+def test_clicking_a_node_without_dragging_still_opens_the_panel(page, live_server):
     """suppressClick must not suppress a genuine click."""
     open_roadmap(page, live_server)
     page.locator('#roadmap .node[data-name="Upstream"]').click()
-    page.wait_for_function("() => location.hash === '#/project/Upstream'", timeout=5000)
+    page.wait_for_selector("#project-panel:visible", timeout=5000)
+    assert page.locator("#project-panel h2").inner_text() == "Upstream"
 
 
 def test_a_corrupt_null_layout_entry_does_not_take_the_roadmap_down(page, live_server):
@@ -412,8 +427,8 @@ def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server)
     )
     open_roadmap(page, live_server)
     for i in range(3):
-        page.evaluate("window.location.hash = '/project/Upstream'")
-        page.wait_for_function("() => location.hash === '#/project/Upstream'")
+        page.evaluate("window.location.hash = '/browse/'")
+        page.wait_for_function("() => location.hash === '#/browse/'")
         page.evaluate("window.location.hash = '/'")
         page.wait_for_selector("#roadmap .node[data-name='Upstream']", timeout=15000)
         # One showRoadmap() call makes exactly one AbortController: the
@@ -437,131 +452,10 @@ def test_revisiting_the_roadmap_does_not_accumulate_listeners(page, live_server)
     assert layout_writes == 1, layout_writes
 
 
-def test_project_detail_shows_blockers_and_what_it_blocks(page, live_server):
-    page.goto(f"{live_server}/#/project/Upstream")
-    page.wait_for_selector(".project-detail", timeout=10000)
-    text = page.locator(".project-detail").inner_text()
-    assert "Downstream" in text
-
-
-def test_project_detail_lists_files(page, live_server):
-    page.goto(f"{live_server}/#/project/Downstream")
-    page.wait_for_selector(".project-detail a", timeout=10000)
-    assert page.locator(".project-detail a").count() >= 1
-
-
-def test_a_file_link_in_the_detail_reaches_the_viewer(page, live_server):
-    page.goto(f"{live_server}/#/project/Downstream")
-    page.wait_for_selector(".project-detail a", timeout=10000)
-    page.locator(".project-detail a").first.click()
-    page.wait_for_function("() => location.hash.startsWith('#/browse/')", timeout=5000)
-
-
 def test_an_unknown_project_shows_an_error_not_a_blank_page(page, live_server):
     page.goto(f"{live_server}/#/project/Ghost")
     page.wait_for_selector("#content .error", timeout=10000)
     assert page.locator("#content .error").inner_text().strip() != ""
-
-
-def test_project_detail_renders_structured_commit_rows(page, live_server):
-    """The detail view is what a node click lands on; unstyled defaults undercut
-    the whole point of the roadmap screen."""
-    page.goto(f"{live_server}/#/project/Downstream")
-    page.wait_for_selector(".project-detail", timeout=10000)
-    assert page.locator(".project-detail .relations").count() == 1
-    # The commit-row assertions that used to sit here were guarded behind
-    # `if rows.count():`, and against live_server that count is always zero --
-    # sample_root has no git history at all, so the block never ran and read as
-    # coverage it was not providing. The real check is
-    # test_project_detail_commit_rows_have_sha_subject_and_when, against
-    # committed_server.
-
-
-def test_a_long_commit_subject_does_not_push_the_timestamp_out_of_its_row(page, live_server):
-    """Commit subjects come from arbitrary repositories, so the row has to hold
-    against an unbounded one: the subject must ellipsize and `.when`
-    (margin-left: auto) must stay inside the row that `.project-detail ul`
-    clips with overflow: hidden.
-
-    `.subject` is a flex item with the default `flex: 0 1 auto` and a computed
-    `min-width: auto`, which normally cannot shrink below its content's
-    intrinsic width -- but it also sets `overflow: hidden`, and per CSS Flexbox
-    4.5 a flex item whose overflow is anything but `visible` gets an automatic
-    minimum size of zero. So it does shrink and the ellipsis does fire; an
-    explicit `min-width: 0` would be a no-op here. Measured: scrollWidth 3398
-    against clientWidth 771, `.when` at x=1156 inside a row ending at 1203.
-
-    What this test guards is that pairing. Forcing `.subject` back to
-    `overflow: visible` widens it to its full 3398px and throws `.when` out to
-    x=3783, ~2.5k past the clip edge -- the timestamp vanishes.
-
-    Stubbed rather than committed to a fixture repo: the subject has to be long
-    enough to overflow at any viewport, and no real fixture commit is. The
-    payload shape is project.js's contract for /api/project/<name>.
-    """
-    import json
-
-    stub = {
-        "project": {
-            "name": "Long",
-            "paths": ["notes"],
-            "blocked_by": [],
-            "category": None,
-            "due": None,
-            "note": None,
-        },
-        "blocks": [],
-        "commits": [
-            {
-                "sha": "abc1234",
-                "subject": "refactor the entire ingestion pipeline and " * 12,
-                "when": time.time(),
-            }
-        ],
-        "files": [],
-    }
-    page.route(
-        "**/api/project/Long",
-        lambda route: route.fulfill(
-            status=200, content_type="application/json", body=json.dumps(stub)
-        ),
-    )
-    page.goto(f"{live_server}/#/project/Long")
-    page.wait_for_selector(".project-detail li.commit", timeout=10000)
-    row = page.locator(".project-detail li.commit").first
-    when = row.locator(".when")
-    assert when.count() == 1
-
-    # The subject is genuinely truncated, not merely narrow.
-    overflowed = row.locator(".subject").evaluate("el => el.scrollWidth > el.clientWidth")
-    assert overflowed, "a 500-character subject should be clipped, so the ellipsis can show"
-
-    row_box = row.bounding_box()
-    when_box = when.bounding_box()
-    # 1px of slack for subpixel layout, nothing more.
-    assert when_box["x"] >= row_box["x"] - 1, (when_box, row_box)
-    assert when_box["x"] + when_box["width"] <= row_box["x"] + row_box["width"] + 1, (
-        when_box,
-        row_box,
-    )
-
-
-def test_project_detail_commit_rows_have_sha_subject_and_when(page, committed_server):
-    """live_server's sample_root has no git history at all (neither Downstream
-    nor Upstream has a single commit), so the guarded check above never
-    actually exercises the commit-row branch. committed_server's one project
-    has two real commits, so this positively verifies the .commit / .sha /
-    .subject / .when structure project.js renders, rather than leaving it
-    unverified."""
-    page.goto(f"{committed_server}/#/project/Worked")
-    page.wait_for_selector(".project-detail li.commit", timeout=10000)
-    rows = page.locator(".project-detail li.commit")
-    assert rows.count() == 2
-    first = rows.first
-    assert first.locator(".sha").count() == 1
-    assert first.locator(".subject").count() == 1
-    assert first.locator(".when").count() == 1
-    assert first.locator(".subject").inner_text() == "second worked commit"
 
 
 def test_a_long_note_stays_inside_its_node(live_server, page):
@@ -709,6 +603,39 @@ def test_the_four_statuses_render_four_distinct_borders(live_server, page):
     assert len(seen) == 4, seen
 
 
+def test_status_chips_render_four_distinct_colours(live_server, page):
+    """The shape glyphs (○ ● ◐ ✓) alone are hard to tell apart at the chip's
+    12px size; colour is the second, independent channel app.css adds on top
+    of them."""
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    seen = set()
+    for status in ["not-started", "active", "paused", "done"]:
+        page.evaluate(
+            "s => document.querySelector('.node').setAttribute('class', 'node cat-0 status-' + s)",
+            status,
+        )
+        seen.add(
+            page.locator(".node .status-chip").first.evaluate("c => getComputedStyle(c).fill")
+        )
+    assert len(seen) == 4, seen
+
+
+def test_the_node_title_is_larger_than_its_subtitle(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    # Downstream carries both a due date and a note, so it has a .node-sub to
+    # compare against.
+    node = page.locator('.node[data-name="Downstream"]')
+    title_size = node.locator(".node-title").evaluate(
+        "el => parseFloat(getComputedStyle(el).fontSize)"
+    )
+    sub_size = node.locator(".node-sub").first.evaluate(
+        "el => parseFloat(getComputedStyle(el).fontSize)"
+    )
+    assert title_size > sub_size, (title_size, sub_size)
+
+
 def test_blocked_and_ready_render_different_fills_on_an_uncategorised_node(live_server, page):
     """categoryClass() returns 'cat-5' (fill: var(--subtle)) for any project
     with no category, and blocked_by with no category is an explicitly
@@ -756,12 +683,15 @@ def test_clicking_the_chip_cycles_the_status(live_server, page, reset_upstream_s
     assert node.get_attribute("class") != before
 
 
-def test_clicking_the_chip_does_not_open_the_detail_view(live_server, page, reset_upstream_status):
+def test_clicking_the_chip_does_not_open_the_side_panel(live_server, page, reset_upstream_status):
+    """The chip's own click handler stops propagation, so it must never reach
+    the node group's click-open scheduling either."""
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
     page.locator('.node[data-name="Upstream"] .status-chip').click()
     page.wait_for_timeout(300)
     assert "#/project/" not in page.url
+    assert page.locator("#project-panel").is_hidden()
 
 
 def test_a_status_edit_survives_a_fresh_browser_context(
@@ -1105,11 +1035,21 @@ def test_the_category_column_is_hidden_when_nothing_is_isolated(page, layout_ser
     assert page.locator("#categories").is_hidden()
 
 
-def test_a_category_entry_opens_the_project(live_server, page):
+def test_a_category_entry_opens_the_side_panel(live_server, page):
     page.goto(f"{live_server}/#/")
     page.wait_for_selector("#categories .category")
     page.locator('#categories [data-name="Standalone"] .entry-name').click()
-    page.wait_for_url("**/#/project/Standalone")
+    page.wait_for_selector("#project-panel:visible", timeout=5000)
+    assert page.locator("#project-panel h2").inner_text() == "Standalone"
+
+
+def test_double_clicking_a_category_entry_opens_its_folder(live_server, page):
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    page.locator('#categories [data-name="Standalone"] .entry-name').dblclick()
+    page.wait_for_function("() => location.hash.startsWith('#/browse/')", timeout=5000)
+    page.wait_for_selector(".listing", timeout=5000)
+    assert page.locator("#project-panel").is_hidden()
 
 
 def test_the_details_toggle_is_gone(live_server, page):
