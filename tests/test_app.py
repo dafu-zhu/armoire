@@ -904,3 +904,30 @@ def test_a_launch_failure_is_reported_rather_than_swallowed(tmp_path, monkeypatc
     response = client.post("/api/registry/open", headers=HEADERS)
     assert response.status_code == 500
     assert "no application" in response.json()["detail"]
+
+
+def test_the_root_tree_payload_carries_the_registry_path(tmp_path):
+    client = _client_with_registry(tmp_path)
+    payload = client.get("/api/tree", params={"path": ""}).json()
+    assert payload["registry"] == str(store.registry_path(tmp_path))
+
+
+def test_a_subdirectory_tree_payload_carries_no_registry_path(client):
+    """Root metadata is root-only: nothing downstream refetches it per
+    navigation, so computing it on every subdirectory expansion is waste."""
+    payload = client.get("/api/tree", params={"path": "docs"}).json()
+    assert "registry" not in payload
+
+
+def test_the_registry_path_is_null_when_the_store_is_inside_the_served_folder(
+    tmp_path, monkeypatch
+):
+    """No usable store means no registry and no button. One nullable field
+    answers both questions."""
+    config_root = tmp_path / "store"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    client = TestClient(create_app(served), base_url="http://127.0.0.1")
+    payload = client.get("/api/tree", params={"path": ""}).json()
+    assert payload["registry"] is None

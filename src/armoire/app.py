@@ -147,6 +147,11 @@ def create_app(root: Path) -> FastAPI:
             # waste for a value nothing there consults.
             payload["root"] = str(root)
             payload["has_registry"] = dashboard.has_roadmap(root, registry_file)
+            # The path, so the client can offer to open it and can show it
+            # when opening fails. None when the store is unusable: there is
+            # no registry in that case, so one nullable field answers both
+            # "is there a button" and "what does it open".
+            payload["registry"] = None if writes_into_root else str(registry_file)
         return payload
 
     @app.get("/api/index")
