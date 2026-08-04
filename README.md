@@ -123,6 +123,10 @@ Phase 2 `armoire.toml`, that file is copied into the store — never deleted,
 since deleting it would itself be a write to the served folder — and the
 startup output says which copy is now authoritative.
 
+The roadmap and the file browser both carry an **Edit registry** button in the
+footer, which opens that file in whatever application your system associates
+with `.toml`. If nothing is associated, the button gives you the path instead.
+
 If the store would land inside the folder being served (a home directory, or
 `%APPDATA%` itself), armoire refuses to write anything there and serves
 read-only instead, saying why.

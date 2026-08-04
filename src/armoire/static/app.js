@@ -173,6 +173,11 @@ function showRoadmapError(message) {
   box.className = 'error';
   box.textContent = message;
   roadmapMessage.replaceChildren(box);
+  // A registry that does not parse is the one screen where the file most
+  // needs opening: the message names the line, and the fix is one click and
+  // three seconds away. `box.textContent` above created a text node; append
+  // adds the button as its sibling rather than replacing it.
+  mountRegistryButton(box, registryPath);
 }
 
 function clearRoadmapMessage() {

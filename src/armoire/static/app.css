@@ -327,6 +327,7 @@ iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
 
 .empty, .error { padding: 24px; color: var(--muted); text-align: center; }
 .error { color: #d1242f; }
+#roadmap-message .error .registry-open { margin-top: 10px; }
 
 #status {
   flex: 0 0 auto;
