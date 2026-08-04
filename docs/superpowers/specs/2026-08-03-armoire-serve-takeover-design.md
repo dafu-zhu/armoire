@@ -26,7 +26,8 @@ which port is which.
 
 **In:** `--force` to replace an armoire already holding the port; `--detach` to
 run in the background; `armoire list` to show what is running where; short
-flags `-d` and `-f`.
+flags `-d` and `-f` (with `-df` the advertised pairing); worked examples in
+`--help` at both the group and `serve` level.
 
 **Out:** `armoire stop`; per-folder port memory (`list` answers the question
 without adding hidden state); serving several folders from one process;
@@ -131,8 +132,85 @@ armoire list
 ```
 
 `-d` and `-f` are Click boolean flags, so `-df` combines them without extra
-work. `-df` is the pairing the error message recommends, and the one this
-whole feature exists to make ordinary.
+work.
+
+**Bare `-f` is never advertised.** Replacing a server and then keeping the
+terminal open reproduces the problem this feature exists to remove, so no help
+text or error message ever recommends `-f` on its own — they offer `-df` and
+the long `--force`. The short flag still exists, because `-df` decomposes into
+`-d -f` and cannot parse without it.
+
+`--force` on its own remains fully supported, not deprecated: replacing a
+misbehaving server and watching the replacement in the foreground is a real
+thing to want. It is simply not a thing armoire suggests.
+
+## `--help`
+
+Click generates help from docstrings and option declarations, so today
+`armoire --help` lists the commands and nothing else — no worked invocation
+anywhere. Someone who cannot remember whether it is `--port` or `-p`, or which
+folder is on which port, gets no answer from the tool itself.
+
+Both levels gain an `epilog` of real commands.
+
+**`armoire --help`**
+
+```
+Usage: armoire [OPTIONS] COMMAND [ARGS]...
+
+  Serve any folder as a local, read-only website.
+
+Options:
+  --version  Show the version and exit.
+  --help     Show this message and exit.
+
+Commands:
+  list   Show the armoire instances currently running.
+  serve  Browse FOLDER at http://127.0.0.1:PORT.
+
+Examples:
+  armoire serve .                     browse the current folder
+  armoire serve ~/notes -d            run it in the background
+  armoire serve ~/notes -df           replace the armoire already on that port
+  armoire serve ~/notes --port 9000   choose the port
+  armoire list                        what is running, and where
+
+One process serves one folder, so several folders means several ports.
+`armoire list` is there because nobody remembers which is which.
+```
+
+**`armoire serve --help`**
+
+```
+Usage: armoire serve [OPTIONS] FOLDER
+
+  Browse FOLDER at http://127.0.0.1:PORT. Never writes to FOLDER.
+
+  armoire's registry and project statuses live in its own per-user store,
+  outside the served folder, and that store is the only thing it writes.
+
+Options:
+  --port INTEGER  Port to listen on.  [default: 8420]
+  -d, --detach    Run in the background and hand back the prompt. Output goes
+                  to a log file in the store.
+  -f, --force     Replace an armoire already on this port. Does nothing when
+                  the port is free, and never stops a process armoire cannot
+                  identify as its own.
+  --help          Show this message and exit.
+
+Examples:
+  armoire serve .
+  armoire serve D:/GitHub/summer-26 -df
+  armoire serve ~/notes --port 9000 -d
+```
+
+The last line of the group epilog carries the fact that no flag can teach:
+armoire is one-folder-per-process. That is the thing a newcomer gets wrong, and
+help output is where they will meet it.
+
+Click rewraps epilog text by default, which would collapse the aligned example
+columns into prose. The epilogs use `\b` escapes to mark those blocks as
+preformatted.
 
 ## Output
 
@@ -140,10 +218,14 @@ whole feature exists to make ordinary.
 
 ```
 armoire: port 8420 is serving D:\GitHub\summer-26 (pid 48148)
-  -f replaces it
   -df replaces it and runs without keeping this terminal open
+  --force replaces it and stays in this terminal
   --port serves this folder somewhere else instead
 ```
+
+`-df` is listed first because it is the answer nearly every time: someone
+blocked by a server they had lost track of is about to create another one they
+will also lose.
 
 Naming the folder is what makes a mistake read as a mistake: replacing your own
 stale server and destroying a server you still wanted look identical without it.
@@ -176,13 +258,13 @@ armoire serving D:\GitHub\armoire
 
 ```
 armoire: port 8420 is in use, and what holds it is not armoire
-  armoire stops only processes it can identify as its own, so -f will not help
+  armoire stops only processes it can identify as its own, so --force will not help
   --port serves this folder somewhere else instead
 ```
 
-Saying `-f will not help` explicitly is deliberate. A user who has just been
-told about `-f` by the other error will try it here, and silence would read as
-a bug rather than a refusal.
+Saying `--force will not help` explicitly is deliberate. A user who has just
+been told about forcing by the other error will try it here, and silence would
+read as a bug rather than a refusal.
 
 ## `armoire list`
 
@@ -251,10 +333,23 @@ Foreground mode writes no log — the terminal is the log.
   raises `PortForeign`, listener survives. A 200 is not identity.
 
 **CLI**
-- The busy error names the folder, the pid, `-f`, and `-df`; exit 1.
-- The foreign error says `-f will not help`; exit 1.
-- `-df` parses as both flags.
+- The busy error names the folder, the pid, `-df`, and `--force`; exit 1.
+- The foreign error says `--force will not help`; exit 1.
+- `-df` parses as both flags; `-d` and `--force` each parse alone.
 - Replacement line names the replaced folder, not only its pid.
+- **No example or error message recommends bare `-f`.** Scope the assertion to
+  the two epilogs and the two error strings — *not* to whole `--help` output,
+  because Click's own options table renders `-f, --force` and always will. The
+  rule is about what armoire suggests, not what Click documents. This is the
+  rule most likely to erode as those strings get edited, so it gets a test.
+
+**Help**
+- `armoire --help` exits 0 and names both `serve` and `list`.
+- The group epilog states one-folder-per-process.
+- `armoire serve --help` documents `--port`, `-d`, and `-f`, and shows the
+  default port.
+- Example blocks keep their column alignment — the `\b` escapes work, and
+  Click has not rewrapped them into prose.
 
 **Detach**
 - Returns promptly, child answers `/api/instance`, log file exists.
