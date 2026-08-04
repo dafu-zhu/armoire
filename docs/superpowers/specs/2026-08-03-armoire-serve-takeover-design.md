@@ -26,8 +26,9 @@ which port is which.
 
 **In:** `--force` to replace an armoire already holding the port; `--detach` to
 run in the background; `armoire list` to show what is running where; short
-flags `-d` and `-f` (with `-df` the advertised pairing); worked examples in
-`--help` at both the group and `serve` level.
+flags `-p`, `-d`, and `-f` (with `-df` the advertised pairing); worked examples
+in `--help` at both the group and `serve` level. Every existing long form keeps
+working unchanged.
 
 **Out:** `armoire stop`; per-folder port memory (`list` answers the question
 without adding hidden state); serving several folders from one process;
@@ -127,12 +128,20 @@ the process it replaced.
 ## Flags
 
 ```
-armoire serve FOLDER [--port N] [-d/--detach] [-f/--force]
+armoire serve FOLDER [-p/--port N] [-d/--detach] [-f/--force]
 armoire list
 ```
 
+**Nothing is deprecated.** `--port`, `--detach`, and `--force` all remain
+first-class spellings; the short forms are additions, not replacements. Scripts
+and muscle memory built on the long forms keep working, and the long forms are
+what the error messages use, since an error read once should not be a puzzle.
+
 `-d` and `-f` are Click boolean flags, so `-df` combines them without extra
-work.
+work. `-p` takes a value, so when combined it goes last and the value follows:
+`-dp 9000` is `--detach --port 9000`. `-pd 9000` is an error — Click would read
+`d` as the start of the port value — which is reason enough for the examples to
+show `-dp` and never `-pd`.
 
 **Bare `-f` is never advertised.** Replacing a server and then keeping the
 terminal open reproduces the problem this feature exists to remove, so no help
@@ -172,7 +181,7 @@ Examples:
   armoire serve .                     browse the current folder
   armoire serve ~/notes -d            run it in the background
   armoire serve ~/notes -df           replace the armoire already on that port
-  armoire serve ~/notes --port 9000   choose the port
+  armoire serve ~/notes -dp 9000      background, on port 9000
   armoire list                        what is running, and where
 
 One process serves one folder, so several folders means several ports.
@@ -190,18 +199,18 @@ Usage: armoire serve [OPTIONS] FOLDER
   outside the served folder, and that store is the only thing it writes.
 
 Options:
-  --port INTEGER  Port to listen on.  [default: 8420]
-  -d, --detach    Run in the background and hand back the prompt. Output goes
-                  to a log file in the store.
-  -f, --force     Replace an armoire already on this port. Does nothing when
-                  the port is free, and never stops a process armoire cannot
-                  identify as its own.
-  --help          Show this message and exit.
+  -p, --port INTEGER  Port to listen on.  [default: 8420]
+  -d, --detach        Run in the background and hand back the prompt. Output
+                      goes to a log file in the store.
+  -f, --force         Replace an armoire already on this port. Does nothing
+                      when the port is free, and never stops a process armoire
+                      cannot identify as its own.
+  --help              Show this message and exit.
 
 Examples:
   armoire serve .
   armoire serve D:/GitHub/summer-26 -df
-  armoire serve ~/notes --port 9000 -d
+  armoire serve ~/notes -dp 9000
 ```
 
 The last line of the group epilog carries the fact that no flag can teach:
@@ -336,6 +345,8 @@ Foreground mode writes no log — the terminal is the log.
 - The busy error names the folder, the pid, `-df`, and `--force`; exit 1.
 - The foreign error says `--force will not help`; exit 1.
 - `-df` parses as both flags; `-d` and `--force` each parse alone.
+- `-p 9000` and `--port 9000` are equivalent; `-dp 9000` parses as detach plus
+  port. Every long form still works on its own — nothing was replaced.
 - Replacement line names the replaced folder, not only its pid.
 - **No example or error message recommends bare `-f`.** Scope the assertion to
   the two epilogs and the two error strings — *not* to whole `--help` output,
