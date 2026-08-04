@@ -1,4 +1,4 @@
-# armoire serve takeover and detach — design
+# armoire serve takeover, detach, and list — design
 
 **Date:** 2026-08-03
 **Status:** Approved.
@@ -17,27 +17,30 @@ ERROR: [Errno 10048] error while attempting to bind on address
 The recovery is to hunt the process down by port and kill it, which is not
 something a file viewer should ask of anyone.
 
-The second half of the problem is why the old instance was invisible: there is
-no way to run armoire without dedicating a terminal to it.
+Two further problems sit behind that one. There is no way to run armoire
+without dedicating a terminal to it. And because one process serves exactly one
+folder, several folders means several ports — with nothing anywhere recording
+which port is which.
 
 ## Scope
 
-**In:** `serve` replaces an armoire instance already holding the port; a
-`--detach` flag that runs the server in the background; a log file so a
-detached server's failures are recoverable.
+**In:** `--force` to replace an armoire already holding the port; `--detach` to
+run in the background; `armoire list` to show what is running where; short
+flags `-d` and `-f`.
 
-**Out:** an `armoire stop` command (re-running `serve` is the restart); pidfiles;
-`--port 0`; restart-on-crash supervision; any change to what armoire serves.
+**Out:** `armoire stop`; per-folder port memory (`list` answers the question
+without adding hidden state); serving several folders from one process;
+restart-on-crash supervision; any change to what armoire serves.
 
 ## Approach
 
 Killing whatever holds a port is easy and wrong. The design question is how
 armoire proves the process on port 8420 is armoire and not a database.
 
-**A pidfile in the store.** Rejected. Verifying a recorded pid is still armoire
-— rather than a recycled pid now belonging to something else — needs `psutil`
-or platform-specific code. armoire has six runtime dependencies, all
-load-bearing, and killing a recycled pid means killing an innocent process.
+**A pidfile as the source of truth.** Rejected. Verifying a recorded pid is
+still armoire — rather than a recycled pid now belonging to something else —
+needs `psutil` or platform-specific code. armoire has six runtime dependencies,
+all load-bearing, and killing a recycled pid means killing an innocent process.
 
 **A `POST /api/shutdown` endpoint.** Rejected. It avoids process-killing
 entirely, and a local caller can already kill armoire through the OS, so it
@@ -54,6 +57,9 @@ The rule the whole design rests on:
 > armoire only ever kills a pid that armoire itself just reported, on the port
 > armoire is about to take.
 
+`--force` widens *permission*, never *identity*. It authorises replacing an
+armoire. It never authorises killing a process armoire could not identify.
+
 ## The identity endpoint
 
 `GET /api/instance` → `{"armoire": true, "pid": 51844, "root": "D:\\GitHub\\summer-26"}`
@@ -63,146 +69,215 @@ with no side effect, and the only thing it newly exposes is a pid, which a
 browser can do nothing with. `root` is already public through `/api/tree`.
 
 `armoire` is a literal `true` rather than an implied "you got a 200": it makes
-the check explicit at both ends, and a future unrelated service answering that
-path with some other JSON does not read as armoire.
+the check explicit at both ends, and an unrelated service answering that path
+with some other JSON does not read as armoire.
 
-## Taking the port
+## Claiming the port
 
-One helper, `ensure_port_free(port) -> int | None`, returning the pid it
-replaced or `None` when nothing needed replacing. It runs in the process the
-user invoked — not in the detached child — so the parent can report what it did.
+One helper, `claim_port(port, force) -> Claim`, run in the process the user
+invoked — not in the detached child — so the parent reports what it did.
+`Claim` carries `replaced_pid` and `replaced_root`, both `None` when nothing
+was replaced.
 
 1. Try to bind a probe socket to `127.0.0.1:<port>`. Binds cleanly → close it,
-   return `None`. Nothing is there.
+   return an empty `Claim`. Nothing is there.
 2. Bind fails → `GET http://127.0.0.1:<port>/api/instance`, 1s timeout.
-   - **Answers with `armoire: true` and a pid** → `os.kill(pid, SIGTERM)`, then
-     poll until the port accepts a bind, up to 2s. Return the pid.
-   - **Port frees before the kill lands** (the incumbent exited on its own
-     between the failed bind and the probe) → return `None`.
-   - **Anything else** — connection refused, a timeout, a 404, JSON without
-     `armoire: true` → **kill nothing.** Raise, and let the CLI exit non-zero
-     naming what happened.
-   - **Killed, but the port never frees inside the budget** → raise. Do not
-     bind-race a dying process.
 
-The incumbent's served folder is not consulted. A port holds one server, and
-`serve --port 8420` means "be the armoire on 8420" — replacing an instance that
-was serving a different folder is the intended behaviour, not an edge case. The
-replacement line names the pid so the swap is never silent.
+| Probe result | `--force` absent | `--force` present |
+|---|---|---|
+| Answers `armoire: true` with a pid | `PortBusy(root, pid)` — refuse | `SIGTERM`, wait for the port, return the pid and root |
+| Refused, timed out, 404, or JSON without `armoire: true` | `PortForeign` — refuse | `PortForeign` — **still refuse** |
+| Port freed between the failed bind and the probe | proceed, empty `Claim` | proceed, empty `Claim` |
+| Killed, but the port never frees within 2s | `PortStuck` — refuse | `PortStuck` — refuse |
 
-`SIGTERM` rather than `SIGKILL`: uvicorn installs a handler for it and shuts
-down its own sockets. On Windows `os.kill` maps `SIGTERM` to
-`TerminateProcess`, which is abrupt but correct here — armoire holds no
-write transaction that an abrupt end could tear, because `serve` never writes
-to the served folder and `write_state` is atomic.
+The second row is the one that matters: `--force` does not escalate to killing
+an unidentified process. A user who wants that has `--port`, or their own
+task manager.
+
+The incumbent's served folder is not consulted for the decision. A port holds
+one server, and `serve --port 8420 --force` means "be the armoire on 8420".
+Replacing an instance serving a different folder is intended, not an edge case
+— which is exactly why the folder is named in both the refusal and the
+replacement line. The default port is 8420, so `armoire serve OTHER -df` with
+no `--port` is a plausible slip, and the output has to make it legible.
+
+`SIGTERM` rather than `SIGKILL`: uvicorn installs a handler and shuts down its
+own sockets. On Windows `os.kill` maps `SIGTERM` to `TerminateProcess`, which
+is abrupt but correct here — `serve` never writes to the served folder, and
+`write_state` is atomic, so an abrupt end tears nothing.
 
 ## Detaching
 
-`--detach` re-launches `sys.argv` minus the flag through `subprocess.Popen`:
+`--detach` re-launches `sys.argv` minus the detach flag through
+`subprocess.Popen`:
 
 - **Windows** — `creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`
 - **POSIX** — `start_new_session=True`
 
-The parent then polls `/api/instance` until the child answers, up to 10s, and
-only then prints `running in the background (pid N)`. Printing before the child
-has bound would report success for a process that died on startup — the exact
+The parent polls `/api/instance` until the child answers, up to 10s, and only
+then prints `running in the background (pid N)`. Printing before the child has
+bound would report success for a process that died on startup — the exact
 failure this feature exists to prevent. If the child never answers, the parent
 says so, points at the log, and exits non-zero.
 
-Takeover happens in the parent, before the spawn, so the child never races the
-process it is replacing.
+The port is claimed in the parent, before the spawn, so the child never races
+the process it replaced.
+
+## Flags
+
+```
+armoire serve FOLDER [--port N] [-d/--detach] [-f/--force]
+armoire list
+```
+
+`-d` and `-f` are Click boolean flags, so `-df` combines them without extra
+work. `-df` is the pairing the error message recommends, and the one this
+whole feature exists to make ordinary.
 
 ## Output
 
-Foreground, having replaced an instance:
+**Port busy, no `--force`** — exit 1:
 
 ```
-armoire serving D:\GitHub\summer-26
+armoire: port 8420 is serving D:\GitHub\summer-26 (pid 48148)
+  -f replaces it
+  -df replaces it and runs without keeping this terminal open
+  --port serves this folder somewhere else instead
+```
+
+Naming the folder is what makes a mistake read as a mistake: replacing your own
+stale server and destroying a server you still wanted look identical without it.
+The `-df` line is where the detach hint belongs — the moment you are blocked by
+a server you had lost track of is the moment to learn you need not lose the
+next one.
+
+**Replaced, foreground:**
+
+```
+armoire serving D:\GitHub\armoire
   http://127.0.0.1:8420
-  replaced the armoire already on 8420 (pid 48148)
-  tip: --detach keeps it running without this terminal
-  registry C:\Users\dafuz\AppData\Roaming\armoire\folders\summer-26-74c70453\registry.toml
+  replaced the armoire serving D:\GitHub\summer-26 on 8420 (pid 48148)
+  registry C:\Users\dafuz\AppData\Roaming\armoire\folders\armoire-6c554005\registry.toml
 ```
 
-The tip appears **only** when a takeover actually happened **and** `--detach`
-was not passed. That pairing is the whole point: someone replacing an instance
-they had lost track of, about to create another one they will also lose. It is
-not printed on a clean start — there is nothing to infer from a first launch —
-and not in detached mode, where the advice is already taken.
-
-Detached:
+**Replaced, detached:**
 
 ```
-armoire serving D:\GitHub\summer-26
+armoire serving D:\GitHub\armoire
   http://127.0.0.1:8420
-  replaced the armoire already on 8420 (pid 48148)
+  replaced the armoire serving D:\GitHub\summer-26 on 8420 (pid 48148)
   running in the background (pid 51844)
   log C:\Users\dafuz\AppData\Roaming\armoire\serve-8420.log
-  registry C:\Users\dafuz\AppData\Roaming\armoire\folders\summer-26-74c70453\registry.toml
+  registry C:\Users\dafuz\AppData\Roaming\armoire\folders\armoire-6c554005\registry.toml
 ```
 
-Port held by something else, exit code 1:
+**Port held by something that is not armoire** — exit 1, with or without
+`--force`:
 
 ```
 armoire: port 8420 is in use, and what holds it is not armoire
-  armoire stops only processes it can identify as its own
-  use --port to pick another, or stop that process yourself
+  armoire stops only processes it can identify as its own, so -f will not help
+  --port serves this folder somewhere else instead
 ```
 
-No `--detach` tip here. Detaching would not free that port, so the hint would
-send the reader the wrong way.
+Saying `-f will not help` explicitly is deliberate. A user who has just been
+told about `-f` by the other error will try it here, and silence would read as
+a bug rather than a refusal.
 
-## Logs
+## `armoire list`
 
-A detached server with nowhere to write is a server whose crash you never see.
-`--detach` redirects the child's stdout and stderr to
-`<store>/serve-<port>.log`, truncated per launch, and prints the path. The file
-sits beside `folders/` in the store root, not inside any folder's directory:
-it belongs to a port, and across launches that port may serve different folders.
+```
+$ armoire list
+PORT   FOLDER                       PID
+8420   D:\GitHub\summer-26          51844
+8421   D:\GitHub\armoire            52001
 
-**Except when the store is inside the served folder.** `store.writes_inside`
-already catches that case, and `prepare_store` refuses to write anything —
-serving a home directory, or `%APPDATA%` itself, must not put armoire's files
-in the tree it is serving. A log is a file like any other, so `--detach`
-inherits that refusal: when `writes_inside(folder)` is true it opens no log,
-discards the child's output to the null device, and says so:
+2 running
+```
+
+Empty case: `no armoire instances running`.
+
+**How it knows.** `serve` writes `<store>/instances/<port>.json` at startup:
+`{"port": 8420, "root": "...", "pid": 51844}`. One file per port, not one
+shared file — two servers starting at once would otherwise need a merge, and
+per-port files make the write independent by construction.
+
+**The file is a hint, never the truth.** `list` reads the directory to learn
+which ports are worth asking about, then probes `/api/instance` on each. What
+it prints comes from the probe. A port that does not answer, or answers as
+something else, is dropped from the output and its file removed — so a
+kill -9'd server cleans itself up the next time anyone runs `list`. This is the
+same discipline as the takeover path: files suggest, live processes decide.
+
+**Ordering** is by port, ascending — stable across runs, unlike directory order.
+
+## When the store is unwritable
+
+`store.writes_inside` already catches the case where armoire's own files would
+land inside the folder being served — serving a home directory, or `%APPDATA%`
+itself — and `prepare_store` refuses to write anything there.
+
+The log and the instance file are files like any other, so both inherit that
+refusal. `--detach` still works; it discards the child's output to the null
+device and says why:
 
 ```
   running in the background (pid 51844)
   no log: the armoire store is inside the served folder
 ```
 
-Detaching still works; only the log is withheld. Writing it would break the one
-guarantee armoire makes, and `test_serving_never_writes_to_disk` exists to
-catch precisely this.
+Such an instance does not appear in `armoire list`, because nothing recorded
+it. That is the correct trade: `test_serving_never_writes_to_disk` exists to
+guarantee armoire does not write into the tree it serves, and a convenience
+feature does not get to punch a hole in it.
 
 Foreground mode writes no log — the terminal is the log.
 
 ## Testing
 
+**Identity**
 - `/api/instance` returns `armoire: true`, `os.getpid()`, and the served root.
-- `ensure_port_free` on a free port: returns `None`, kills nothing.
-- `ensure_port_free` against a real armoire on the port: returns that pid, the
-  process is gone, the port binds.
-- **`ensure_port_free` against a non-armoire listener: raises, and the listener
+
+**Claiming**
+- Free port: empty `Claim`, nothing killed.
+- Real armoire on the port, `force=True`: returns that pid and root, the process
+  is gone, the port binds.
+- Real armoire on the port, `force=False`: raises `PortBusy` carrying the root
+  and pid, **and the incumbent is still alive afterwards**.
+- **Non-armoire listener, `force=True`: raises `PortForeign`, and the listener
   is still alive afterwards.** The single most important test here — it is what
   separates this feature from a footgun.
-- `ensure_port_free` against a listener that answers 200 with JSON lacking
-  `armoire: true`: raises, listener survives. A 200 is not identity.
-- The tip appears on takeover without `--detach`; absent on a clean start;
-  absent with `--detach`; absent on the non-armoire error path.
-- `--detach` returns promptly, the child answers `/api/instance`, the log file
-  exists. A child that cannot start makes the parent exit non-zero rather than
-  print a pid.
-- `--detach` with the store inside the served folder: the child still starts,
-  no log file is created anywhere under the served folder, and the output says
-  why. `test_serving_never_writes_to_disk` covers the served tree; this test
-  covers the launch path that would otherwise sidestep it.
-- Every test that kills something kills only a process the test itself started.
+- Listener answering 200 with JSON lacking `armoire: true`, `force=True`:
+  raises `PortForeign`, listener survives. A 200 is not identity.
+
+**CLI**
+- The busy error names the folder, the pid, `-f`, and `-df`; exit 1.
+- The foreign error says `-f will not help`; exit 1.
+- `-df` parses as both flags.
+- Replacement line names the replaced folder, not only its pid.
+
+**Detach**
+- Returns promptly, child answers `/api/instance`, log file exists.
+- A child that cannot start makes the parent exit non-zero rather than print a
+  pid.
+- Store inside the served folder: child starts, no file is created anywhere
+  under the served folder, output says why.
+
+**list**
+- Two live instances: both listed, ordered by port.
+- A recorded port with nothing behind it: omitted, and its file removed.
+- A recorded port answering as something else: omitted, file removed.
+- No instances: `no armoire instances running`.
+
+Every test that kills something kills only a process the test itself started.
 
 ## What this does not do
 
 No supervision: a detached server that crashes at 3am stays down. Restarting it
-is `serve` again, which is now also how you replace it. Adding a supervisor
-means a supervisor to install, monitor, and stop — a service, where this is a
-tool you point at a folder.
+is `serve` again. Adding a supervisor means a supervisor to install, monitor,
+and stop — a service, where this is a tool you point at a folder.
+
+No per-folder port memory. `list` answers "which port was that folder on"
+without armoire silently choosing ports on your behalf, and a remembered port
+that quietly changes when it is taken is harder to reason about than a port you
+typed.
