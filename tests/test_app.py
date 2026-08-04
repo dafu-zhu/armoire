@@ -312,7 +312,7 @@ def test_index_html_is_served_at_root(client):
     assert client.get("/").status_code == 200
 
 
-def test_serving_never_writes_to_disk(root):
+def test_serving_never_writes_to_disk(root, monkeypatch):
     # Written into the store, not the shared `root` fixture: the registry no
     # longer lives inside the served folder at all, and writing it there would
     # also perturb the ~40 tree and index tests that count what is in the
@@ -359,6 +359,11 @@ def test_serving_never_writes_to_disk(root):
     projects = client.get("/api/projects")
     detail = client.get("/api/project/Docs")
     status = client.put("/api/status", json={"name": "Docs", "status": "done"}, headers=HEADERS)
+    # The launcher is stubbed: this test must never spawn a real editor. What
+    # is being measured is that reaching the endpoint -- guard, existence
+    # check, dispatch -- touches nothing in the served folder.
+    monkeypatch.setattr(store, "open_in_editor", lambda p: None)
+    opened = client.post("/api/registry/open", headers=HEADERS)
     # The snapshot is only as strong as what ran inside it. Assert every call
     # actually reached their work, so this test cannot quietly go back to
     # checksumming a `registry: false` and a 404 the way it used to.
@@ -369,6 +374,7 @@ def test_serving_never_writes_to_disk(root):
     # inside the window.
     assert detail.json()["files"], detail.json()
     assert status.status_code == 200, status.text
+    assert opened.status_code == 200, opened.text
     assert folder_snapshot(root) == before
 
 
@@ -811,3 +817,136 @@ def test_a_status_edit_does_not_write_to_the_served_folder(tmp_path):
     # quietly pass on a rejected write it never noticed.
     assert response.status_code == 200, response.text
     assert folder_snapshot(tmp_path) == before
+
+
+def test_opening_the_registry_launches_the_os_handler(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    client = _client_with_registry(tmp_path)
+    response = client.post("/api/registry/open", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"opened": True}
+    assert seen == [store.registry_path(tmp_path)]
+
+
+def test_opening_the_registry_without_the_header_is_refused(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    client = _client_with_registry(tmp_path)
+    response = client.post("/api/registry/open")
+    assert response.status_code == 403
+    # The refusal must happen before the launch, not after it.
+    assert seen == []
+
+
+def test_opening_the_registry_from_a_foreign_origin_is_refused(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    client = _client_with_registry(tmp_path)
+    response = client.post(
+        "/api/registry/open", headers=HEADERS | {"Origin": "http://evil.example"}
+    )
+    assert response.status_code == 403
+    assert seen == []
+
+
+def test_opening_the_registry_from_a_rebound_host_is_refused(tmp_path, monkeypatch):
+    """The same DNS-rebinding case /api/status is pinned against: Origin
+    equal to base_url holds tautologically once the Host is rebound, so the
+    Host itself must name a real loopback address."""
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    client = _client_with_registry(tmp_path)
+    response = client.post(
+        "/api/registry/open",
+        headers=HEADERS | {"Host": "evil.example", "Origin": "http://evil.example"},
+    )
+    assert response.status_code == 403
+    assert seen == []
+
+
+def test_opening_a_registry_that_does_not_exist_is_404(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+    response = client.post("/api/registry/open", headers=HEADERS)
+    assert response.status_code == 404
+    assert seen == []
+
+
+def test_a_store_inside_the_served_folder_refuses_the_registry_open(tmp_path, monkeypatch):
+    """Same shape as the status-write refusal: root is a *descendant* of
+    config_root(), so the weaker "is config_root() inside root" predicate is
+    False here and would let this through."""
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    config_root = tmp_path / "store"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    registry_file = store.registry_path(served)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(REGISTRY, encoding="utf-8")
+
+    client = TestClient(create_app(served), base_url="http://127.0.0.1")
+    response = client.post("/api/registry/open", headers=HEADERS)
+    assert response.status_code == 403
+    assert seen == []
+
+
+def test_a_launch_failure_is_reported_rather_than_swallowed(tmp_path, monkeypatch):
+    def boom(path):
+        raise OSError("no application is associated with .toml")
+
+    monkeypatch.setattr(store, "open_in_editor", boom)
+    client = _client_with_registry(tmp_path)
+    response = client.post("/api/registry/open", headers=HEADERS)
+    assert response.status_code == 500
+    assert "no application" in response.json()["detail"]
+
+
+def test_the_registry_open_endpoint_is_post_only(tmp_path, monkeypatch):
+    """The handler's docstring rests on this: a GET is reachable from a foreign
+    page through <img src>. The X-Armoire check would still refuse that load, so
+    this is defence in depth rather than the load-bearing control -- but a
+    property three documents assert should be pinned by something."""
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    client = _client_with_registry(tmp_path)
+    response = client.get("/api/registry/open", headers=HEADERS)
+    # 404 today: the StaticFiles mount answers the path when no GET route
+    # claims it. 405 if a future router claims the path for POST only. A 200
+    # means a GET route now exists, which is the regression this pins.
+    assert response.status_code in (404, 405), response.status_code
+    assert seen == []
+
+
+def test_the_root_tree_payload_carries_the_registry_path(tmp_path):
+    client = _client_with_registry(tmp_path)
+    payload = client.get("/api/tree", params={"path": ""}).json()
+    assert payload["registry"] == str(store.registry_path(tmp_path))
+
+
+def test_a_subdirectory_tree_payload_carries_no_registry_path(client):
+    """Root metadata is root-only: nothing downstream refetches it per
+    navigation, so computing it on every subdirectory expansion is waste."""
+    payload = client.get("/api/tree", params={"path": "docs"}).json()
+    # A 404 or 403 error body also lacks a "registry" key, so this would pass
+    # vacuously if the fetch broke entirely -- prove it is a real listing first.
+    assert "dirs" in payload
+    assert "registry" not in payload
+
+
+def test_the_registry_path_is_null_when_the_store_is_inside_the_served_folder(
+    tmp_path, monkeypatch
+):
+    """No usable store means no registry and no button. One nullable field
+    answers both questions."""
+    config_root = tmp_path / "store"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    client = TestClient(create_app(served), base_url="http://127.0.0.1")
+    payload = client.get("/api/tree", params={"path": ""}).json()
+    assert payload["registry"] is None

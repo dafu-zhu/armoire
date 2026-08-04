@@ -453,6 +453,36 @@ def empty_registry_server(empty_registry_root):
 
 
 @pytest.fixture(scope="session")
+def broken_registry_root(tmp_path_factory, _isolated_store_session):
+    """TOML that does not parse. load_registry raises RegistryError, the
+    endpoint answers 200-with-error, and app.js renders the message in the
+    red box -- the one screen where the registry most needs opening."""
+    root = tmp_path_factory.mktemp("broken-registry")
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text('[[project]]\nname = "Unclosed\n', encoding="utf-8")
+    return root
+
+
+@pytest.fixture(scope="session")
+def broken_registry_server(broken_registry_root):
+    app = create_app(broken_registry_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("broken-registry server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
 def colon_name_root(tmp_path_factory, _isolated_store_session):
     """A project whose name contains a colon, with a genuine issue against it
     (a missing path) -- the fixture Finding 2's flagged-set fix needs to

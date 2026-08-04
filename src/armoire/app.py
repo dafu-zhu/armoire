@@ -48,6 +48,58 @@ def _resolve(root: Path, path: str) -> Path:
         raise HTTPException(status_code=403, detail="path is outside the served root") from None
 
 
+def _guard(request: Request, writes_into_root: bool) -> None:
+    """Refuse a state-changing request that is not our own page talking to us.
+
+    Shared by every handler with a side effect, so the argument below lives
+    in exactly one place. Two handlers carrying their own copies of a
+    security check is how the two copies drift apart.
+
+    The bind address stops other machines, not other tabs: any page in any
+    browser on this machine can reach 127.0.0.1. What actually keeps a
+    script on a foreign origin out is that neither PUT nor POST with a
+    custom header is a CORS "simple request": the browser must preflight
+    with OPTIONS first, armoire answers no CORS headers and installs no CORS
+    middleware, so the preflight fails closed and the real request is never
+    sent. X-Armoire is belt-and-braces on top of that, not the sole barrier
+    -- it also closes the HTML-form-post route in, since a form cannot set a
+    custom header at all.
+
+    The Origin check is a same-origin *self-consistency* check, not an
+    allowlist: request.base_url is derived from this same request's own Host
+    header, so "Origin equals base_url" holds tautologically for a request
+    whose Host has been DNS-rebound to 127.0.0.1 -- the browser considers
+    that request same-origin, sends no preflight, and lets script set
+    X-Armoire freely. That is a real bypass of both checks at once, so the
+    Host header itself is pinned to a fixed loopback allowlist here,
+    independent of anything the request claims about its own Origin or Host.
+
+    `writes_into_root` is decided at creation time, with the paths it
+    protects, rather than re-asked here: it is fixed for an app's lifetime,
+    so whether armoire's own writes land inside the served folder is fixed
+    too. The question is about that write target and not about
+    config_root() as a whole -- serving a descendant of config_root() puts
+    the store directory inside root even though config_root() is not inside
+    root, and a handler would then write into the tree it is serving.
+    """
+    if request.headers.get("X-Armoire") != "1":
+        raise HTTPException(status_code=403, detail="missing X-Armoire header")
+    # request.url.hostname, not a hand-split Host header: a bracketed IPv6
+    # literal ("[::1]:8420") contains colons of its own, so splitting on ":"
+    # takes the wrong piece and a genuine IPv6-loopback request would be
+    # refused. The URL parser already strips the brackets, so the bracketed
+    # spelling never appears in the allowlist itself -- only the unwrapped
+    # "::1" does.
+    host = request.url.hostname or ""
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        raise HTTPException(status_code=403, detail="foreign host")
+    origin = request.headers.get("Origin")
+    if origin is not None and origin != str(request.base_url).rstrip("/"):
+        raise HTTPException(status_code=403, detail="foreign origin")
+    if writes_into_root:
+        raise HTTPException(status_code=403, detail="the armoire store is inside the served folder")
+
+
 def create_app(root: Path) -> FastAPI:
     root = root.resolve()
     # The store's location is a creation-time concern, and this is the one
@@ -95,6 +147,11 @@ def create_app(root: Path) -> FastAPI:
             # waste for a value nothing there consults.
             payload["root"] = str(root)
             payload["has_registry"] = dashboard.has_roadmap(root, registry_file)
+            # The path, so the client can offer to open it and can show it
+            # when opening fails. None when the store is unusable: there is
+            # no registry in that case, so one nullable field answers both
+            # "is there a button" and "what does it open".
+            payload["registry"] = None if writes_into_root else str(registry_file)
         return payload
 
     @app.get("/api/index")
@@ -239,52 +296,7 @@ def create_app(root: Path) -> FastAPI:
 
     @app.put("/api/status")
     def set_status(payload: dict, request: Request) -> dict:
-        # The bind address stops other machines, not other tabs: any page in
-        # any browser on this machine can reach 127.0.0.1. What actually keeps
-        # a script on a foreign origin from reaching this handler through the
-        # browser is that PUT is not a CORS "simple method": the browser
-        # refuses to send it cross-origin without first sending an OPTIONS
-        # preflight, armoire answers no CORS headers and installs no CORS
-        # middleware, so the preflight fails closed and the real PUT is never
-        # sent. X-Armoire is belt-and-braces on top of that, not the sole
-        # barrier -- it also closes the HTML-form-post route in, since a form
-        # cannot set a custom header at all.
-        #
-        # The Origin check below is a same-origin *self-consistency* check,
-        # not an allowlist: request.base_url is derived from this same
-        # request's own Host header, so "Origin equals base_url" holds
-        # tautologically for a request whose Host has been DNS-rebound to
-        # 127.0.0.1 -- the browser considers that request same-origin, sends
-        # no preflight, and lets script set X-Armoire freely. That is a real
-        # bypass of both checks above at once, so the Host header itself is
-        # pinned to a fixed loopback allowlist here, independent of anything
-        # the request claims about its own Origin or Host.
-        if request.headers.get("X-Armoire") != "1":
-            raise HTTPException(status_code=403, detail="missing X-Armoire header")
-        # request.url.hostname, not a hand-split Host header: a bracketed
-        # IPv6 literal ("[::1]:8420") contains colons of its own, so
-        # splitting on ":" takes the wrong piece and a genuine IPv6-loopback
-        # request would be refused. The URL parser already strips the
-        # brackets, so the bracketed spelling never appears in the allowlist
-        # itself -- only the unwrapped "::1" does.
-        host = request.url.hostname or ""
-        if host not in ("127.0.0.1", "localhost", "::1"):
-            raise HTTPException(status_code=403, detail="foreign host")
-        origin = request.headers.get("Origin")
-        if origin is not None and origin != str(request.base_url).rstrip("/"):
-            raise HTTPException(status_code=403, detail="foreign origin")
-        # Decided at creation time, with the paths it protects, rather than
-        # re-asked here: state_file is fixed for this app's lifetime, so
-        # whether writing it lands inside the served folder is fixed too.
-        # The question is about that write target and not about config_root()
-        # as a whole -- serving a descendant of config_root() (config_root()
-        # itself, or its own "folders" tree) puts the store directory inside
-        # root even though config_root() is not inside root, the other way
-        # around, and this handler would write into the tree it is serving.
-        if writes_into_root:
-            raise HTTPException(
-                status_code=403, detail="the armoire store is inside the served folder"
-            )
+        _guard(request, writes_into_root)
 
         status = payload.get("status")
         if status not in STATUSES:
@@ -310,6 +322,37 @@ def create_app(root: Path) -> FastAPI:
             state["status"] = (statuses if isinstance(statuses, dict) else {}) | {name: status}
             store.write_state(state_file, state)
         return {"name": name, "status": status}
+
+    @app.post("/api/registry/open")
+    def open_registry(request: Request) -> dict:
+        """Hand registry.toml to the user's own editor.
+
+        POST, not GET: this has a side effect, and a GET is reachable from a
+        foreign page through <img src>, which sends no custom headers and
+        would sail past the X-Armoire check. _guard's argument assumes a
+        method the browser must preflight.
+
+        The path is `registry_file`, resolved once at create_app time. No
+        request data reaches the launcher -- there is nothing here for a
+        caller to point at a file of their choosing.
+        """
+        _guard(request, writes_into_root)
+        if not registry_file.is_file():
+            # cli.prepare_store writes a stub before the server starts, so
+            # this is reachable only if the file is removed underneath a
+            # running server. The client shows the path when this comes
+            # back, which is the useful answer for a file that should exist
+            # and does not.
+            raise HTTPException(status_code=404, detail="no registry")
+        try:
+            store.open_in_editor(registry_file)
+        except OSError as exc:
+            # No handler registered for .toml, or no xdg-open on the box.
+            # The message is the only thing that distinguishes "nothing is
+            # installed" from "armoire is broken", so it travels to the UI.
+            logger.warning("could not open the registry: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from None
+        return {"opened": True}
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

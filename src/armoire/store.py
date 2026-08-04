@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -152,3 +153,28 @@ def write_state(state_file: Path, state: dict) -> None:
         with contextlib.suppress(OSError):
             os.unlink(temporary)
         raise
+
+
+def open_in_editor(path: Path) -> None:
+    """Hand `path` to whatever the OS has registered for it. Never waits.
+
+    A GUI editor outlives the request that launched it, so nothing here
+    waits on the child: Popen is started and abandoned. Waiting would pin
+    the handler thread for as long as the user keeps the file open.
+
+    os.startfile is looked up on `os` at call time rather than imported at
+    module scope, because it exists only on Windows -- a module-level
+    `from os import startfile` would make this whole module unimportable on
+    Linux and macOS.
+
+    The default verb, not "edit": `edit` is frequently unregistered for
+    .toml and raises where the default verb succeeds.
+
+    Failures raise OSError (FileNotFoundError for a missing xdg-open,
+    OSError for a Windows association failure). The caller translates.
+    """
+    if sys.platform == "win32":
+        os.startfile(path)
+        return
+    launcher = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen([launcher, str(path)])

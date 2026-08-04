@@ -7,10 +7,15 @@ import { renderRoadmap } from './roadmap.js';
 import { renderCategories } from './categories.js';
 import { categoryOrder } from './palette.js';
 import { openPanel, closePanel } from './panel.js';
+import { mountRegistryButton } from './registry.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
-const status = document.getElementById('status');
+// The span, not the footer: every write below is `status.textContent = …`,
+// which replaces all children. The footer also holds the registry button
+// (registry.js), and a textContent write on the footer would delete it on the
+// next navigation. The message owns the span; the footer owns the row.
+const status = document.getElementById('status-text');
 
 const BROWSE = 'browse';
 const PROJECT = 'project';
@@ -28,6 +33,9 @@ let roadmapListeners = null;
 // never refetched per navigation.
 let rootLabel = null;
 let hasRegistry = false;
+// The absolute path to this folder's registry.toml, or null when armoire has
+// no usable store for it. Set once, at boot, from the root tree payload.
+let registryPath = null;
 // The pending single-click navigation for the root crumb, if any. Module
 // scope, not local to renderBreadcrumb: a stale timer from a crumb that has
 // since been replaced (the user navigated elsewhere before it fired) must
@@ -165,6 +173,16 @@ function showRoadmapError(message) {
   box.className = 'error';
   box.textContent = message;
   roadmapMessage.replaceChildren(box);
+  // A registry that does not parse is the one screen where the file most
+  // needs opening: the message names the line, and the fix is one click and
+  // three seconds away. `box.textContent` above created a text node; append
+  // adds the button as its sibling rather than replacing it.
+  //
+  // showRoadmapError's other caller is the /api/projects fetch's own catch
+  // (a network error, not a parse error), so the button can also appear for
+  // a failure the registry did not cause. Harmless and not worth a branch
+  // just to hide it there -- accepted.
+  mountRegistryButton(box, registryPath);
 }
 
 function clearRoadmapMessage() {
@@ -341,6 +359,11 @@ tree.ready
   .then((rootMeta) => {
     rootLabel = displayRoot(rootMeta.root);
     hasRegistry = rootMeta.hasRegistry;
+    registryPath = rootMeta.registry;
+    // The footer, not the roadmap: a folder with only a stub registry never
+    // reaches the roadmap at all (see showRoadmap's fallback below), and the
+    // registry is exactly what it needs to edit to get there.
+    mountRegistryButton(document.getElementById('status'), registryPath);
     const rootNameEl = document.getElementById('root-name');
     rootNameEl.textContent = rootLabel;
     // A single click, unlike the breadcrumb root crumb's click/dblclick

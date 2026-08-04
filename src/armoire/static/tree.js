@@ -35,9 +35,12 @@ export function initTree(container, onSelect) {
   // before the parent's fetch had returned.
   const expanders = new WeakMap();
   // Populated from the root directory's own fetch below -- every /api/tree
-  // response carries the same `root`/`has_registry`, so there is no reason
-  // for app.js to make a second, redundant request for them.
-  let rootMeta = { root: null, hasRegistry: false };
+  // response carries the same `root`/`has_registry`/`registry`, so there is
+  // no reason for app.js to make a second, redundant request for them.
+  // `registry` is the absolute path to registry.toml, or null when armoire
+  // has no usable store for this folder -- app.js keys the registry-open
+  // button's very existence on that nullness.
+  let rootMeta = { root: null, hasRegistry: false, registry: null };
 
   function select(row) {
     if (selected) selected.removeAttribute('aria-current');
@@ -48,7 +51,9 @@ export function initTree(container, onSelect) {
   async function buildList(path) {
     const data = await fetchDir(path);
     const { dirs, files } = data;
-    if (path === '') rootMeta = { root: data.root, hasRegistry: data.has_registry };
+    if (path === '') {
+      rootMeta = { root: data.root, hasRegistry: data.has_registry, registry: data.registry };
+    }
     const list = document.createElement('ul');
 
     for (const dir of dirs) {

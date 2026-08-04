@@ -1279,3 +1279,82 @@ def test_a_stale_failed_write_does_not_roll_back_over_a_newer_one(live_server, p
         before,
         entry.get_attribute("class"),
     )
+
+
+def test_the_registry_button_is_in_the_footer_on_the_roadmap(page, live_server):
+    open_roadmap(page, live_server)
+    button = page.locator("#status .registry-open")
+    assert button.is_visible()
+    assert button.inner_text() == "Edit registry"
+
+
+def test_the_registry_button_is_in_the_footer_on_the_browse_view(page, live_server):
+    """The browse view matters as much as the roadmap: a folder with only a
+    stub registry is bounced out of the roadmap into the file browser, so a
+    roadmap-only button would be missing exactly when it is needed to declare
+    a first project."""
+    page.goto(f"{live_server}/#/browse/")
+    page.wait_for_selector("#tree", state="visible", timeout=15000)
+    assert page.locator("#status .registry-open").is_visible()
+
+
+def test_clicking_the_registry_button_asks_the_server_to_open_it(page, live_server):
+    calls = []
+
+    def stub(route, request):
+        # Never let this reach the real endpoint: it would launch an editor
+        # on whatever machine is running the suite.
+        calls.append(request.method)
+        route.fulfill(status=200, json={"opened": True})
+
+    page.route("**/api/registry/open", stub)
+    open_roadmap(page, live_server)
+    page.locator("#status .registry-open").click()
+    deadline = time.monotonic() + 5
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert calls == ["POST"]
+
+
+def test_the_registry_button_sends_the_guard_header(page, live_server):
+    """Without X-Armoire the server refuses. A button that always 403s is a
+    button that never works."""
+    seen = []
+
+    def stub(route, request):
+        seen.append(request.headers.get("x-armoire"))
+        route.fulfill(status=200, json={"opened": True})
+
+    page.route("**/api/registry/open", stub)
+    open_roadmap(page, live_server)
+    page.locator("#status .registry-open").click()
+    deadline = time.monotonic() + 5
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert seen == ["1"]
+
+
+def test_the_error_box_carries_a_registry_button(page, broken_registry_server):
+    page.goto(f"{broken_registry_server}/#/")
+    page.wait_for_selector("#roadmap-message .error", timeout=15000)
+    assert page.locator("#roadmap-message .error .registry-open").is_visible()
+
+
+def test_a_failed_launch_falls_back_to_the_path(page, live_server):
+    """No handler registered for .toml. The button is replaced by the path
+    and a copy button -- the worst case still beats hunting for the hash."""
+    page.route(
+        "**/api/registry/open",
+        lambda route: route.fulfill(
+            status=500, json={"detail": "no application is associated with .toml"}
+        ),
+    )
+    open_roadmap(page, live_server)
+    page.locator("#status .registry-open").click()
+    fallback = page.locator("#status .registry-fallback")
+    fallback.wait_for(timeout=5000)
+    assert "no application is associated" in fallback.inner_text()
+    assert page.locator("#status .registry-fallback code").inner_text().endswith("registry.toml")
+    # Replaced, not appended: a button that just failed must not still look
+    # clickable.
+    assert page.locator("#status .registry-open").count() == 0
