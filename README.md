@@ -124,12 +124,15 @@ since deleting it would itself be a write to the served folder — and the
 startup output says which copy is now authoritative.
 
 The roadmap and the file browser both carry an **Edit registry** button in the
-footer, which opens that file in whatever application your system associates
-with `.toml`. If nothing is associated, the button gives you the path instead.
+footer, and the box that reports a registry parse error carries one too, so
+the fix is one click from wherever the failure shows up. Either opens the
+file in whatever application your system associates with `.toml`, or gives
+you the path instead if nothing is.
 
 If the store would land inside the folder being served (a home directory, or
 `%APPDATA%` itself), armoire refuses to write anything there and serves
-read-only instead, saying why.
+read-only instead, saying why — and with no writable store there is no
+registry to open, so the button is absent everywhere.
 
 Project status lives per folder in the store, not in the browser, so it follows
 the folder rather than a browser tab and survives clearing site data. Node

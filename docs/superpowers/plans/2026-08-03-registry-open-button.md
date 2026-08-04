@@ -434,7 +434,7 @@ Add to `src/armoire/app.py`, immediately after the `set_status` handler and befo
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `uv run pytest tests/test_app.py -k registry_open -v`
+Run: `uv run pytest tests/test_app.py -k "opening_the_registry or opening_a_registry or refuses_the_registry_open or launch_failure" -v`
 Expected: 7 passed
 
 - [ ] **Step 5: Put the endpoint inside the read-only window**
@@ -548,7 +548,7 @@ In `src/armoire/app.py`, inside the `tree` handler's `if path == "":` block, aft
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `uv run pytest tests/test_app.py -k "registry_path or registry path" -v`
+Run: `uv run pytest tests/test_app.py -k "carries_the_registry_path or carries_no_registry_path or registry_path_is_null" -v`
 Expected: 3 passed
 
 Run: `uv run pytest -v`

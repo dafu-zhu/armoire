@@ -35,7 +35,7 @@ function showPath(button, registryPath, reason) {
     } catch {
       // Clipboard permission denied. The path is already on screen and
       // selectable, so there is nothing further to offer.
-      copy.textContent = 'Select it above';
+      copy.textContent = 'Select it manually';
       copy.disabled = true;
     }
   });
@@ -48,7 +48,7 @@ function showPath(button, registryPath, reason) {
 // (store.writes_inside), in which case there is no registry to open and no
 // button to show.
 export function mountRegistryButton(container, registryPath) {
-  if (!registryPath) return null;
+  if (!registryPath) return;
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'registry-open';
@@ -74,5 +74,4 @@ export function mountRegistryButton(container, registryPath) {
     }
   });
   container.append(button);
-  return button;
 }

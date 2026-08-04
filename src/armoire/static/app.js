@@ -177,6 +177,11 @@ function showRoadmapError(message) {
   // needs opening: the message names the line, and the fix is one click and
   // three seconds away. `box.textContent` above created a text node; append
   // adds the button as its sibling rather than replacing it.
+  //
+  // showRoadmapError's other caller is the /api/projects fetch's own catch
+  // (a network error, not a parse error), so the button can also appear for
+  // a failure the registry did not cause. Harmless and not worth a branch
+  // just to hide it there -- accepted.
   mountRegistryButton(box, registryPath);
 }
 

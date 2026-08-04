@@ -906,6 +906,22 @@ def test_a_launch_failure_is_reported_rather_than_swallowed(tmp_path, monkeypatc
     assert "no application" in response.json()["detail"]
 
 
+def test_the_registry_open_endpoint_is_post_only(tmp_path, monkeypatch):
+    """The handler's docstring rests on this: a GET is reachable from a foreign
+    page through <img src>. The X-Armoire check would still refuse that load, so
+    this is defence in depth rather than the load-bearing control -- but a
+    property three documents assert should be pinned by something."""
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))
+    client = _client_with_registry(tmp_path)
+    response = client.get("/api/registry/open", headers=HEADERS)
+    # 404 today: the StaticFiles mount answers the path when no GET route
+    # claims it. 405 if a future router claims the path for POST only. A 200
+    # means a GET route now exists, which is the regression this pins.
+    assert response.status_code in (404, 405), response.status_code
+    assert seen == []
+
+
 def test_the_root_tree_payload_carries_the_registry_path(tmp_path):
     client = _client_with_registry(tmp_path)
     payload = client.get("/api/tree", params={"path": ""}).json()
@@ -916,6 +932,9 @@ def test_a_subdirectory_tree_payload_carries_no_registry_path(client):
     """Root metadata is root-only: nothing downstream refetches it per
     navigation, so computing it on every subdirectory expansion is waste."""
     payload = client.get("/api/tree", params={"path": "docs"}).json()
+    # A 404 or 403 error body also lacks a "registry" key, so this would pass
+    # vacuously if the fetch broke entirely -- prove it is a real listing first.
+    assert "dirs" in payload
     assert "registry" not in payload
 
 

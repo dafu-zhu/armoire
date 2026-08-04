@@ -74,9 +74,10 @@ Four checks, in order, identical to those `PUT /api/status` already performs:
 
 These are currently written inline in `set_status` (`app.py:242-287`) beneath a
 comment block explaining why each exists and what each does not accomplish
-alone. **They move into one `_guard(request)` helper that both handlers call,
-and the comment block moves with them.** Two handlers carrying duplicate copies
-of a security argument is how the two copies drift apart.
+alone. **They move into one `_guard(request: Request, writes_into_root: bool)
+-> None` helper that both handlers call, and the comment block moves with
+them.** Two handlers carrying duplicate copies of a security argument is how
+the two copies drift apart.
 
 The path passed to the launcher is `registry_file`, resolved once at
 `create_app` time. No request data reaches it.

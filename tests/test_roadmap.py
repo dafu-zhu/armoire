@@ -1310,7 +1310,9 @@ def test_clicking_the_registry_button_asks_the_server_to_open_it(page, live_serv
     page.route("**/api/registry/open", stub)
     open_roadmap(page, live_server)
     page.locator("#status .registry-open").click()
-    page.wait_for_timeout(300)
+    deadline = time.monotonic() + 5
+    while not calls and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert calls == ["POST"]
 
 
@@ -1326,7 +1328,9 @@ def test_the_registry_button_sends_the_guard_header(page, live_server):
     page.route("**/api/registry/open", stub)
     open_roadmap(page, live_server)
     page.locator("#status .registry-open").click()
-    page.wait_for_timeout(300)
+    deadline = time.monotonic() + 5
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert seen == ["1"]
 
 
