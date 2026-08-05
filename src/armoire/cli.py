@@ -19,6 +19,27 @@ DEFAULT_PORT = 8420
 DETACH_TIMEOUT = 10.0
 DETACH_POLL = 0.1
 
+GROUP_EPILOG = """\
+\b
+Examples:
+  armoire serve .                     browse the current folder
+  armoire serve ~/notes -d            run it in the background
+  armoire serve ~/notes -df           replace the armoire already on that port
+  armoire serve ~/notes -dp 9000      background, on port 9000
+  armoire list                        what is running, and where
+
+One process serves one folder, so several folders means several ports.
+`armoire list` is there because nobody remembers which is which.
+"""
+
+SERVE_EPILOG = """\
+\b
+Examples:
+  armoire serve .
+  armoire serve D:/GitHub/summer-26 -df
+  armoire serve ~/notes -dp 9000
+"""
+
 STUB = """\
 # armoire registry.
 #
@@ -109,13 +130,18 @@ def _spawn_detached(argv: list[str], log: Path | None) -> subprocess.Popen:
         return subprocess.Popen(argv, stdout=stream, stderr=subprocess.STDOUT, **extra)
 
 
-@click.group()
+def serve_epilog() -> str:
+    """The serve command's epilog, exposed so a test can assert on its copy."""
+    return SERVE_EPILOG
+
+
+@click.group(epilog=GROUP_EPILOG)
 @click.version_option(__version__)
 def main() -> None:
     """Serve any folder as a local, read-only website."""
 
 
-@main.command()
+@main.command(epilog=SERVE_EPILOG)
 @click.argument(
     "folder",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),

@@ -3,7 +3,7 @@ from click.testing import CliRunner
 
 from armoire import cli, store
 from armoire import instance as instance_module
-from armoire.cli import main
+from armoire.cli import main, serve_epilog
 
 
 @pytest.fixture(autouse=True)
@@ -436,3 +436,68 @@ def test_list_keeps_columns_aligned_for_a_long_folder_name(monkeypatch):
     rows = [line for line in result.output.splitlines() if "5184" in line or "5200" in line]
     assert len(rows) == 2
     assert rows[0].index("51844") == rows[1].index("52001")
+
+
+def test_group_help_lists_both_commands():
+    result = CliRunner().invoke(main, ["--help"])
+    assert result.exit_code == 0
+    assert "serve" in result.output
+    assert "list" in result.output
+
+
+def test_group_help_carries_worked_examples():
+    result = CliRunner().invoke(main, ["--help"])
+    assert "armoire serve ." in result.output
+    assert "armoire list" in result.output
+
+
+def test_group_help_states_one_folder_per_process():
+    """The fact no flag can teach, and help is where a newcomer meets it."""
+    result = CliRunner().invoke(main, ["--help"])
+    assert "One process serves one folder" in result.output
+
+
+def test_serve_help_documents_every_option():
+    result = CliRunner().invoke(main, ["serve", "--help"])
+    assert result.exit_code == 0
+    assert "--port" in result.output
+    assert "--detach" in result.output
+    assert "--force" in result.output
+    assert "8420" in result.output  # the default is shown
+
+
+def test_help_examples_keep_their_alignment():
+    r"""Click rewraps help text unless a block is marked preformatted with \b.
+    Without it these examples collapse into a paragraph."""
+    result = CliRunner().invoke(main, ["--help"])
+    lines = [line for line in result.output.splitlines() if "armoire serve" in line]
+    assert len(lines) >= 3  # still one per line, not rewrapped into prose
+
+
+def test_no_advertised_example_recommends_bare_f(monkeypatch):
+    """Replacing a server and then holding the terminal open recreates the
+    problem this feature removes, so nothing armoire *suggests* uses bare -f.
+
+    Scoped to the epilogs and the two error strings, NOT to whole --help
+    output: Click's own options table renders "-f, --force" and always will.
+    The rule is about what armoire recommends, not what Click documents.
+    """
+    import re
+
+    held = instance_module.Instance(port=8420, pid=1, root="/x")
+
+    def busy(port, force):
+        raise instance_module.PortBusy(held)
+
+    monkeypatch.setattr(cli.instance, "claim_port", busy)
+    busy_output = CliRunner().invoke(main, ["serve", "."]).output
+
+    def foreign(port, force):
+        raise instance_module.PortForeign(port)
+
+    monkeypatch.setattr(cli.instance, "claim_port", foreign)
+    foreign_output = CliRunner().invoke(main, ["serve", "."]).output
+
+    bare_f = re.compile(r"(?<![\w-])-f(?![\w])")
+    for text in (main.epilog or "", serve_epilog(), busy_output, foreign_output):
+        assert not bare_f.search(text), text

@@ -31,12 +31,22 @@ $ uvx --from git+https://github.com/dafu-zhu/armoire armoire serve .
 
 ```console
 $ armoire serve .                 # browse at http://127.0.0.1:8420
-$ armoire serve ~/notes --port 9000
+$ armoire serve ~/notes -dp 9000  # background, on port 9000
+$ armoire list                    # which port is serving which folder
 ```
 
 Open the URL it prints. The left rail is a lazy directory tree; the box at the top
 filters every file in the folder by fuzzy match. Each file's URL is bookmarkable —
 `#/browse/research/0dte/README.md` — and the back button works.
+
+One process serves one folder, so several folders means several ports. `-d`
+runs a server in the background so it does not need a terminal of its own, and
+`armoire list` reports which port is serving what.
+
+A port already held by another armoire is refused rather than taken; `-f`
+replaces that instance, and `-df` replaces it and detaches. A port held by
+anything that is *not* armoire is always refused -- armoire stops only processes
+it can identify as its own, and `-f` does not change that.
 
 | File type | What you get |
 |---|---|
