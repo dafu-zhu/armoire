@@ -251,3 +251,135 @@ def test_the_long_port_flag_still_works(tmp_path, uvicorn_run):
     result = CliRunner().invoke(main, ["serve", str(tmp_path), "--port", "9000"])
     assert result.exit_code == 0
     assert uvicorn_run[0]["port"] == 9000
+
+
+def test_detach_spawns_a_child_and_returns(tmp_path, uvicorn_run, monkeypatch, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    spawned = []
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda argv, log: spawned.append((argv, log)) or type("C", (), {"pid": 48148})(),
+    )
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: instance_module.Instance(port, 48148, str(served)),
+    )
+    result = CliRunner().invoke(main, ["serve", str(served), "-d"])
+    assert result.exit_code == 0
+    assert uvicorn_run == []
+    assert "running in the background" in result.output
+    assert "48148" in result.output
+    assert len(spawned) == 1
+
+
+def test_the_detached_child_is_not_told_to_force(
+    tmp_path, uvicorn_run, monkeypatch, isolated_store
+):
+    """The parent already took the port. A child that forces would be killing
+    whatever raced in, which nobody authorised."""
+    served = tmp_path / "served"
+    served.mkdir()
+    spawned = []
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda argv, log: spawned.append(argv) or type("C", (), {"pid": 1})(),
+    )
+    monkeypatch.setattr(
+        cli.instance, "probe", lambda port: instance_module.Instance(port, 1, str(served))
+    )
+    CliRunner().invoke(main, ["serve", str(served), "-df"])
+    assert spawned
+    assert "--force" not in spawned[0]
+    assert "-f" not in spawned[0]
+    assert "--detach" not in spawned[0]
+    assert "-d" not in spawned[0]
+
+
+def test_detach_exits_non_zero_when_the_child_never_answers(
+    tmp_path, uvicorn_run, monkeypatch, isolated_store
+):
+    """Printing a pid for a process that died on startup is the exact failure
+    this feature exists to prevent."""
+    served = tmp_path / "served"
+    served.mkdir()
+    monkeypatch.setattr(cli, "_spawn_detached", lambda argv, log: type("C", (), {"pid": 1})())
+    monkeypatch.setattr(cli.instance, "probe", lambda port: None)
+    monkeypatch.setattr(cli, "DETACH_TIMEOUT", 0.2)
+    result = CliRunner().invoke(main, ["serve", str(served), "-d"])
+    assert result.exit_code == 1
+    assert "running in the background" not in result.output
+    assert "did not start" in result.output
+
+
+def test_detach_names_its_log_file(tmp_path, uvicorn_run, monkeypatch, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    monkeypatch.setattr(cli, "_spawn_detached", lambda argv, log: type("C", (), {"pid": 1})())
+    monkeypatch.setattr(
+        cli.instance, "probe", lambda port: instance_module.Instance(port, 1, str(served))
+    )
+    result = CliRunner().invoke(main, ["serve", str(served), "-d"])
+    assert "serve-8420.log" in result.output
+
+
+def test_detach_writes_no_log_when_the_store_is_inside_the_served_folder(
+    tmp_path, uvicorn_run, monkeypatch
+):
+    """A log is a file like any other. Serving a folder that contains the
+    store must not put armoire's files inside it."""
+    config_root = tmp_path / "store"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    logs = []
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda argv, log: logs.append(log) or type("C", (), {"pid": 1})(),
+    )
+    monkeypatch.setattr(
+        cli.instance, "probe", lambda port: instance_module.Instance(port, 1, str(served))
+    )
+    result = CliRunner().invoke(main, ["serve", str(served), "-d"])
+    assert result.exit_code == 0
+    assert logs == [None]
+    assert "no log: the armoire store is inside the served folder" in result.output
+
+
+def test_short_flags_combine(tmp_path, uvicorn_run, monkeypatch, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    seen = []
+    monkeypatch.setattr(
+        cli.instance,
+        "claim_port",
+        lambda port, force: seen.append(force) or instance_module.Claim(),
+    )
+    monkeypatch.setattr(cli, "_spawn_detached", lambda argv, log: type("C", (), {"pid": 1})())
+    monkeypatch.setattr(
+        cli.instance, "probe", lambda port: instance_module.Instance(port, 1, str(served))
+    )
+    result = CliRunner().invoke(main, ["serve", str(served), "-df"])
+    assert result.exit_code == 0
+    assert seen == [True]  # -df carried the force through
+
+
+def test_the_port_short_flag_combines_with_detach(
+    tmp_path, uvicorn_run, monkeypatch, isolated_store
+):
+    """-dp 9000 is detach plus port. -pd 9000 is an error, because Click reads
+    'd' as the start of the port value -- which is why examples show -dp."""
+    served = tmp_path / "served"
+    served.mkdir()
+    monkeypatch.setattr(cli, "_spawn_detached", lambda argv, log: type("C", (), {"pid": 1})())
+    monkeypatch.setattr(
+        cli.instance, "probe", lambda port: instance_module.Instance(port, 1, str(served))
+    )
+    good = CliRunner().invoke(main, ["serve", str(served), "-dp", "9000"])
+    assert good.exit_code == 0
+    bad = CliRunner().invoke(main, ["serve", str(served), "-pd", "9000"])
+    assert bad.exit_code == 2

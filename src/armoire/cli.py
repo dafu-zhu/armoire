@@ -1,6 +1,9 @@
 """Command line entry point."""
 
 import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import click
@@ -11,6 +14,10 @@ from armoire.app import create_app
 from armoire.projects import REGISTRY_NAME
 
 DEFAULT_PORT = 8420
+# Budget for a detached child to bind and answer. Generous: a cold start on a
+# large folder spends most of it building the file index.
+DETACH_TIMEOUT = 10.0
+DETACH_POLL = 0.1
 
 STUB = """\
 # armoire registry.
@@ -78,6 +85,30 @@ def prepare_store(folder: Path) -> list[str]:
     return [f"  no registry yet - created {target}", "  edit it and reload to see the roadmap"]
 
 
+def _log_path(port: int) -> Path:
+    """Where a detached server's output goes. One file per port, truncated per
+    launch -- a log that grows forever is a log nobody opens."""
+    return store.config_root() / f"serve-{port}.log"
+
+
+def _spawn_detached(argv: list[str], log: Path | None) -> subprocess.Popen:
+    """Start `argv` in its own session, outliving this process.
+
+    `log` is None when armoire may not write for this folder, in which case
+    the child's output goes to the null device: a convenience log does not get
+    to break the promise that serving a folder never writes into it.
+    """
+    if sys.platform == "win32":
+        extra = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        extra = {"start_new_session": True}
+    if log is None:
+        return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, **extra)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("w", encoding="utf-8") as stream:
+        return subprocess.Popen(argv, stdout=stream, stderr=subprocess.STDOUT, **extra)
+
+
 @click.group()
 @click.version_option(__version__)
 def main() -> None:
@@ -99,7 +130,15 @@ def main() -> None:
         "is free, and never stops a process armoire cannot identify as its own."
     ),
 )
-def serve(folder: Path, port: int, force: bool) -> None:
+@click.option(
+    "--detach",
+    "-d",
+    is_flag=True,
+    help=(
+        "Run in the background and hand back the prompt. Output goes to a log file in the store."
+    ),
+)
+def serve(folder: Path, port: int, force: bool, detach: bool) -> None:
     """Browse FOLDER at http://127.0.0.1:PORT. Never writes to FOLDER.
 
     armoire's registry and project statuses live in its own per-user store,
@@ -154,6 +193,36 @@ def serve(folder: Path, port: int, force: bool) -> None:
         )
     for line in prepare_store(root):
         click.echo(line)
+
+    if detach:
+        # No --force in the child's argv: the parent already claimed the port,
+        # so the child should find it free. If it does not, something raced --
+        # and a child that force-kills whatever it finds would be stopping a
+        # process nobody authorised it to touch. The poll below reports that
+        # instead.
+        log = None if store.writes_inside(root) else _log_path(port)
+        child = _spawn_detached([sys.argv[0], "serve", str(root), "--port", str(port)], log)
+        deadline = time.monotonic() + DETACH_TIMEOUT
+        while time.monotonic() < deadline:
+            if instance.probe(port) is not None:
+                click.echo(f"  running in the background (pid {child.pid})")
+                if log is None:
+                    click.echo("  no log: the armoire store is inside the served folder")
+                else:
+                    click.echo(f"  log {log}")
+                return
+            time.sleep(DETACH_POLL)
+        # Never print a pid for a process that died on startup -- reporting a
+        # success that is not one is the failure this whole feature exists to
+        # stop.
+        click.echo(
+            f"armoire: the background server did not start within {DETACH_TIMEOUT:.0f}s",
+            err=True,
+        )
+        if log is not None:
+            click.echo(f"  see {log}", err=True)
+        raise SystemExit(1)
+
     instance.record(port, root, os.getpid())
     try:
         # Loopback only, always. This streams arbitrary bytes out of the root.
