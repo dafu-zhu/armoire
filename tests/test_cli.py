@@ -383,3 +383,56 @@ def test_the_port_short_flag_combines_with_detach(
     assert good.exit_code == 0
     bad = CliRunner().invoke(main, ["serve", str(served), "-pd", "9000"])
     assert bad.exit_code == 2
+
+
+def test_list_shows_running_instances(monkeypatch):
+    monkeypatch.setattr(
+        cli.instance,
+        "running",
+        lambda: [
+            instance_module.Instance(8420, 51844, r"D:\GitHub\summer-26"),
+            instance_module.Instance(8421, 52001, r"D:\GitHub\armoire"),
+        ],
+    )
+    result = CliRunner().invoke(main, ["list"])
+    assert result.exit_code == 0
+    assert "PORT" in result.output
+    assert "8420" in result.output
+    assert r"D:\GitHub\summer-26" in result.output
+    assert "51844" in result.output
+    assert "8421" in result.output
+    assert "2 running" in result.output
+
+
+def test_list_says_so_when_nothing_is_running(monkeypatch):
+    monkeypatch.setattr(cli.instance, "running", list)
+    result = CliRunner().invoke(main, ["list"])
+    assert result.exit_code == 0
+    assert "no armoire instances running" in result.output
+
+
+def test_list_counts_one_in_the_singular(monkeypatch):
+    monkeypatch.setattr(
+        cli.instance,
+        "running",
+        lambda: [instance_module.Instance(8420, 51844, r"D:\GitHub\summer-26")],
+    )
+    result = CliRunner().invoke(main, ["list"])
+    assert "1 running" in result.output
+    assert "1 runnings" not in result.output
+
+
+def test_list_keeps_columns_aligned_for_a_long_folder_name(monkeypatch):
+    """A table whose pid column wanders is a table nobody can scan."""
+    monkeypatch.setattr(
+        cli.instance,
+        "running",
+        lambda: [
+            instance_module.Instance(8420, 51844, "/short"),
+            instance_module.Instance(8421, 52001, "/a/very/much/longer/path/to/somewhere"),
+        ],
+    )
+    result = CliRunner().invoke(main, ["list"])
+    rows = [line for line in result.output.splitlines() if "5184" in line or "5200" in line]
+    assert len(rows) == 2
+    assert rows[0].index("51844") == rows[1].index("52001")

@@ -232,3 +232,24 @@ def serve(folder: Path, port: int, force: bool, detach: bool) -> None:
         # `list` probe a dead port -- harmless, since it prunes, but tidying
         # up on the way out costs one call.
         instance.forget(port)
+
+
+@main.command("list")
+def list_instances() -> None:
+    """Show the armoire instances currently running.
+
+    One process serves one folder, so several folders means several ports.
+    This is the answer to "which port was that folder on".
+    """
+    live = instance.running()
+    if not live:
+        click.echo("no armoire instances running")
+        return
+    # Width from the data, so the pid column does not wander when one folder
+    # has a much longer path than the rest.
+    width = max(len("FOLDER"), *(len(found.root) for found in live))
+    click.echo(f"{'PORT':<6} {'FOLDER':<{width}} PID")
+    for found in live:
+        click.echo(f"{found.port:<6} {found.root:<{width}} {found.pid}")
+    click.echo()
+    click.echo(f"{len(live)} running")
