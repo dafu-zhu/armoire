@@ -2,6 +2,7 @@
 
 import logging
 import mimetypes
+import os
 import threading
 from dataclasses import asdict
 from pathlib import Path
@@ -353,6 +354,21 @@ def create_app(root: Path) -> FastAPI:
             logger.warning("could not open the registry: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc)) from None
         return {"opened": True}
+
+    @app.get("/api/instance")
+    def instance() -> dict:
+        """Identify this process to another armoire starting on this port.
+
+        Unguarded, unlike the two state-changing endpoints: a side-effect-free
+        GET whose only new disclosure is a pid, which a browser can do nothing
+        with. `root` is already public through /api/tree.
+
+        `armoire: True` is a literal rather than an implied "you got a 200".
+        The starting instance is deciding whether to send SIGTERM to whatever
+        answered, so "it responded" is not good enough -- it has to say what
+        it is. See instance.probe, which checks `is True` and nothing looser.
+        """
+        return {"armoire": True, "pid": os.getpid(), "root": str(root)}
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

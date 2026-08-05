@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 import threading
@@ -904,6 +905,19 @@ def test_a_launch_failure_is_reported_rather_than_swallowed(tmp_path, monkeypatc
     response = client.post("/api/registry/open", headers=HEADERS)
     assert response.status_code == 500
     assert "no application" in response.json()["detail"]
+
+
+def test_the_instance_endpoint_identifies_this_process(client, root):
+    payload = client.get("/api/instance").json()
+    assert payload["armoire"] is True
+    assert payload["pid"] == os.getpid()
+    assert payload["root"] == str(root.resolve())
+
+
+def test_the_instance_endpoint_needs_no_guard_header(client):
+    """Unlike PUT /api/status, this is a side-effect-free GET. It is what a
+    starting armoire probes before it has any reason to be trusted."""
+    assert client.get("/api/instance").status_code == 200
 
 
 def test_the_registry_open_endpoint_is_post_only(tmp_path, monkeypatch):
