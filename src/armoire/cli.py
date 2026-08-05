@@ -1,11 +1,12 @@
 """Command line entry point."""
 
+import os
 from pathlib import Path
 
 import click
 import uvicorn
 
-from armoire import __version__, store
+from armoire import __version__, instance, store
 from armoire.app import create_app
 from armoire.projects import REGISTRY_NAME
 
@@ -88,17 +89,77 @@ def main() -> None:
     "folder",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
 )
-@click.option("--port", default=DEFAULT_PORT, show_default=True, help="Port to listen on.")
-def serve(folder: Path, port: int) -> None:
+@click.option("--port", "-p", default=DEFAULT_PORT, show_default=True, help="Port to listen on.")
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help=(
+        "Replace an armoire already on this port. Does nothing when the port "
+        "is free, and never stops a process armoire cannot identify as its own."
+    ),
+)
+def serve(folder: Path, port: int, force: bool) -> None:
     """Browse FOLDER at http://127.0.0.1:PORT. Never writes to FOLDER.
 
     armoire's registry and project statuses live in its own per-user store,
     outside the served folder, and that store is the only thing it writes.
     """
     root = folder.resolve()
+    try:
+        claim = instance.claim_port(port, force)
+    except instance.PortBusy as busy:
+        # The folder, not just the pid: replacing a stale server of your own
+        # and destroying one you still wanted are the same keystrokes, and
+        # only the folder name tells them apart.
+        click.echo(
+            f"armoire: port {port} is serving {busy.instance.root} (pid {busy.instance.pid})",
+            err=True,
+        )
+        # -df first because it is the answer nearly every time: someone
+        # blocked by a server they lost track of is about to make another one
+        # they will also lose. Bare -f is never recommended -- replacing a
+        # server and then holding the terminal open recreates the problem.
+        click.echo("  -df replaces it and runs without keeping this terminal open", err=True)
+        click.echo("  --force replaces it and stays in this terminal", err=True)
+        click.echo("  --port serves this folder somewhere else instead", err=True)
+        raise SystemExit(1) from None
+    except instance.PortForeign:
+        click.echo(
+            f"armoire: port {port} is in use, and what holds it is not armoire",
+            err=True,
+        )
+        # Spelled out because the other error has just recommended forcing.
+        # Silence here would read as a bug rather than a refusal.
+        click.echo(
+            "  armoire stops only processes it can identify as its own, so --force will not help",
+            err=True,
+        )
+        click.echo("  --port serves this folder somewhere else instead", err=True)
+        raise SystemExit(1) from None
+    except instance.PortStuck:
+        click.echo(
+            f"armoire: the armoire on port {port} was asked to stop but did not release the port",
+            err=True,
+        )
+        click.echo("  --port serves this folder somewhere else instead", err=True)
+        raise SystemExit(1) from None
+
     click.echo(f"armoire serving {root}")
     click.echo(f"  http://127.0.0.1:{port}")
+    if claim.replaced_pid is not None:
+        click.echo(
+            f"  replaced the armoire serving {claim.replaced_root} on {port} "
+            f"(pid {claim.replaced_pid})"
+        )
     for line in prepare_store(root):
         click.echo(line)
-    # Loopback only, always. This streams arbitrary bytes out of the root.
-    uvicorn.run(create_app(root), host="127.0.0.1", port=port, log_level="warning")
+    instance.record(port, root, os.getpid())
+    try:
+        # Loopback only, always. This streams arbitrary bytes out of the root.
+        uvicorn.run(create_app(root), host="127.0.0.1", port=port, log_level="warning")
+    finally:
+        # Ctrl-C and SIGTERM both land here. A record left behind would make
+        # `list` probe a dead port -- harmless, since it prunes, but tidying
+        # up on the way out costs one call.
+        instance.forget(port)

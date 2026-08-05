@@ -2,6 +2,7 @@ import pytest
 from click.testing import CliRunner
 
 from armoire import cli, store
+from armoire import instance as instance_module
 from armoire.cli import main
 
 
@@ -173,3 +174,80 @@ def test_a_folder_inside_the_stores_own_tree_refuses_to_write(tmp_path, monkeypa
 def test_serve_creates_the_registry_in_the_store(tmp_path, uvicorn_run):
     CliRunner().invoke(main, ["serve", str(tmp_path)])
     assert store.registry_path(tmp_path).is_file()
+
+
+def test_serve_refuses_a_port_held_by_another_armoire(tmp_path, uvicorn_run, monkeypatch):
+    held = instance_module.Instance(port=8420, pid=48148, root=r"D:\GitHub\summer-26")
+
+    def busy(port, force):
+        raise instance_module.PortBusy(held)
+
+    monkeypatch.setattr(cli.instance, "claim_port", busy)
+    result = CliRunner().invoke(main, ["serve", str(tmp_path)])
+    assert result.exit_code == 1
+    assert uvicorn_run == []
+    # Names the folder, not only the pid: replacing your own stale server and
+    # destroying one you still wanted look identical without it.
+    assert r"D:\GitHub\summer-26" in result.output
+    assert "48148" in result.output
+    assert "-df" in result.output
+    assert "--force" in result.output
+    assert "--port" in result.output
+
+
+def test_serve_refuses_a_port_held_by_something_that_is_not_armoire(
+    tmp_path, uvicorn_run, monkeypatch
+):
+    def foreign(port, force):
+        raise instance_module.PortForeign(port)
+
+    monkeypatch.setattr(cli.instance, "claim_port", foreign)
+    result = CliRunner().invoke(main, ["serve", str(tmp_path), "--force"])
+    assert result.exit_code == 1
+    assert uvicorn_run == []
+    # Someone just told about forcing by the other error will try it here.
+    assert "--force will not help" in result.output
+
+
+def test_serve_reports_what_it_replaced(tmp_path, uvicorn_run, monkeypatch):
+    monkeypatch.setattr(
+        cli.instance,
+        "claim_port",
+        lambda port, force: instance_module.Claim(
+            replaced_pid=48148, replaced_root=r"D:\GitHub\summer-26"
+        ),
+    )
+    result = CliRunner().invoke(main, ["serve", str(tmp_path), "-f"])
+    assert result.exit_code == 0
+    assert r"replaced the armoire serving D:\GitHub\summer-26 on 8420 (pid 48148)" in result.output
+
+
+def test_serve_says_nothing_about_replacing_on_a_clean_start(tmp_path, uvicorn_run):
+    result = CliRunner().invoke(main, ["serve", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "replaced" not in result.output
+
+
+def test_force_is_passed_through_to_claim_port(tmp_path, uvicorn_run, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        cli.instance,
+        "claim_port",
+        lambda port, force: seen.append((port, force)) or instance_module.Claim(),
+    )
+    CliRunner().invoke(main, ["serve", str(tmp_path)])
+    CliRunner().invoke(main, ["serve", str(tmp_path), "-f"])
+    assert seen == [(8420, False), (8420, True)]
+
+
+def test_short_port_flag_is_honoured(tmp_path, uvicorn_run):
+    result = CliRunner().invoke(main, ["serve", str(tmp_path), "-p", "9000"])
+    assert result.exit_code == 0
+    assert uvicorn_run[0]["port"] == 9000
+
+
+def test_the_long_port_flag_still_works(tmp_path, uvicorn_run):
+    """Nothing is deprecated. Scripts built on the long forms keep working."""
+    result = CliRunner().invoke(main, ["serve", str(tmp_path), "--port", "9000"])
+    assert result.exit_code == 0
+    assert uvicorn_run[0]["port"] == 9000
