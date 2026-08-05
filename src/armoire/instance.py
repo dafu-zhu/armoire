@@ -19,6 +19,9 @@ import socket
 import time
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
+
+from armoire import store
 
 # Long enough for a loaded machine to answer a loopback request, short enough
 # that a foreign service which accepts and never replies does not hang the
@@ -148,3 +151,67 @@ def claim_port(port: int, force: bool) -> Claim:
             return Claim(replaced_pid=incumbent.pid, replaced_root=incumbent.root)
         time.sleep(POLL_INTERVAL)
     raise PortStuck(port)
+
+
+def _records_dir() -> Path:
+    return store.config_root() / "instances"
+
+
+def record(port: int, root: Path, pid: int) -> Path | None:
+    """Note that `pid` serves `root` on `port`. None when the store is unusable.
+
+    One file per port rather than one shared file: two servers starting at the
+    same moment would otherwise have to merge, and per-port files make the
+    write independent by construction.
+
+    Returns None, writing nothing, when armoire's own files would land inside
+    the folder being served -- the same refusal cli.prepare_store makes. Such
+    an instance is then absent from `running()`, which is the correct trade:
+    the read-only guarantee outranks a convenience listing.
+    """
+    if store.writes_inside(root):
+        return None
+    path = _records_dir() / f"{port}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"port": port, "root": str(root), "pid": pid}, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def forget(port: int) -> None:
+    """Drop the record for `port`, if there is one."""
+    with contextlib.suppress(OSError):
+        (_records_dir() / f"{port}.json").unlink()
+
+
+def running() -> list[Instance]:
+    """Every live armoire, probed, sorted by port.
+
+    The records only supply the list of ports worth asking about. What comes
+    back is what each port said about itself just now -- a record whose
+    process died, or whose port now belongs to something else, is dropped and
+    its file removed. So a server killed with SIGKILL, which never got to
+    clean up after itself, is tidied away by the next person to run `list`.
+
+    The port comes from the filename rather than the file body: the filename
+    is what makes the record unique, so trusting the body would let a
+    hand-edited file report a port it does not own.
+    """
+    directory = _records_dir()
+    if not directory.is_dir():
+        return []
+    live: list[Instance] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            port = int(path.stem)
+        except ValueError:
+            continue
+        found = probe(port)
+        if found is None:
+            with contextlib.suppress(OSError):
+                path.unlink()
+            continue
+        live.append(found)
+    return sorted(live, key=lambda found: found.port)

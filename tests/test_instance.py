@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 import uvicorn
 
-from armoire import instance
+from armoire import instance, store
 from armoire.app import create_app
 
 
@@ -173,3 +173,92 @@ def test_claim_port_raises_when_the_port_never_frees(armoire_on_a_port, monkeypa
     with pytest.raises(instance.PortStuck):
         instance.claim_port(armoire_on_a_port, force=True)
     assert killed  # it did try
+
+
+@pytest.fixture
+def isolated_store(tmp_path, monkeypatch):
+    root = tmp_path / "cfg" / "armoire"
+    monkeypatch.setattr(store, "config_root", lambda: root)
+    return root
+
+
+def test_record_writes_a_file_named_for_the_port(tmp_path, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    written = instance.record(8420, served, 4242)
+    assert written == isolated_store / "instances" / "8420.json"
+    assert json.loads(written.read_text(encoding="utf-8")) == {
+        "port": 8420,
+        "root": str(served),
+        "pid": 4242,
+    }
+
+
+def test_record_writes_nothing_when_the_store_is_inside_the_served_folder(tmp_path, monkeypatch):
+    """Same refusal prepare_store makes. A record is a file like any other and
+    must not land in the tree armoire promises not to write to."""
+    config_root = tmp_path / "store"
+    monkeypatch.setattr(store, "config_root", lambda: config_root)
+    served = config_root / "folders"
+    served.mkdir(parents=True)
+    assert instance.record(8420, served, 4242) is None
+    assert not (config_root / "instances").exists()
+
+
+def test_forget_removes_a_record(tmp_path, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    instance.record(8420, served, 4242)
+    instance.forget(8420)
+    assert not (isolated_store / "instances" / "8420.json").exists()
+
+
+def test_forget_is_silent_when_there_is_no_record(isolated_store):
+    instance.forget(8420)  # must not raise
+
+
+def test_running_reports_a_live_instance(armoire_on_a_port, tmp_path, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    instance.record(armoire_on_a_port, served, 1)
+    live = instance.running()
+    assert [i.port for i in live] == [armoire_on_a_port]
+    # From the probe, not from the file -- the file said pid 1.
+    import os
+
+    assert live[0].pid == os.getpid()
+
+
+def test_running_prunes_a_record_with_nothing_behind_it(tmp_path, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    dead = _free_port()
+    instance.record(dead, served, 4242)
+    assert instance.running() == []
+    assert not (isolated_store / "instances" / f"{dead}.json").exists()
+
+
+def test_running_prunes_a_record_whose_port_is_now_someone_else(tmp_path, isolated_store, impostor):
+    served = tmp_path / "served"
+    served.mkdir()
+    port, _ = impostor
+    instance.record(port, served, 4242)
+    assert instance.running() == []
+    assert not (isolated_store / "instances" / f"{port}.json").exists()
+
+
+def test_running_is_empty_when_nothing_was_ever_recorded(isolated_store):
+    assert instance.running() == []
+
+
+def test_running_is_sorted_by_port(tmp_path, isolated_store, monkeypatch):
+    """Directory order is not port order, and a list that reshuffles between
+    runs is a list nobody can scan."""
+    served = tmp_path / "served"
+    served.mkdir()
+    for port in (9002, 9000, 9001):
+        instance.record(port, served, 1)
+    monkeypatch.setattr(
+        instance, "probe", lambda p: instance.Instance(port=p, pid=1, root=str(served))
+    )
+    assert [i.port for i in instance.running()] == [9000, 9001, 9002]
