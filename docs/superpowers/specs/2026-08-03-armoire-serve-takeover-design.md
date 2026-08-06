@@ -110,10 +110,11 @@ is abrupt but correct here — `serve` never writes to the served folder, and
 
 ## Detaching
 
-`--detach` re-launches `sys.argv` minus the detach flag through
-`subprocess.Popen`:
+`--detach` re-launches the CLI as `sys.executable -m armoire.cli` through
+`subprocess.Popen`, avoiding Windows console-script shims:
 
-- **Windows** — `creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`
+- **Windows** — `creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`,
+  with hidden `STARTUPINFO`
 - **POSIX** — `start_new_session=True`
 
 The parent polls `/api/instance` until the child answers, up to 10s, and only
