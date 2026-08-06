@@ -125,13 +125,53 @@ def _isolated_store(_isolated_store_session):
     return _isolated_store_session
 
 
-MINIMAL_PDF = b"""%PDF-1.4
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
-3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj
-trailer<</Root 1 0 R>>
-%%EOF
-"""
+def minimal_pdf(page_count: int = 3) -> bytes:
+    """Small valid PDF with an xref table, enough for browser-native viewers
+    and PDF.js to parse in renderer tests."""
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        (
+            f"<< /Type /Pages /Kids [{' '.join(f'{n} 0 R' for n in range(3, 3 + page_count))}] "
+            f"/Count {page_count} >>"
+        ).encode(),
+    ]
+    content_start = 3 + page_count
+    font_object = content_start + page_count
+    for index in range(page_count):
+        objects.append(
+            (
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                f"/Resources << /Font << /F1 {font_object} 0 R >> >> "
+                f"/Contents {content_start + index} 0 R >>"
+            ).encode()
+        )
+    for index in range(page_count):
+        stream = f"BT /F1 24 Tf 72 720 Td (Page {index + 1}) Tj ET".encode()
+        objects.append(
+            b"<< /Length "
+            + str(len(stream)).encode()
+            + b" >>\nstream\n"
+            + stream
+            + b"\nendstream"
+        )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    body = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body.extend(f"{number} 0 obj\n".encode())
+        body.extend(obj)
+        body.extend(b"\nendobj\n")
+    xref = len(body)
+    body.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+    body.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        body.extend(f"{offset:010d} 00000 n \n".encode())
+    body.extend(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(body)
 
 ROOT_README = """# Sample Folder
 
@@ -184,7 +224,7 @@ def sample_root(tmp_path_factory, _isolated_store_session):
     # armoire was built for are CRLF -- so the renderer must handle both.
     (root / "crlf.md").write_bytes(ROOT_README.replace("\n", "\r\n").encode("utf-8"))
     (root / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8", newline="")
-    (root / "doc.pdf").write_bytes(MINIMAL_PDF)
+    (root / "doc.pdf").write_bytes(minimal_pdf())
     (root / "blob.dat").write_bytes(b"\x00\x01\x02\x03")
     (root / "nb.ipynb").write_text(json.dumps(NOTEBOOK), encoding="utf-8", newline="")
     (root / "paper.tex").write_text(

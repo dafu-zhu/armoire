@@ -121,9 +121,54 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 12px 16px;
+  height: 57px;
+  max-height: 64px;
+  padding: 12px 56px 12px 16px;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  transition:
+    max-height 160ms ease,
+    padding-top 160ms ease,
+    padding-bottom 160ms ease,
+    border-color 160ms ease;
+}
+
+.header-collapsed #header {
+  height: 0;
+  flex-basis: 0;
+  max-height: 0;
+  overflow: hidden;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-color: transparent;
+}
+
+.header-collapsed #header > * {
+  visibility: hidden;
+}
+
+#header-toggle {
+  position: fixed;
+  z-index: 30;
+  top: 10px;
+  right: 14px;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  font: 600 15px/1 var(--sans);
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(31, 35, 40, 0.08);
+  cursor: pointer;
+}
+#header-toggle:hover { color: var(--fg); border-color: var(--muted); }
+#header-toggle:focus { outline: 2px solid var(--link); outline-offset: 2px; }
+
+.header-collapsed #header-toggle {
+  top: 6px;
+  background: var(--subtle);
 }
 
 /* The served folder's absolute path, which can run far longer than the tool
@@ -319,7 +364,66 @@ a:hover { text-decoration: underline; }
 
 pre.code { margin: 0; padding: 16px; overflow-x: auto; font-family: var(--mono); font-size: 12px; }
 
-iframe.pdf { width: 100%; height: calc(100vh - 200px); border: 0; }
+#main.pdf-main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 8px 16px 8px 24px;
+}
+
+#main.pdf-main #breadcrumb {
+  flex: 0 0 auto;
+  margin-bottom: 6px;
+}
+
+#content.pdf-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-right: -8px;
+}
+
+.pdf-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.10);
+}
+
+.pdf-reader-toolbar {
+  flex: 0 0 48px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.pdf-reader-title {
+  flex: 1 1 auto;
+  min-width: 120px;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+iframe.pdf {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  background: var(--bg);
+  border: 0;
+}
 
 .notebook-body { font-size: 13px; }
 .notebook-body pre { padding: 12px; overflow-x: auto; background: var(--subtle); border-radius: var(--radius); }

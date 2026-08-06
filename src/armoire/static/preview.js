@@ -65,6 +65,8 @@ async function renderDirectory(container, path) {
 
 export async function renderPreview(container, path, page = 0) {
   container.replaceChildren();
+  container.classList.remove('pdf-content');
+  container.closest('#main')?.classList.remove('pdf-main');
 
   // The root and any directory come back from /api/tree, not /api/preview.
   if (path === '') return renderDirectory(container, path);

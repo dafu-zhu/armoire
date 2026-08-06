@@ -19,6 +19,7 @@ const status = document.getElementById('status-text');
 
 const BROWSE = 'browse';
 const PROJECT = 'project';
+const HEADER_COLLAPSED_KEY = 'armoire.headerCollapsed';
 
 const roadmap = document.getElementById('roadmap');
 const canvas = document.getElementById('roadmap-canvas');
@@ -275,6 +276,21 @@ function hideRoadmap() {
   document.getElementById('main').hidden = false;
 }
 
+function initHeaderToggle(button) {
+  const setCollapsed = (collapsed) => {
+    document.body.classList.toggle('header-collapsed', collapsed);
+    button.setAttribute('aria-expanded', String(!collapsed));
+    button.setAttribute('aria-label', collapsed ? 'Show header' : 'Hide header');
+    button.textContent = collapsed ? 'v' : '^';
+    window.localStorage.setItem(HEADER_COLLAPSED_KEY, collapsed ? '1' : '0');
+  };
+
+  setCollapsed(window.localStorage.getItem(HEADER_COLLAPSED_KEY) === '1');
+  button.addEventListener('click', () => {
+    setCollapsed(!document.body.classList.contains('header-collapsed'));
+  });
+}
+
 async function showRoute(route) {
   // A pending single-click navigation belongs to whatever crumb armed it.
   // Clearing it only inside renderBreadcrumb misses the 'home' route below,
@@ -336,6 +352,7 @@ initFilter(
   document.getElementById('filter-results'),
   navigate,
 );
+initHeaderToggle(document.getElementById('header-toggle'));
 
 window.addEventListener('hashchange', () => {
   let route;

@@ -227,11 +227,60 @@ def test_notebook_code_cells_are_coloured(page, live_server):
     assert coloured != "rgb(31, 35, 40)", "span inherits body colour: pygments.css is not applied"
 
 
-def test_pdf_is_embedded(page, live_server):
+def test_pdf_reader_uses_the_native_viewer_without_its_toolbar(page, live_server):
     open_path(page, live_server, "doc.pdf")
     frame = page.locator("iframe.pdf")
+    frame.wait_for()
     assert frame.count() == 1
+    assert page.locator(".pdf-shell").count() == 1
+    assert "doc.pdf" in page.locator(".pdf-reader-title").inner_text()
+    assert page.get_by_role("link", name="Download").count() == 0
     assert "doc.pdf" in frame.get_attribute("src")
+    assert "toolbar=0" in frame.get_attribute("src")
+    assert "navpanes=0" in frame.get_attribute("src")
+    assert page.locator(".pdf-page canvas").count() == 0
+
+
+def test_pdf_selection_is_left_to_the_native_viewer(page, live_server):
+    open_path(page, live_server, "doc.pdf")
+    page.wait_for_selector("iframe.pdf")
+    assert page.locator(".pdf-select-layer").count() == 0
+    assert page.locator(".pdf-text-line").count() == 0
+    assert page.locator(".pdf-text-layer span").count() == 0
+
+
+def test_pdf_viewer_fills_the_reading_pane(page, live_server):
+    """Catches a regression back to the old bare iframe, which left the
+    browser PDF viewer floating inside the normal document padding instead of
+    occupying the available reading pane."""
+    page.set_viewport_size({"width": 1400, "height": 900})
+    open_path(page, live_server, "doc.pdf")
+    shell = page.locator(".pdf-shell")
+    frame = page.locator("iframe.pdf")
+    shell.wait_for()
+
+    shell_box = shell.bounding_box()
+    frame_box = frame.bounding_box()
+    main_box = page.locator("#main").bounding_box()
+
+    assert shell_box["width"] >= main_box["width"] - 50
+    assert shell_box["height"] >= 760
+    assert abs(frame_box["width"] - shell_box["width"]) <= 2
+    assert frame_box["height"] < shell_box["height"]
+    assert shell.evaluate("el => getComputedStyle(el).borderTopStyle") == "solid"
+    assert shell.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 255, 255)"
+
+
+def test_pdf_pages_scroll_inside_the_reader_not_the_page(page, live_server):
+    page.set_viewport_size({"width": 1000, "height": 520})
+    open_path(page, live_server, "doc.pdf")
+    page.wait_for_selector("iframe.pdf")
+    main = page.locator("#main")
+    frame = page.locator("iframe.pdf")
+
+    assert main.evaluate("el => getComputedStyle(el).overflowY") == "hidden"
+    assert main.evaluate("el => el.scrollHeight <= el.clientHeight + 1")
+    assert frame.bounding_box()["height"] > 300
 
 
 def test_table_shows_schema_and_first_page(page, live_server):

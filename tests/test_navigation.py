@@ -167,6 +167,38 @@ def test_filter_placeholder_reports_index_failure(page, live_server):
     )
 
 
+def test_header_can_lift_out_of_the_content_area(page, live_server):
+    """The file filter should give vertical space back to previews on demand,
+    then restore without losing its input state."""
+    page.goto(f"{live_server}/#/browse/doc.pdf")
+    page.wait_for_selector(".pdf-shell")
+    header = page.locator("#header")
+    toggle = page.locator("#header-toggle")
+    before = header.bounding_box()["height"]
+    assert before > 30
+
+    toggle.click()
+    page.wait_for_function("() => document.body.classList.contains('header-collapsed')")
+    page.wait_for_function(
+        "() => document.querySelector('#header').getBoundingClientRect().height <= 2"
+    )
+    assert header.bounding_box()["height"] <= 2
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert page.locator("#filter").is_hidden()
+
+    toggle.click()
+    page.wait_for_function("() => !document.body.classList.contains('header-collapsed')")
+    page.wait_for_function(
+        "(height) => Math.abs("
+        "document.querySelector('#header').getBoundingClientRect().height - height"
+        ") <= 1",
+        arg=before,
+    )
+    assert header.bounding_box()["height"] == before
+    assert toggle.get_attribute("aria-expanded") == "true"
+    assert page.locator("#filter").is_visible()
+
+
 def test_tree_failure_surfaces_an_error_instead_of_hanging(page, live_server):
     """A backend error on the initial directory listing must surface in the
     UI, not just as an unhandled promise rejection in the console."""
