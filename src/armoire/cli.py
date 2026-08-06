@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 import uvicorn
 
-from armoire import __version__, instance, store
+from armoire import __version__, instance, startup, store
 from armoire.app import create_app
 from armoire.projects import REGISTRY_NAME
 
@@ -19,13 +19,18 @@ DEFAULT_PORT = 8420
 DETACH_TIMEOUT = 10.0
 DETACH_POLL = 0.1
 
+enable_startup = startup.enable
+
 GROUP_EPILOG = """\
 \b
 Examples:
   armoire serve .                     browse the current folder
   armoire serve ~/notes -d            run it in the background
   armoire serve ~/notes -df           replace the armoire already on that port
+  armoire serve D:/GitHub/summer-26 -dfs -p 8420
+                                      background, replace, and start at logon
   armoire serve ~/notes -dp 9000      background, on port 9000
+  armoire startup remove summer-26    remove from logon and stop that server
   armoire list                        what is running, and where
 
 One process serves one folder, so several folders means several ports.
@@ -36,8 +41,9 @@ SERVE_EPILOG = """\
 \b
 Examples:
   armoire serve .
-  armoire serve D:/GitHub/summer-26 -df
+  armoire serve D:/GitHub/summer-26 -dfs -p 8420
   armoire serve ~/notes -dp 9000
+  armoire startup remove summer-26
 """
 
 STUB = """\
@@ -170,7 +176,13 @@ def main() -> None:
         "Run in the background and hand back the prompt. Output goes to a log file in the store."
     ),
 )
-def serve(folder: Path, port: int, force: bool, detach: bool) -> None:
+@click.option(
+    "--startup",
+    "-s",
+    is_flag=True,
+    help="Start this folder automatically at Windows logon.",
+)
+def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> None:
     """Browse FOLDER at http://127.0.0.1:PORT. Never writes to FOLDER.
 
     armoire's registry and project statuses live in its own per-user store,
@@ -225,6 +237,9 @@ def serve(folder: Path, port: int, force: bool, detach: bool) -> None:
         )
     for line in prepare_store(root):
         click.echo(line)
+    if startup:
+        enable_startup(root, port, None)
+        click.echo("  startup enabled")
 
     if detach:
         # No --force in the child's argv: the parent already claimed the port,
@@ -289,6 +304,22 @@ def list_instances() -> None:
         click.echo(f"{found.port:<6} {found.root:<{width}} {found.pid}")
     click.echo()
     click.echo(f"{len(live)} running")
+
+
+@main.group("startup")
+def startup_group() -> None:
+    """Manage folders that armoire starts at Windows logon."""
+
+
+@startup_group.command("remove")
+@click.argument("target")
+def startup_remove(target: str) -> None:
+    """Disable logon startup and stop the matching running server."""
+    try:
+        removed = startup.remove(target)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f"startup disabled for {removed.folder} on port {removed.port}")
 
 
 if __name__ == "__main__":

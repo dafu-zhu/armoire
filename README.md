@@ -32,6 +32,10 @@ $ uvx --from git+https://github.com/dafu-zhu/armoire armoire serve .
 ```console
 $ armoire serve .                 # browse at http://127.0.0.1:8420
 $ armoire serve ~/notes -dp 9000  # background, on port 9000
+$ armoire serve D:/GitHub/summer-26 -dfs -p 8420
+                                  # background, replace, and start at logon
+$ armoire startup remove summer-26
+                                  # remove from logon and stop that server
 $ armoire list                    # which port is serving which folder
 ```
 
@@ -42,6 +46,12 @@ filters every file in the folder by fuzzy match. Each file's URL is bookmarkable
 One process serves one folder, so several folders means several ports. `-d`
 runs a server in the background so it does not need a terminal of its own, and
 `armoire list` reports which port is serving what.
+
+On Windows, add `-s`/`--startup` when serving a folder to also start it at
+logon. armoire creates its own startup list under `%APPDATA%\armoire`; if it
+does not exist yet, armoire creates it. `armoire startup remove NAME` removes
+that logon entry and stops the matching running armoire server, but does not
+touch the served folder or its armoire registry.
 
 A port already held by another armoire is refused rather than taken; `-f`
 replaces that instance, and `-df` replaces it and detaches. A port held by
