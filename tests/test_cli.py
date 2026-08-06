@@ -256,6 +256,30 @@ def test_the_long_port_flag_still_works(tmp_path, uvicorn_run):
     assert uvicorn_run[0]["port"] == 9000
 
 
+def test_serve_with_startup_registers_the_folder(tmp_path, uvicorn_run, monkeypatch):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    registered = []
+    monkeypatch.setattr(
+        cli,
+        "enable_startup",
+        lambda root, port, name: registered.append((root, port, name)),
+        raising=False,
+    )
+    monkeypatch.setattr(cli, "_spawn_detached", lambda argv, log: type("C", (), {"pid": 1})())
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: instance_module.Instance(port, 48148, str(served.resolve())),
+    )
+
+    result = CliRunner().invoke(main, ["serve", str(served), "-dfs", "-p", "9000"])
+
+    assert result.exit_code == 0
+    assert uvicorn_run == []
+    assert registered == [(served.resolve(), 9000, None)]
+
+
 def test_detach_spawns_a_child_and_returns(tmp_path, uvicorn_run, monkeypatch, isolated_store):
     served = tmp_path / "served"
     served.mkdir()
@@ -486,6 +510,18 @@ def test_list_counts_one_in_the_singular(monkeypatch):
     assert "1 runnings" not in result.output
 
 
+def test_startup_remove_disables_startup_and_stops_server(monkeypatch):
+    removed = cli.startup.Record("summer-26", r"D:\GitHub\summer-26", 8420)
+    monkeypatch.setattr(cli.startup, "remove", lambda target: removed)
+
+    result = CliRunner().invoke(main, ["startup", "remove", "summer-26"])
+
+    assert result.exit_code == 0
+    assert "startup disabled" in result.output
+    assert "D:\\GitHub\\summer-26" in result.output
+    assert "8420" in result.output
+
+
 def test_list_keeps_columns_aligned_for_a_long_folder_name(monkeypatch):
     """A table whose pid column wanders is a table nobody can scan."""
     monkeypatch.setattr(
@@ -538,6 +574,8 @@ def test_serve_help_documents_every_option():
     assert "--port" in result.output
     assert "--detach" in result.output
     assert "--force" in result.output
+    assert "--startup" in result.output
+    assert "-s" in result.output
     assert "8420" in result.output  # the default is shown
 
 
