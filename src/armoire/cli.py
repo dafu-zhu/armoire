@@ -120,7 +120,13 @@ def _spawn_detached(argv: list[str], log: Path | None) -> subprocess.Popen:
     to break the promise that serving a folder never writes into it.
     """
     if sys.platform == "win32":
-        extra = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        extra = {
+            "creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+            "startupinfo": startupinfo,
+        }
     else:
         extra = {"start_new_session": True}
     if log is None:
@@ -227,11 +233,15 @@ def serve(folder: Path, port: int, force: bool, detach: bool) -> None:
         # process nobody authorised it to touch. The poll below reports that
         # instead.
         log = None if store.writes_inside(root) else _log_path(port)
-        child = _spawn_detached([sys.argv[0], "serve", str(root), "--port", str(port)], log)
+        _spawn_detached(
+            [sys.executable, "-m", "armoire.cli", "serve", str(root), "--port", str(port)],
+            log,
+        )
         deadline = time.monotonic() + DETACH_TIMEOUT
         while time.monotonic() < deadline:
-            if instance.probe(port) is not None:
-                click.echo(f"  running in the background (pid {child.pid})")
+            found = instance.probe(port)
+            if found is not None:
+                click.echo(f"  running in the background (pid {found.pid})")
                 if log is None:
                     click.echo("  no log: the armoire store is inside the served folder")
                 else:
@@ -279,3 +289,7 @@ def list_instances() -> None:
         click.echo(f"{found.port:<6} {found.root:<{width}} {found.pid}")
     click.echo()
     click.echo(f"{len(live)} running")
+
+
+if __name__ == "__main__":
+    main()

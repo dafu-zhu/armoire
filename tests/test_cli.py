@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import pytest
 from click.testing import CliRunner
 
@@ -299,6 +302,52 @@ def test_the_detached_child_is_not_told_to_force(
     assert "-d" not in spawned[0]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process creation flags")
+def test_windows_detach_requests_no_visible_console(monkeypatch):
+    captured = {}
+
+    def fake_popen(argv, stdout, stderr, **extra):
+        captured.update({"argv": argv, "stdout": stdout, "stderr": stderr, **extra})
+        return type("C", (), {"pid": 1})()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+
+    cli._spawn_detached(["python", "-m", "armoire.cli"], None)
+
+    assert captured["creationflags"] & subprocess.CREATE_NO_WINDOW
+    assert not captured["creationflags"] & subprocess.DETACHED_PROCESS
+    startupinfo = captured["startupinfo"]
+    assert startupinfo.dwFlags & subprocess.STARTF_USESHOWWINDOW
+    assert startupinfo.wShowWindow == subprocess.SW_HIDE
+
+
+def test_detach_relaunches_the_python_module_not_the_console_shim(
+    tmp_path, uvicorn_run, monkeypatch, isolated_store
+):
+    """The detached process must be the Python server process itself.
+
+    Relaunching sys.argv[0] works in tests, but installed Windows console
+    shims can keep the real Python child tied to the terminal lifetime.
+    """
+    served = tmp_path / "served"
+    served.mkdir()
+    spawned = []
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda argv, log: spawned.append(argv) or type("C", (), {"pid": 1})(),
+    )
+    monkeypatch.setattr(
+        cli.instance, "probe", lambda port: instance_module.Instance(port, 1, str(served))
+    )
+    result = CliRunner().invoke(main, ["serve", str(served), "-d"])
+    assert result.exit_code == 0
+    assert spawned
+    assert spawned[0][:3] == [sys.executable, "-m", "armoire.cli"]
+    assert spawned[0][3:] == ["serve", str(served.resolve()), "--port", "8420"]
+
+
 def test_detach_exits_non_zero_when_the_child_never_answers(
     tmp_path, uvicorn_run, monkeypatch, isolated_store
 ):
@@ -324,6 +373,21 @@ def test_detach_names_its_log_file(tmp_path, uvicorn_run, monkeypatch, isolated_
     )
     result = CliRunner().invoke(main, ["serve", str(served), "-d"])
     assert "serve-8420.log" in result.output
+
+
+def test_detach_reports_the_server_pid_not_the_launcher_pid(
+    tmp_path, uvicorn_run, monkeypatch, isolated_store
+):
+    served = tmp_path / "served"
+    served.mkdir()
+    monkeypatch.setattr(cli, "_spawn_detached", lambda argv, log: type("C", (), {"pid": 111})())
+    monkeypatch.setattr(
+        cli.instance, "probe", lambda port: instance_module.Instance(port, 222, str(served))
+    )
+    result = CliRunner().invoke(main, ["serve", str(served), "-d"])
+    assert result.exit_code == 0
+    assert "pid 222" in result.output
+    assert "pid 111" not in result.output
 
 
 def test_detach_writes_no_log_when_the_store_is_inside_the_served_folder(
@@ -443,6 +507,17 @@ def test_group_help_lists_both_commands():
     assert result.exit_code == 0
     assert "serve" in result.output
     assert "list" in result.output
+
+
+def test_cli_module_is_executable():
+    result = subprocess.run(
+        [sys.executable, "-m", "armoire.cli", "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "version" in result.stdout
 
 
 def test_group_help_carries_worked_examples():
