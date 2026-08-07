@@ -1,3 +1,5 @@
+import sys
+
 from armoire import instance, startup, store
 
 
@@ -24,7 +26,7 @@ def test_enable_startup_creates_csv_script_and_windows_task(tmp_path, monkeypatc
     ]
     script = config_root / "startup" / "summer-26.ps1"
     assert script.read_text(encoding="utf-8") == (
-        f'armoire serve "{served.resolve()}" -df -p 8420' "\n"
+        f"& '{sys.executable}' -m armoire.cli serve '{served.resolve()}' -df -p 8420\n"
     )
     assert commands == [
         {

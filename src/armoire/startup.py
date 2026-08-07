@@ -5,6 +5,7 @@ import csv
 import os
 import signal
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +56,10 @@ def _task_name(name: str) -> str:
     return f"armoire {name}"
 
 
+def _ps_quote(value: Path | str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _same_folder(left: Path | str, right: Path | str) -> bool:
     return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
 
@@ -103,7 +108,10 @@ def enable(folder: Path, port: int, name: str | None = None) -> Record:
 
     script = _script_path(record.name)
     script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(f'armoire serve "{root}" -df -p {port}\n', encoding="utf-8")
+    script.write_text(
+        f"& {_ps_quote(sys.executable)} -m armoire.cli serve {_ps_quote(root)} -df -p {port}\n",
+        encoding="utf-8",
+    )
 
     launcher = (
         "powershell.exe -NoProfile -ExecutionPolicy Bypass "
