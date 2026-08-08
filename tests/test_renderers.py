@@ -271,6 +271,26 @@ def test_pdf_viewer_fills_the_reading_pane(page, live_server):
     assert shell.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 255, 255)"
 
 
+def test_pdf_reader_clips_away_the_plugin_horizontal_scrollbar(page, live_server):
+    """The browser's PDF viewer draws its own scrollbars inside the iframe,
+    out of reach of our stylesheet, and view=FitH always leaves a horizontal
+    one with nothing to scroll to. The frame therefore has to hang past the
+    shell's clipped bottom edge, taking that bar with it -- assert the overhang
+    and the clipping, since either one alone puts the bar back on screen."""
+    page.set_viewport_size({"width": 1400, "height": 900})
+    open_path(page, live_server, "doc.pdf")
+    shell = page.locator(".pdf-shell")
+    frame = page.locator("iframe.pdf")
+    shell.wait_for()
+
+    shell_box = shell.bounding_box()
+    frame_box = frame.bounding_box()
+    overhang = (frame_box["y"] + frame_box["height"]) - (shell_box["y"] + shell_box["height"])
+
+    assert overhang >= 15, f"only {overhang}px hangs past the shell: a 15px scrollbar still shows"
+    assert shell.evaluate("el => getComputedStyle(el).overflow") == "hidden"
+
+
 def test_pdf_pages_scroll_inside_the_reader_not_the_page(page, live_server):
     page.set_viewport_size({"width": 1000, "height": 520})
     open_path(page, live_server, "doc.pdf")

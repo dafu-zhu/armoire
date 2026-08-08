@@ -416,11 +416,21 @@ pre.code { margin: 0; padding: 16px; overflow-x: auto; font-family: var(--mono);
   white-space: nowrap;
 }
 
+/* The negative bottom margin drops the plugin's horizontal scrollbar off the
+   bottom edge, where .pdf-shell's overflow: hidden clips it away. The bar is
+   drawn inside the iframe by the browser's PDF viewer, so no rule of ours can
+   reach it, and view=FitH guarantees it appears: the fit is measured against
+   the full frame width, then the viewer's own vertical scrollbar takes a
+   slice of that width back and the page overflows by exactly the slice. So it
+   is a scrollbar with nothing to scroll to. 20px clears the widest scrollbar
+   a platform draws here (Windows is 15-17px); the cost is that much of the
+   viewer's viewport, which vertical scrolling returns. */
 iframe.pdf {
   display: block;
   flex: 1 1 auto;
   width: 100%;
   min-height: 0;
+  margin-bottom: -20px;
   background: var(--bg);
   border: 0;
 }
