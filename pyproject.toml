@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn>=0.32",
     "click>=8.1",
     "polars>=1.0",
+    "psutil>=6.0",
     "nbformat>=5.10",
     "nbconvert>=7.16",
 ]

@@ -23,6 +23,10 @@ def uvicorn_run(monkeypatch):
         calls.append({"app": app, "host": host, "port": port, "log_level": log_level})
 
     monkeypatch.setattr("armoire.cli.uvicorn.run", fake_run)
+    # CLI tests must not depend on whatever happens to be using a real port
+    # on the developer's machine. Tests for occupied-port behavior replace
+    # claim_port or this probe explicitly.
+    monkeypatch.setattr("armoire.instance._port_is_free", lambda port: True)
     return calls
 
 
@@ -256,28 +260,274 @@ def test_the_long_port_flag_still_works(tmp_path, uvicorn_run):
     assert uvicorn_run[0]["port"] == 9000
 
 
-def test_serve_with_startup_registers_the_folder(tmp_path, uvicorn_run, monkeypatch):
+def test_dashboard_serves_current_folder_detached_and_prints_url(
+    tmp_path, uvicorn_run, monkeypatch, isolated_store
+):
     served = tmp_path / "summer-26"
     served.mkdir()
-    registered = []
+    monkeypatch.chdir(served)
+    spawned = []
+    bound = set()
+
+    def fake_spawn(argv, log):
+        spawned.append(argv)
+        bound.add(int(argv[-1]))
+        return type("C", (), {"pid": 1})()
+
+    monkeypatch.setattr(cli.instance, "_port_is_free", lambda port: port not in bound)
+    monkeypatch.setattr(cli, "_spawn_detached", fake_spawn)
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: (
+            instance_module.Instance(port, 48148, str(served.resolve())) if port in bound else None
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert uvicorn_run == []
+    assert spawned[0][3:] == ["serve", str(served.resolve()), "--port", "8420"]
+    assert result.output.splitlines() == [
+        str(served.resolve()),
+        "http://127.0.0.1:8420",
+    ]
+
+
+def test_dashboard_skips_occupied_ports(tmp_path, monkeypatch, isolated_store):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    monkeypatch.chdir(served)
+    monkeypatch.setattr(
+        cli.instance,
+        "_port_is_free",
+        lambda port: port >= 8422,
+    )
     monkeypatch.setattr(
         cli,
-        "enable_startup",
-        lambda root, port, name: registered.append((root, port, name)),
-        raising=False,
+        "_spawn_detached",
+        lambda argv, log: type("C", (), {"pid": 1})(),
     )
-    monkeypatch.setattr(cli, "_spawn_detached", lambda argv, log: type("C", (), {"pid": 1})())
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: (
+            instance_module.Instance(port, 48148, str(served.resolve())) if port == 8422 else None
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert "http://127.0.0.1:8422" in result.output
+
+
+def test_dashboard_reuses_existing_server_for_current_folder(tmp_path, monkeypatch, isolated_store):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    monkeypatch.chdir(served)
+    monkeypatch.setattr(
+        cli.instance,
+        "running",
+        lambda: [instance_module.Instance(9000, 48148, str(served.resolve()))],
+    )
+    spawned = []
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda argv, log: spawned.append(argv),
+    )
+
+    result = CliRunner().invoke(main, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert spawned == []
+    assert str(served.resolve()) in result.output
+    assert "http://127.0.0.1:9000" in result.output
+
+
+def test_dashboard_retries_when_selected_port_starts_serving_another_folder(
+    tmp_path, monkeypatch, isolated_store
+):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(served)
+    bound = set()
+    spawned_ports = []
+
+    def fake_spawn(argv, log):
+        port = int(argv[-1])
+        spawned_ports.append(port)
+        bound.add(port)
+        return type("C", (), {"pid": 1})()
+
+    monkeypatch.setattr(cli.instance, "running", list)
+    monkeypatch.setattr(cli.instance, "_port_is_free", lambda port: port not in bound)
+    monkeypatch.setattr(cli, "_spawn_detached", fake_spawn)
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: (
+            instance_module.Instance(port, 222, str(other.resolve()))
+            if port == 8420
+            else instance_module.Instance(port, 333, str(served.resolve()))
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert spawned_ports == [8420, 8421]
+    assert result.output.splitlines() == [
+        str(served.resolve()),
+        "http://127.0.0.1:8421",
+    ]
+
+
+def test_dashboard_retries_when_selected_port_is_claimed_before_launch(
+    tmp_path, monkeypatch, isolated_store
+):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    monkeypatch.chdir(served)
+    spawned_ports = []
+
+    def claim(port, force):
+        if port == 8420:
+            raise instance_module.PortForeign(port)
+        return instance_module.Claim()
+
+    def fake_spawn(argv, log):
+        spawned_ports.append(int(argv[-1]))
+        return type("C", (), {"pid": 1})()
+
+    monkeypatch.setattr(cli.instance, "running", list)
+    monkeypatch.setattr(cli.instance, "claim_port", claim)
+    monkeypatch.setattr(cli, "_spawn_detached", fake_spawn)
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: instance_module.Instance(port, 333, str(served.resolve())),
+    )
+
+    result = CliRunner().invoke(main, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert spawned_ports == [8421]
+    assert result.output.splitlines() == [
+        str(served.resolve()),
+        "http://127.0.0.1:8421",
+    ]
+
+
+def test_dashboard_reuses_same_folder_claimed_between_scan_and_launch(
+    tmp_path, monkeypatch, isolated_store
+):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    monkeypatch.chdir(served)
+    incumbent = instance_module.Instance(8420, 48148, str(served.resolve()))
+    spawned_ports = []
+
+    def claim(port, force):
+        if port == 8420:
+            raise instance_module.PortBusy(incumbent)
+        return instance_module.Claim()
+
+    monkeypatch.setattr(cli.instance, "running", list)
+    monkeypatch.setattr(cli.instance, "claim_port", claim)
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda argv, log: spawned_ports.append(int(argv[-1])),
+    )
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: instance_module.Instance(port, 333, str(served.resolve())),
+    )
+
+    result = CliRunner().invoke(main, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert spawned_ports == []
+    assert result.output.splitlines() == [
+        str(served.resolve()),
+        "http://127.0.0.1:8420",
+    ]
+
+
+def test_dashboard_reuses_unrecorded_server_when_store_is_inside_served_folder(
+    tmp_path, monkeypatch
+):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    monkeypatch.chdir(served)
+    monkeypatch.setattr(store, "config_root", lambda: served / ".armoire")
+    assert instance_module.record(8420, served, 48148) is None
+    spawned_ports = []
+
+    def fake_spawn(argv, log):
+        spawned_ports.append(int(argv[-1]))
+        return type("C", (), {"pid": 1})()
+
+    monkeypatch.setattr(
+        cli.instance,
+        "_port_is_free",
+        lambda port: port != 8420 and port not in spawned_ports,
+    )
+    monkeypatch.setattr(cli, "_spawn_detached", fake_spawn)
+    monkeypatch.setattr(
+        cli.instance,
+        "probe",
+        lambda port: (
+            instance_module.Instance(port, 48148, str(served.resolve()))
+            if port == 8420 or port in spawned_ports
+            else None
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["dashboard"])
+
+    assert result.exit_code == 0
+    assert spawned_ports == []
+    assert result.output.splitlines() == [
+        str(served.resolve()),
+        "http://127.0.0.1:8420",
+    ]
+
+
+def test_dashboard_reuses_unrecorded_server_above_a_free_port_gap(tmp_path, monkeypatch):
+    served = tmp_path / "summer-26"
+    served.mkdir()
+    monkeypatch.chdir(served)
+    monkeypatch.setattr(store, "config_root", lambda: served / ".armoire")
+    assert instance_module.record(9000, served, 48148) is None
+    monkeypatch.setattr(cli.instance, "listening_ports", lambda: [9000], raising=False)
+    monkeypatch.setattr(cli.instance, "_port_is_free", lambda port: port != 9000)
     monkeypatch.setattr(
         cli.instance,
         "probe",
         lambda port: instance_module.Instance(port, 48148, str(served.resolve())),
     )
+    spawned_ports = []
+    monkeypatch.setattr(
+        cli,
+        "_spawn_detached",
+        lambda argv, log: spawned_ports.append(int(argv[-1])),
+    )
 
-    result = CliRunner().invoke(main, ["serve", str(served), "-dfs", "-p", "9000"])
+    result = CliRunner().invoke(main, ["dashboard"])
 
     assert result.exit_code == 0
-    assert uvicorn_run == []
-    assert registered == [(served.resolve(), 9000, None)]
+    assert spawned_ports == []
+    assert result.output.splitlines() == [
+        str(served.resolve()),
+        "http://127.0.0.1:9000",
+    ]
 
 
 def test_detach_spawns_a_child_and_returns(tmp_path, uvicorn_run, monkeypatch, isolated_store):
@@ -484,11 +734,11 @@ def test_list_shows_running_instances(monkeypatch):
     )
     result = CliRunner().invoke(main, ["list"])
     assert result.exit_code == 0
-    assert "PORT" in result.output
-    assert "8420" in result.output
+    assert "URL" in result.output
+    assert "http://127.0.0.1:8420" in result.output
     assert r"D:\GitHub\summer-26" in result.output
-    assert "51844" in result.output
-    assert "8421" in result.output
+    assert "http://127.0.0.1:8421" in result.output
+    assert "PID" not in result.output
     assert "2 running" in result.output
 
 
@@ -522,8 +772,7 @@ def test_startup_remove_disables_startup_and_stops_server(monkeypatch):
     assert "8420" in result.output
 
 
-def test_list_keeps_columns_aligned_for_a_long_folder_name(monkeypatch):
-    """A table whose pid column wanders is a table nobody can scan."""
+def test_list_keeps_folder_column_aligned(monkeypatch):
     monkeypatch.setattr(
         cli.instance,
         "running",
@@ -533,9 +782,9 @@ def test_list_keeps_columns_aligned_for_a_long_folder_name(monkeypatch):
         ],
     )
     result = CliRunner().invoke(main, ["list"])
-    rows = [line for line in result.output.splitlines() if "5184" in line or "5200" in line]
+    rows = [line for line in result.output.splitlines() if "http://" in line]
     assert len(rows) == 2
-    assert rows[0].index("51844") == rows[1].index("52001")
+    assert rows[0].index("/short") == rows[1].index("/a/very")
 
 
 def test_group_help_lists_both_commands():
@@ -568,15 +817,20 @@ def test_group_help_states_one_folder_per_process():
     assert "One process serves one folder" in result.output
 
 
-def test_serve_help_documents_every_option():
+def test_serve_help_documents_supported_options_only():
     result = CliRunner().invoke(main, ["serve", "--help"])
     assert result.exit_code == 0
     assert "--port" in result.output
     assert "--detach" in result.output
     assert "--force" in result.output
-    assert "--startup" in result.output
-    assert "-s" in result.output
+    assert "--startup" not in result.output
     assert "8420" in result.output  # the default is shown
+
+
+def test_serve_rejects_retired_startup_flag():
+    result = CliRunner().invoke(main, ["serve", ".", "-s"])
+    assert result.exit_code == 2
+    assert "No such option '-s'" in result.output
 
 
 def test_help_examples_keep_their_alignment():
