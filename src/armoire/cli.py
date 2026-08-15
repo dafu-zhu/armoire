@@ -19,31 +19,35 @@ DEFAULT_PORT = 8420
 DETACH_TIMEOUT = 10.0
 DETACH_POLL = 0.1
 
-enable_startup = startup.enable
+
+class DashboardPortRace(Exception):
+    """A dashboard-selected port changed owners before startup completed."""
+
+
+def _same_folder(left: Path | str, right: Path | str) -> bool:
+    return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
+
 
 GROUP_EPILOG = """\
 \b
 Examples:
-  armoire serve .                     browse the current folder
+  armoire dashboard                   browse the current folder
+  armoire list                        show every folder and URL
+  armoire serve .                     advanced: serve in this terminal
   armoire serve ~/notes -d            run it in the background
   armoire serve ~/notes -df           replace the armoire already on that port
-  armoire serve D:/GitHub/summer-26 -dfs -p 8420
-                                      background, replace, and start at logon
   armoire serve ~/notes -dp 9000      background, on port 9000
-  armoire startup remove summer-26    remove from logon and stop that server
-  armoire list                        what is running, and where
+  armoire startup remove summer-26    remove a legacy logon registration
 
 One process serves one folder, so several folders means several ports.
-`armoire list` is there because nobody remembers which is which.
+`armoire dashboard` assigns those ports automatically and never replaces anything.
 """
 
 SERVE_EPILOG = """\
 \b
 Examples:
   armoire serve .
-  armoire serve D:/GitHub/summer-26 -dfs -p 8420
   armoire serve ~/notes -dp 9000
-  armoire startup remove summer-26
 """
 
 STUB = """\
@@ -176,13 +180,13 @@ def main() -> None:
         "Run in the background and hand back the prompt. Output goes to a log file in the store."
     ),
 )
-@click.option(
-    "--startup",
-    "-s",
-    is_flag=True,
-    help="Start this folder automatically at Windows logon.",
-)
-def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> None:
+def serve(
+    folder: Path,
+    port: int,
+    force: bool,
+    detach: bool,
+    quiet: bool = False,
+) -> None:
     """Browse FOLDER at http://127.0.0.1:PORT. Never writes to FOLDER.
 
     armoire's registry and project statuses live in its own per-user store,
@@ -192,6 +196,10 @@ def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> 
     try:
         claim = instance.claim_port(port, force)
     except instance.PortBusy as busy:
+        if quiet:
+            if _same_folder(busy.instance.root, root):
+                return
+            raise DashboardPortRace(port) from None
         # The folder, not just the pid: replacing a stale server of your own
         # and destroying one you still wanted are the same keystrokes, and
         # only the folder name tells them apart.
@@ -208,6 +216,8 @@ def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> 
         click.echo("  --port serves this folder somewhere else instead", err=True)
         raise SystemExit(1) from None
     except instance.PortForeign:
+        if quiet:
+            raise DashboardPortRace(port) from None
         click.echo(
             f"armoire: port {port} is in use, and what holds it is not armoire",
             err=True,
@@ -221,6 +231,8 @@ def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> 
         click.echo("  --port serves this folder somewhere else instead", err=True)
         raise SystemExit(1) from None
     except instance.PortStuck:
+        if quiet:
+            raise DashboardPortRace(port) from None
         click.echo(
             f"armoire: the armoire on port {port} was asked to stop but did not release the port",
             err=True,
@@ -228,19 +240,17 @@ def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> 
         click.echo("  --port serves this folder somewhere else instead", err=True)
         raise SystemExit(1) from None
 
-    click.echo(f"armoire serving {root}")
-    click.echo(f"  http://127.0.0.1:{port}")
-    if claim.replaced_pid is not None:
+    if not quiet:
+        click.echo(f"armoire serving {root}")
+        click.echo(f"  http://127.0.0.1:{port}")
+    if claim.replaced_pid is not None and not quiet:
         click.echo(
             f"  replaced the armoire serving {claim.replaced_root} on {port} "
             f"(pid {claim.replaced_pid})"
         )
     for line in prepare_store(root):
-        click.echo(line)
-    if startup:
-        enable_startup(root, port, None)
-        click.echo("  startup enabled")
-
+        if not quiet:
+            click.echo(line)
     if detach:
         # No --force in the child's argv: the parent already claimed the port,
         # so the child should find it free. If it does not, something raced --
@@ -256,6 +266,13 @@ def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> 
         while time.monotonic() < deadline:
             found = instance.probe(port)
             if found is not None:
+                if not _same_folder(found.root, root):
+                    if quiet:
+                        raise DashboardPortRace(port)
+                    time.sleep(DETACH_POLL)
+                    continue
+                if quiet:
+                    return
                 click.echo(f"  running in the background (pid {found.pid})")
                 if log is None:
                     click.echo("  no log: the armoire store is inside the served folder")
@@ -285,6 +302,41 @@ def serve(folder: Path, port: int, force: bool, detach: bool, startup: bool) -> 
         instance.forget(port)
 
 
+@main.command()
+@click.pass_context
+def dashboard(ctx: click.Context) -> None:
+    """Serve the current folder in the background and print its URL."""
+    root = Path.cwd().resolve()
+    for found in instance.running():
+        if _same_folder(found.root, root):
+            click.echo(root)
+            click.echo(f"http://127.0.0.1:{found.port}")
+            return
+    start = DEFAULT_PORT
+    while True:
+        found, port = instance.matching_or_free_port(root, start)
+        if found is not None:
+            click.echo(root)
+            click.echo(f"http://127.0.0.1:{found.port}")
+            return
+        assert port is not None
+        try:
+            ctx.invoke(
+                serve,
+                folder=root,
+                port=port,
+                force=False,
+                detach=True,
+                quiet=True,
+            )
+        except DashboardPortRace:
+            start = port + 1
+            continue
+        click.echo(root)
+        click.echo(f"http://127.0.0.1:{port}")
+        return
+
+
 @main.command("list")
 def list_instances() -> None:
     """Show the armoire instances currently running.
@@ -296,28 +348,27 @@ def list_instances() -> None:
     if not live:
         click.echo("no armoire instances running")
         return
-    # Width from the data, so the pid column does not wander when one folder
-    # has a much longer path than the rest.
-    width = max(len("FOLDER"), *(len(found.root) for found in live))
-    click.echo(f"{'PORT':<6} {'FOLDER':<{width}} PID")
-    for found in live:
-        click.echo(f"{found.port:<6} {found.root:<{width}} {found.pid}")
+    urls = [(f"http://127.0.0.1:{found.port}", found.root) for found in live]
+    width = max(len("URL"), *(len(url) for url, _root in urls))
+    click.echo(f"{'URL':<{width}}  FOLDER")
+    for url, root in urls:
+        click.echo(f"{url:<{width}}  {root}")
     click.echo()
     click.echo(f"{len(live)} running")
 
 
 @main.group("startup")
 def startup_group() -> None:
-    """Manage folders that armoire starts at Windows logon."""
+    """Remove legacy Windows-logon registrations."""
 
 
 @startup_group.command("remove")
 @click.argument("target")
 def startup_remove(target: str) -> None:
-    """Disable logon startup and stop the matching running server."""
+    """Delete a legacy logon registration and stop its matching server."""
     try:
         removed = startup.remove(target)
-    except ValueError as error:
+    except (ValueError, startup.RemovalError) as error:
         raise click.ClickException(str(error)) from error
     click.echo(f"startup disabled for {removed.folder} on port {removed.port}")
 

@@ -5,12 +5,46 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from types import SimpleNamespace
 
 import pytest
 import uvicorn
 
 from armoire import instance, store
 from armoire.app import create_app
+
+
+def test_listening_ports_falls_back_to_same_user_processes_when_system_scan_is_denied(
+    monkeypatch,
+):
+    connection = SimpleNamespace(
+        status=instance.psutil.CONN_LISTEN,
+        laddr=SimpleNamespace(ip="127.0.0.1", port=9000),
+    )
+
+    class Process:
+        def __init__(self, command, connections):
+            self.info = {"cmdline": command}
+            self._connections = connections
+
+        def net_connections(self, kind):
+            if isinstance(self._connections, Exception):
+                raise self._connections
+            return self._connections
+
+    processes = [
+        Process(["python", "unrelated.py"], [connection]),
+        Process(["python", "-m", "armoire.cli"], instance.psutil.AccessDenied()),
+        Process(["python", "-m", "armoire.cli"], [connection]),
+    ]
+    monkeypatch.setattr(
+        instance.psutil,
+        "net_connections",
+        lambda kind: (_ for _ in ()).throw(instance.psutil.AccessDenied()),
+    )
+    monkeypatch.setattr(instance.psutil, "process_iter", lambda attrs: processes)
+
+    assert instance.listening_ports() == [9000]
 
 
 def _free_port() -> int:

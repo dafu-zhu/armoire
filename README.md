@@ -15,7 +15,8 @@ and can be run from any directory:
 
 ```console
 $ uv tool install --from git+https://github.com/dafu-zhu/armoire armoire
-$ armoire serve /path/to/folder
+$ cd /path/to/folder
+$ armoire dashboard
 ```
 
 If `armoire` is not found afterwards, run `uv tool update-shell` and restart your
@@ -24,34 +25,30 @@ terminal. Upgrade later with `uv tool upgrade armoire`.
 To run it once without installing anything:
 
 ```console
-$ uvx --from git+https://github.com/dafu-zhu/armoire armoire serve .
+$ uvx --from git+https://github.com/dafu-zhu/armoire armoire dashboard
 ```
 
 ## Use
 
 ```console
-$ armoire serve .                 # browse at http://127.0.0.1:8420
-$ armoire serve ~/notes -dp 9000  # background, on port 9000
-$ armoire serve D:/GitHub/summer-26 -dfs -p 8420
-                                  # background, replace, and start at logon
+$ armoire dashboard               # serve current folder in background
+$ armoire list                    # URL-to-folder mappings
+$ armoire serve ~/notes -dp 9000  # advanced: choose folder and port
 $ armoire startup remove summer-26
-                                  # remove from logon and stop that server
-$ armoire list                    # which port is serving which folder
+                                  # remove legacy logon registration
 ```
 
-Open the URL it prints. The left rail is a lazy directory tree; the box at the top
+`armoire dashboard` starts at port 8420 and moves upward until it finds a free
+port. It never replaces anything. Running it again from the same folder reuses
+that folder's existing server. Open the URL it prints. The left rail is a lazy directory tree; the box at the top
 filters every file in the folder by fuzzy match. Each file's URL is bookmarkable —
 `#/browse/research/0dte/README.md` — and the back button works.
 
-One process serves one folder, so several folders means several ports. `-d`
-runs a server in the background so it does not need a terminal of its own, and
-`armoire list` reports which port is serving what.
-
-On Windows, add `-s`/`--startup` when serving a folder to also start it at
-logon. armoire creates its own startup list under `%APPDATA%\armoire`; if it
-does not exist yet, armoire creates it. `armoire startup remove NAME` removes
-that logon entry and stops the matching running armoire server, but does not
-touch the served folder or its armoire registry.
+One process serves one folder, so several folders means several ports.
+`armoire list` reports each live URL and its folder. Armoire does not create
+Windows startup tasks. `armoire startup remove NAME` remains only to delete a
+registration created by an older version; it does not touch the served folder
+or its registry.
 
 A port already held by another armoire is refused rather than taken; `-f`
 replaces that instance, and `-df` replaces it and detaches. A port held by

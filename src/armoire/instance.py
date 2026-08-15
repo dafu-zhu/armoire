@@ -21,6 +21,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+import psutil
+
 from armoire import store
 
 # Long enough for a loaded machine to answer a loopback request, short enough
@@ -86,6 +88,49 @@ def _port_is_free(port: int) -> bool:
         except OSError:
             return False
     return True
+
+
+def listening_ports() -> list[int]:
+    """Loopback ports owned by processes whose command line identifies Armoire."""
+    ports: set[int] = set()
+    try:
+        processes = psutil.process_iter(["cmdline"])
+        for process in processes:
+            command = process.info.get("cmdline") or []
+            if not any("armoire" in argument.casefold() for argument in command):
+                continue
+            try:
+                connections = process.net_connections(kind="tcp")
+            except (psutil.Error, OSError):
+                continue
+            for connection in connections:
+                if connection.status != psutil.CONN_LISTEN or not connection.laddr:
+                    continue
+                if connection.laddr.ip in {"127.0.0.1", "::1"}:
+                    ports.add(connection.laddr.port)
+    except (psutil.Error, OSError):
+        pass
+    return sorted(ports)
+
+
+def matching_or_free_port(root: Path, start: int) -> tuple[Instance | None, int | None]:
+    """Matching live instance, or first bindable port, scanning from ``start``."""
+    normalized_root = os.path.normcase(os.path.realpath(root))
+    if store.writes_inside(root):
+        for port in listening_ports():
+            found = probe(port)
+            if (
+                found is not None
+                and os.path.normcase(os.path.realpath(found.root)) == normalized_root
+            ):
+                return found, None
+    for port in range(start, 65536):
+        if _port_is_free(port):
+            return None, port
+        found = probe(port)
+        if found is not None and os.path.normcase(os.path.realpath(found.root)) == normalized_root:
+            return found, None
+    raise RuntimeError(f"no free port available at or above {start}")
 
 
 def probe(port: int) -> Instance | None:
