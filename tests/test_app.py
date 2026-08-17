@@ -820,6 +820,85 @@ def test_a_status_edit_does_not_write_to_the_served_folder(tmp_path):
     assert folder_snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize("relative", ["docs", "docs/readme.md"])
+def test_opening_a_browse_path_launches_its_os_handler(tmp_path, monkeypatch, relative):
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.suffix:
+        target.write_text("hello\n", encoding="utf-8")
+    else:
+        target.mkdir(exist_ok=True)
+
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda path: seen.append(path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+    response = client.post("/api/open", json={"path": relative}, headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"opened": True}
+    assert seen == [target.resolve()]
+
+
+def test_opening_the_served_root_uses_an_empty_path(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda path: seen.append(path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+    response = client.post("/api/open", json={"path": ""}, headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert seen == [tmp_path.resolve()]
+
+
+def test_opening_a_path_outside_the_served_root_is_refused(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda path: seen.append(path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+    response = client.post("/api/open", json={"path": "../outside.pdf"}, headers=HEADERS)
+
+    assert response.status_code == 403
+    assert seen == []
+
+
+def test_opening_a_missing_browse_path_is_404(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda path: seen.append(path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+    response = client.post("/api/open", json={"path": "missing.pdf"}, headers=HEADERS)
+
+    assert response.status_code == 404
+    assert seen == []
+
+
+def test_opening_a_browse_path_without_the_header_is_refused(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(store, "open_in_editor", lambda path: seen.append(path))
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+    response = client.post("/api/open", json={"path": ""})
+
+    assert response.status_code == 403
+    assert seen == []
+
+
+def test_a_browse_path_launch_failure_is_reported(tmp_path, monkeypatch):
+    def boom(path):
+        raise OSError("no application is associated with .pdf")
+
+    monkeypatch.setattr(store, "open_in_editor", boom)
+    target = tmp_path / "paper.pdf"
+    target.write_bytes(b"%PDF")
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+    response = client.post("/api/open", json={"path": "paper.pdf"}, headers=HEADERS)
+
+    assert response.status_code == 500
+    assert "no application" in response.json()["detail"]
+
+
 def test_opening_the_registry_launches_the_os_handler(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(store, "open_in_editor", lambda p: seen.append(p))

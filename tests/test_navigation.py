@@ -1,5 +1,7 @@
 """Tree, filter and routing, exercised in a real browser."""
 
+import pytest
+
 from conftest import folder_snapshot
 
 
@@ -197,6 +199,82 @@ def test_header_can_lift_out_of_the_content_area(page, live_server):
     assert header.bounding_box()["height"] == before
     assert toggle.get_attribute("aria-expanded") == "true"
     assert page.locator("#filter").is_visible()
+
+
+def test_open_button_sits_immediately_left_of_the_header_toggle(page, live_server):
+    page.goto(f"{live_server}/#/browse/doc.pdf")
+    page.wait_for_selector("#open-native")
+
+    opener = page.locator("#open-native")
+    toggle = page.locator("#header-toggle")
+    open_box = opener.bounding_box()
+    toggle_box = toggle.bounding_box()
+
+    assert opener.inner_text() == "Open"
+    assert opener.get_attribute("aria-label") == "Open current item with system default"
+    assert abs(open_box["y"] - toggle_box["y"]) <= 1
+    assert 4 <= toggle_box["x"] - (open_box["x"] + open_box["width"]) <= 12
+
+
+@pytest.mark.parametrize(
+    ("url_path", "expected_path"),
+    [("doc.pdf", "doc.pdf"), ("notes", "notes"), ("", "")],
+)
+def test_open_button_targets_the_current_browse_item(page, live_server, url_path, expected_path):
+    page.route(
+        "**/api/open",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"opened": true}'
+        ),
+    )
+    page.goto(f"{live_server}/#/browse/{url_path}")
+    button = page.locator("#open-native")
+    button.wait_for()
+
+    with page.expect_request("**/api/open") as request_info:
+        button.click()
+
+    request = request_info.value
+    assert request.method == "POST"
+    assert request.post_data_json == {"path": expected_path}
+    assert request.headers["x-armoire"] == "1"
+
+
+def test_open_button_targets_the_served_root_from_the_roadmap(page, live_server):
+    page.route(
+        "**/api/open",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"opened": true}'
+        ),
+    )
+    page.goto(f"{live_server}/#/")
+    button = page.locator("#open-native")
+    button.wait_for()
+
+    with page.expect_request("**/api/open") as request_info:
+        button.click()
+
+    assert request_info.value.post_data_json == {"path": ""}
+
+
+def test_open_button_reports_a_launch_failure_in_the_status_bar(page, live_server):
+    page.route(
+        "**/api/open",
+        lambda route: route.fulfill(
+            status=500,
+            content_type="application/json",
+            body='{"detail": "no default application"}',
+        ),
+    )
+    page.goto(f"{live_server}/#/browse/doc.pdf")
+
+    page.locator("#open-native").click()
+
+    page.wait_for_function(
+        "() => document.querySelector('#status-text').textContent === "
+        "'Could not open doc.pdf: no default application'"
+    )
+    assert page.locator("#open-native").is_enabled()
 
 
 def test_tree_failure_surfaces_an_error_instead_of_hanging(page, live_server):

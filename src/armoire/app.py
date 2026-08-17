@@ -355,6 +355,28 @@ def create_app(root: Path) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(exc)) from None
         return {"opened": True}
 
+    @app.post("/api/open")
+    def open_path(payload: dict, request: Request) -> dict:
+        """Hand a served file or directory to the operating system.
+
+        The browser supplies only a path relative to the served root. The
+        server resolves and confines it before launching anything, so the
+        endpoint cannot become a general-purpose local-file opener.
+        """
+        _guard(request, False)
+        path = payload.get("path")
+        if not isinstance(path, str):
+            raise HTTPException(status_code=400, detail="path must be a string")
+        target = _resolve(root, path)
+        if not target.is_file() and not target.is_dir():
+            raise HTTPException(status_code=404, detail="no such path")
+        try:
+            store.open_in_editor(target)
+        except OSError as exc:
+            logger.warning("could not open %s: %s", target, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from None
+        return {"opened": True}
+
     @app.get("/api/instance")
     def instance() -> dict:
         """Identify this process to another armoire starting on this port.

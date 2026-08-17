@@ -2,7 +2,15 @@
 
 import pytest
 
-REQUIRED_IDS = ["tree", "filter", "filter-results", "breadcrumb", "content", "status"]
+REQUIRED_IDS = [
+    "tree",
+    "filter",
+    "filter-results",
+    "breadcrumb",
+    "content",
+    "status",
+    "open-native",
+]
 
 
 @pytest.mark.parametrize("element_id", REQUIRED_IDS)

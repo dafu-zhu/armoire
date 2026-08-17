@@ -156,11 +156,12 @@ def write_state(state_file: Path, state: dict) -> None:
 
 
 def open_in_editor(path: Path) -> None:
-    """Hand `path` to whatever the OS has registered for it. Never waits.
+    """Hand `path` to whatever the OS has registered for it.
 
-    A GUI editor outlives the request that launched it, so nothing here
-    waits on the child: Popen is started and abandoned. Waiting would pin
-    the handler thread for as long as the user keeps the file open.
+    A GUI editor outlives the request that launched it. On macOS and Linux,
+    wait only long enough to catch a launcher that immediately exits with an
+    error; abandon one that is still running rather than pinning the handler
+    thread for as long as the opened application stays alive.
 
     os.startfile is looked up on `os` at call time rather than imported at
     module scope, because it exists only on Windows -- a module-level
@@ -177,4 +178,10 @@ def open_in_editor(path: Path) -> None:
         os.startfile(path)
         return
     launcher = "open" if sys.platform == "darwin" else "xdg-open"
-    subprocess.Popen([launcher, str(path)])
+    process = subprocess.Popen([launcher, str(path)])
+    try:
+        returncode = process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        return
+    if returncode:
+        raise OSError(f"{launcher} exited with status {returncode}")

@@ -8,6 +8,7 @@ import { renderCategories } from './categories.js';
 import { categoryOrder } from './palette.js';
 import { openPanel, closePanel } from './panel.js';
 import { mountRegistryButton } from './registry.js';
+import { initNativeOpen } from './opener.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -16,6 +17,7 @@ const breadcrumb = document.getElementById('breadcrumb');
 // (registry.js), and a textContent write on the footer would delete it on the
 // next navigation. The message owns the span; the footer owns the row.
 const status = document.getElementById('status-text');
+const nativeOpen = initNativeOpen(document.getElementById('open-native'), status);
 
 const BROWSE = 'browse';
 const PROJECT = 'project';
@@ -303,6 +305,7 @@ async function showRoute(route) {
     window.clearTimeout(rootClickTimer);
     rootClickTimer = null;
   }
+  nativeOpen.setPath(route.kind === 'browse' ? route.path : '');
   if (route.kind === 'home') {
     try {
       await showRoadmap();

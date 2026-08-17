@@ -267,7 +267,13 @@ def test_open_in_editor_uses_open_on_macos(tmp_path, monkeypatch):
     target.write_text("", encoding="utf-8")
     seen = []
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: seen.append(argv))
+
+    class Handle:
+        def wait(self, timeout):
+            assert timeout == 0.25
+            return 0
+
+    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: (seen.append(argv), Handle())[1])
     store.open_in_editor(target)
     assert seen == [["open", str(target)]]
 
@@ -277,30 +283,51 @@ def test_open_in_editor_uses_xdg_open_elsewhere(tmp_path, monkeypatch):
     target.write_text("", encoding="utf-8")
     seen = []
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: seen.append(argv))
+
+    class Handle:
+        def wait(self, timeout):
+            assert timeout == 0.25
+            return 0
+
+    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: (seen.append(argv), Handle())[1])
     store.open_in_editor(target)
     assert seen == [["xdg-open", str(target)]]
 
 
-def test_open_in_editor_never_waits_for_the_editor(tmp_path, monkeypatch):
-    """A GUI editor outlives the request that launched it. Popen is started
-    and abandoned; calling wait() would hang the handler for as long as the
-    user keeps the file open."""
+def test_open_in_editor_stops_waiting_while_the_launcher_is_still_running(tmp_path, monkeypatch):
+    """A GUI editor can outlive the request that launched it. A bounded wait
+    may inspect a quick launcher failure, but must abandon a live process."""
     target = tmp_path / "registry.toml"
     target.write_text("", encoding="utf-8")
 
     class Handle:
         def __init__(self):
-            self.waited = False
+            self.timeouts = []
 
-        def wait(self, *a, **k):
-            self.waited = True
+        def wait(self, timeout):
+            self.timeouts.append(timeout)
+            raise store.subprocess.TimeoutExpired("xdg-open", timeout)
 
     handle = Handle()
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(store.subprocess, "Popen", lambda argv: handle)
     store.open_in_editor(target)
-    assert not handle.waited
+    assert handle.timeouts == [0.25]
+
+
+def test_open_in_editor_reports_a_nonzero_launcher_exit(tmp_path, monkeypatch):
+    target = tmp_path / "registry.toml"
+    target.write_text("", encoding="utf-8")
+
+    class Handle:
+        def wait(self, timeout):
+            return 3
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(store.subprocess, "Popen", lambda argv: Handle())
+
+    with pytest.raises(OSError, match="xdg-open exited with status 3"):
+        store.open_in_editor(target)
 
 
 def test_open_in_editor_propagates_a_launch_failure(tmp_path, monkeypatch):
