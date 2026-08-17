@@ -69,6 +69,26 @@ def client(root):
     return TestClient(app)
 
 
+def test_shell_versions_first_party_entry_assets(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'href="/app.css?v=2"' in response.text
+    assert 'src="/app.js?v=2"' in response.text
+
+
+def test_static_assets_require_revalidation(client):
+    response = client.get("/app.css?v=2")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+    etag = response.headers["etag"]
+
+    revalidated = client.get("/app.css?v=2", headers={"If-None-Match": etag})
+    assert revalidated.status_code == 304
+    assert revalidated.headers["cache-control"] == "no-cache"
+
+
 def test_tree_lists_the_root(client):
     body = client.get("/api/tree", params={"path": ""}).json()
     assert [d["name"] for d in body["dirs"]] == ["docs"]

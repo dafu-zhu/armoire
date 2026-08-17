@@ -12,6 +12,8 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from starlette.types import Scope
 
 from armoire import dashboard, store
 from armoire.index import PathIndex
@@ -40,6 +42,15 @@ STATIC_DIR = Path(__file__).parent / "static"
 # "Writes are last-write-wins" (the spec) is a statement about two edits to
 # the *same* project, not permission to lose an edit to a different one.
 _state_lock = threading.Lock()
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """Make browsers validate cached UI assets before reusing them."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _resolve(root: Path, path: str) -> Path:
@@ -392,5 +403,5 @@ def create_app(root: Path) -> FastAPI:
         """
         return {"armoire": True, "pid": os.getpid(), "root": str(root)}
 
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", _RevalidatingStaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app
