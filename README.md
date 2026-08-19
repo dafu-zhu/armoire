@@ -100,9 +100,10 @@ Every project must declare `blocked_by`, `category`, or both — one with neithe
 has nowhere on screen to go and is reported as a registry issue. `status` is one
 of `not-started`, `active`, `paused`, `conditional-done`, `done`; it defaults to
 `not-started`, and an unrecognised value falls back to `not-started` as a
-registry issue rather than dropping the project from the graph. Edit it from
-the roadmap by clicking the chip in a node's corner, or by hand in the registry
-file.
+registry issue rather than dropping the project from the graph. The registry
+field declares the default. Clicking the chip writes the current status to the
+external `state.json`; conditional-done Notes remain in `registry.toml` and the
+panel pencil edits them there.
 
 `conditional-done` means the project is complete enough to move on, while some
 work remains. It unlocks dependents exactly like `done`, but requires a non-empty

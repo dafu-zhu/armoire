@@ -61,8 +61,10 @@ STUB = """\
 # paths = ["some/folder"]          # relative to the served folder
 # blocked_by = ["Another project"] # optional
 # category = "research"            # required when blocked_by is absent
-# status = "not-started"           # not-started | active | paused | done
+# status = "not-started"           # not-started | active | paused
+#                                  # conditional-done | done
 # note = "One line about it."
+# conditional_note = "What remains." # required for conditional-done
 """
 
 

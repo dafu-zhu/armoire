@@ -82,6 +82,17 @@ def test_the_stub_parses_as_toml_and_declares_no_projects(tmp_path, isolated_sto
     assert registry.projects == []
 
 
+def test_the_stub_documents_conditional_done_and_its_required_note(tmp_path, isolated_store):
+    served = tmp_path / "served"
+    served.mkdir()
+    cli.prepare_store(served)
+
+    text = store.registry_path(served).read_text(encoding="utf-8")
+
+    assert "conditional-done" in text
+    assert "conditional_note" in text
+
+
 def test_creating_the_stub_writes_nothing_into_the_served_folder(tmp_path, isolated_store):
     served = tmp_path / "served"
     served.mkdir()

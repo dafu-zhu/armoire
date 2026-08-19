@@ -887,6 +887,47 @@ def test_conditional_done_uses_completed_visual_language(
     assert conditional_fill == done_fill
 
 
+def test_an_older_note_save_cannot_restore_conditional_done_over_a_newer_status(
+    live_server, page, reset_upstream_status
+):
+    seeded = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={
+            "name": "Upstream",
+            "status": "conditional-done",
+            "conditional_note": "Original remainder.",
+        },
+    )
+    assert seeded.ok, seeded.status
+    page.add_init_script(FETCH_PROBE % 250)
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    upstream = page.locator('.node[data-name="Upstream"]')
+    upstream.click()
+    panel = page.locator("#project-panel")
+    panel.get_by_role("button", name="Edit notes").click()
+    panel.get_by_label("Notes").fill("Updated historical remainder.")
+    panel.get_by_role("button", name="Save changes").click()
+
+    page.evaluate(
+        "document.querySelector('.node[data-name=Upstream] .status-chip')"
+        ".dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))"
+    )
+
+    page.wait_for_function(
+        "() => window.__statusFetches.length === 2"
+        " && window.__statusFetches.every((entry) => entry.end !== undefined)",
+        timeout=10000,
+    )
+    assert "status-done" in upstream.get_attribute("class")
+    assert "Done" in panel.locator(".panel-field").first.text_content()
+    assert "Conditional done" not in panel.locator(".panel-field").first.text_content()
+    detail = page.request.get(f"{live_server}/api/project/Upstream").json()["project"]
+    assert detail["status"] == "done"
+    assert detail["conditional_note"] == "Updated historical remainder."
+
+
 def test_a_status_edit_survives_a_fresh_browser_context(
     live_server, page, browser, reset_upstream_status
 ):

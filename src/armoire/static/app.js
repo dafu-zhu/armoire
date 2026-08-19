@@ -265,7 +265,10 @@ async function showRoadmap() {
     onSaveConditionalNote: async (note) => {
       const saved = await writeStatus(project.name, 'conditional-done', undefined, note);
       if (saved) {
-        onStatusChange(project.name, 'conditional-done', note);
+        project.conditional_note = note;
+        if (project.status === 'conditional-done') {
+          onStatusChange(project.name, project.status, note);
+        }
         onSelect(project);
       }
       return saved;

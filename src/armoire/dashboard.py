@@ -13,6 +13,7 @@ from armoire import store
 from armoire.paths import PathOutsideRoot
 from armoire.projects import (
     COMPLETED_STATUSES,
+    DEFAULT_STATUS,
     HABIT_CATEGORY,
     STATUSES,
     Registry,
@@ -52,6 +53,17 @@ def _stored_statuses(state_file: Path) -> dict:
     return stored if isinstance(stored, dict) else {}
 
 
+def _effective_status(project, stored: dict) -> str:
+    status = stored.get(project.name)
+    if status not in STATUSES:
+        status = project.status
+    if status == "conditional-done" and not (
+        isinstance(project.conditional_note, str) and project.conditional_note.strip()
+    ):
+        return DEFAULT_STATUS
+    return status
+
+
 def project_rows(registry: Registry, state_file: Path) -> list[dict]:
     roadmap_projects = [p for p in registry.projects if p.category != HABIT_CATEGORY]
     roadmap_known = {p.name for p in roadmap_projects}
@@ -61,10 +73,7 @@ def project_rows(registry: Registry, state_file: Path) -> list[dict]:
     blocks = {b for p in roadmap_projects for b in p.blocked_by if b in roadmap_known}
     stored = _stored_statuses(state_file)
     effective_status = {
-        project.name: (
-            stored[project.name] if stored.get(project.name) in STATUSES else project.status
-        )
-        for project in registry.projects
+        project.name: _effective_status(project, stored) for project in registry.projects
     }
 
     listed = []
@@ -101,8 +110,7 @@ def project_detail(root: Path, registry: Registry, name: str, state_file: Path) 
     # about the project, not about one endpoint: returning asdict(match) raw
     # here handed back the registry's status to a caller that had already
     # been told, by /api/projects, that the stored one is authoritative.
-    override = _stored_statuses(state_file).get(name)
-    status = override if override in STATUSES else match.status
+    status = _effective_status(match, _stored_statuses(state_file))
 
     files = []
     for relative in match.paths:

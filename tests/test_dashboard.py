@@ -96,6 +96,42 @@ def test_a_stored_conditional_done_prerequisite_unlocks_a_habit(tmp_path, monkey
     assert row["habit_locked_by"] == []
 
 
+def test_a_note_less_stored_conditional_done_does_not_unlock_a_habit(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    state_file = store.state_path(tmp_path)
+    store.write_state(state_file, {"status": {"Course": "conditional-done"}})
+    registry = Registry(
+        projects=[
+            Project(name="Course", paths=("course",), category="course", status="active"),
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("Course",),
+                category="habit",
+            ),
+        ]
+    )
+
+    rows = {item["name"]: item for item in project_rows(registry, state_file)}
+
+    assert rows["Course"]["status"] == "not-started"
+    assert rows["Practice"]["habit_unlocked"] is False
+    assert rows["Practice"]["habit_locked_by"] == ["Course"]
+
+
+def test_project_detail_hides_a_note_less_stored_conditional_done(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    state_file = store.state_path(tmp_path)
+    store.write_state(state_file, {"status": {"Course": "conditional-done"}})
+    registry = Registry(
+        projects=[Project(name="Course", paths=("missing",), category="course", status="active")]
+    )
+
+    detail = project_detail(tmp_path, registry, "Course", state_file)
+
+    assert detail["project"]["status"] == "not-started"
+
+
 def test_a_habit_gate_does_not_connect_ordinary_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
     registry = Registry(
