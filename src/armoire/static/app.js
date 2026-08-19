@@ -284,6 +284,11 @@ async function showRoadmap() {
         if (saved) onSelect(project);
         return saved;
       },
+      onMarkFullyDone: async () => {
+        const saved = await commit(undefined, 'done');
+        if (saved) onSelect(project);
+        return saved;
+      },
     });
   };
   const callbacks = { onSelect, onOpenFolder, onStatusChange, onRequestConditionalDone };

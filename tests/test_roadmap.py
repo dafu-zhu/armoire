@@ -856,6 +856,64 @@ def test_conditional_done_collects_and_edits_its_required_note(
     assert detail["conditional_note"] == "Finish examples 7–9 and document the exception."
 
 
+def test_conditional_done_prompt_can_mark_a_roadmap_node_done_without_notes(
+    live_server, page, reset_upstream_status
+):
+    paused = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Upstream", "status": "paused"},
+    )
+    assert paused.ok, paused.status
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    upstream = page.locator('.node[data-name="Upstream"]')
+
+    upstream.locator(".status-chip").click()
+
+    panel = page.locator("#project-panel")
+    panel.wait_for(state="visible")
+    panel.get_by_label("Notes").fill("")
+    panel.get_by_role("button", name="Mark fully done").click()
+
+    page.wait_for_function(
+        "() => document.querySelector('.node[data-name=Upstream]')"
+        ".className.baseVal.includes('status-done')"
+    )
+    assert upstream.locator(".status-chip").text_content() == "✓"
+    detail = page.request.get(f"{live_server}/api/project/Upstream").json()["project"]
+    assert detail["status"] == "done"
+
+
+def test_conditional_done_prompt_can_mark_a_category_node_done_without_notes(
+    live_server, page, reset_standalone_status
+):
+    paused = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Standalone", "status": "paused"},
+    )
+    assert paused.ok, paused.status
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector("#categories .category")
+    standalone = page.locator('#categories [data-name="Standalone"]')
+
+    standalone.locator(".status-chip").click()
+
+    panel = page.locator("#project-panel")
+    panel.wait_for(state="visible")
+    panel.get_by_label("Notes").fill("")
+    panel.get_by_role("button", name="Mark fully done").click()
+
+    page.wait_for_function(
+        "() => document.querySelector('#categories [data-name=Standalone]')"
+        ".classList.contains('status-done')"
+    )
+    assert standalone.locator(".status-chip").text_content() == "✓"
+    detail = page.request.get(f"{live_server}/api/project/Standalone").json()["project"]
+    assert detail["status"] == "done"
+
+
 def test_conditional_done_uses_completed_visual_language(
     live_server, page, reset_downstream_status
 ):
