@@ -537,6 +537,7 @@ iframe.pdf {
 }
 #roadmap-message > * { pointer-events: auto; }
 
+.node { transition: opacity 160ms ease; }
 .node rect {
   fill: var(--subtle);
   stroke: var(--border);
@@ -571,6 +572,7 @@ iframe.pdf {
 .node .node-due { font-size: 11px; fill: var(--muted); }
 .node .node-warn { font-size: 14px; font-weight: 700; fill: #bc4c00; cursor: help; }
 .node:hover rect { stroke: var(--link); }
+.node[data-path-muted] { opacity: 0.14; }
 
 /* Status chip colour, one per status -- see the --status-* variables above.
    Keyed off the status-* class already on .node (roadmap.js's `statuses`
@@ -588,8 +590,9 @@ iframe.pdf {
 .cat-4 rect { fill: var(--cat-4-fill); stroke: var(--cat-4-line); }
 .cat-5 rect { fill: var(--cat-5-fill); stroke: var(--cat-5-line); }
 
-.edge { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+.edge { stroke: var(--muted); stroke-width: 1.4; fill: none; transition: opacity 160ms ease; }
 .edge.from-done { stroke-dasharray: 4 4; opacity: 0.5; }
+.edge[data-path-muted] { opacity: 0.12; }
 
 #roadmap-controls {
   position: absolute; right: 12px; bottom: 12px;

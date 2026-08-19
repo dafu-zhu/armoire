@@ -240,9 +240,49 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
   for (const e of g.edges()) {
     const path = svgEl('path', {
       class: 'edge', d: edgePath(e.v, e.w), 'marker-end': 'url(#arrow)',
+      'data-from': e.v, 'data-to': e.w,
     });
     edgeLayer.append(path);
     edges.push({ from: e.v, to: e.w, path });
+  }
+
+  const upstream = new Map(projects.map((project) => [project.name, []]));
+  const downstream = new Map(projects.map((project) => [project.name, []]));
+  for (const edge of edges) {
+    upstream.get(edge.to).push({ name: edge.from, path: edge.path });
+    downstream.get(edge.from).push({ name: edge.to, path: edge.path });
+  }
+
+  function focusDependencyPath(name) {
+    const related = new Set([name]);
+    const pathEdges = new Set();
+    for (const links of [upstream, downstream]) {
+      const visited = new Set([name]);
+      const pending = [name];
+      while (pending.length) {
+        const current = pending.pop();
+        for (const next of links.get(current) || []) {
+          pathEdges.add(next.path);
+          if (visited.has(next.name)) continue;
+          visited.add(next.name);
+          related.add(next.name);
+          pending.push(next.name);
+        }
+      }
+    }
+    for (const group of nodeLayer.querySelectorAll('.node')) {
+      group.toggleAttribute('data-path-muted', !related.has(group.dataset.name));
+    }
+    for (const edge of edges) {
+      edge.path.toggleAttribute('data-path-muted', !pathEdges.has(edge.path));
+    }
+  }
+
+  function clearDependencyPath() {
+    for (const element of nodeLayer.querySelectorAll('[data-path-muted]')) {
+      element.removeAttribute('data-path-muted');
+    }
+    for (const edge of edges) edge.path.removeAttribute('data-path-muted');
   }
 
   function redrawEdges() {
@@ -412,6 +452,8 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
     group.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') onSelect(project);
     });
+    group.addEventListener('pointerenter', () => focusDependencyPath(project.name));
+    group.addEventListener('pointerleave', clearDependencyPath);
     nodeLayer.append(group);
   }
 

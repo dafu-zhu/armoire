@@ -101,6 +101,123 @@ def test_every_root_renders_at_the_same_leftmost_x(page, layout_server):
     assert boxes["RootA"] < boxes["MidA"], boxes
 
 
+def test_hovering_a_node_dims_dependency_unrelated_nodes(page, layout_server):
+    """RootB shares Leaf with MidA but is not upstream or downstream of it."""
+    page.goto(layout_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+
+    page.locator('.node[data-name="MidA"]').hover()
+    page.wait_for_function(
+        "() => Number(getComputedStyle(document.querySelector('.node[data-name=RootB]')).opacity)"
+        " < 0.25"
+    )
+
+    opacity = page.locator("#roadmap .node").evaluate_all(
+        "nodes => Object.fromEntries(nodes.map(node => "
+        "[node.dataset.name, Number(getComputedStyle(node).opacity)]))"
+    )
+    assert opacity["RootB"] < 0.25, opacity
+    assert opacity["RootA"] > 0.5, opacity
+    assert opacity["MidA"] > 0.5, opacity
+    assert opacity["Leaf"] > 0.5, opacity
+
+
+def test_hovering_a_node_dims_edges_outside_its_dependency_path(page, layout_server):
+    page.goto(layout_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+
+    page.locator('.node[data-name="MidA"]').hover()
+    page.wait_for_function(
+        "() => Number(getComputedStyle(document.querySelector('.node[data-name=RootB]')).opacity)"
+        " < 0.25"
+    )
+
+    def edge_opacity(source, target):
+        edge = page.locator(f'.edge[data-from="{source}"][data-to="{target}"]')
+        assert edge.count() == 1, (source, target)
+        return edge.evaluate("path => Number(getComputedStyle(path).opacity)")
+
+    assert edge_opacity("RootA", "MidA") >= 0.5
+    assert edge_opacity("MidA", "Leaf") >= 0.5
+    assert edge_opacity("RootB", "Leaf") < 0.25
+
+
+def test_leaving_a_hovered_node_restores_the_roadmap(page, layout_server):
+    page.goto(layout_server)
+    page.wait_for_selector("#roadmap .node", timeout=15000)
+
+    page.locator('.node[data-name="MidA"]').hover()
+    page.wait_for_function(
+        "() => Number(getComputedStyle(document.querySelector('.node[data-name=RootB]')).opacity)"
+        " < 0.25"
+    )
+    page.locator("#status").hover()
+    page.wait_for_function(
+        "() => Number(getComputedStyle(document.querySelector('.node[data-name=RootB]')).opacity)"
+        " > 0.5"
+    )
+
+    node_opacity = page.locator("#roadmap .node").evaluate_all(
+        "nodes => nodes.map(node => Number(getComputedStyle(node).opacity))"
+    )
+    edge_opacity = page.locator("#roadmap .edge").evaluate_all(
+        "edges => edges.map(edge => Number(getComputedStyle(edge).opacity))"
+    )
+    assert all(value > 0.5 for value in node_opacity), node_opacity
+    assert all(value >= 0.5 for value in edge_opacity), edge_opacity
+
+
+def test_a_dependency_cycle_does_not_truncate_the_hover_path(page, live_server):
+    projects = [
+        {
+            "name": name,
+            "paths": ["."],
+            "blocked_by": blocked_by,
+            "category": "course",
+            "due": None,
+            "note": None,
+            "status": "active",
+            "isolated": False,
+            "is_habit": False,
+            "habit_unlocked": False,
+            "habit_locked_by": [],
+        }
+        for name, blocked_by in (
+            ("A", ["B"]),
+            ("B", ["A"]),
+            ("C", ["B"]),
+            ("X", []),
+            ("Y", ["X"]),
+        )
+    ]
+    page.route(
+        "**/api/projects",
+        lambda route: route.fulfill(
+            json={
+                "root": "cycle-fixture",
+                "registry": True,
+                "issues": ["A: dependency cycle via A -> B -> A"],
+                "projects": projects,
+            }
+        ),
+    )
+    page.goto(live_server)
+    page.wait_for_selector('.node[data-name="A"]', timeout=15000)
+
+    page.locator('.node[data-name="A"]').hover()
+    page.wait_for_function(
+        "() => Number(getComputedStyle(document.querySelector('.node[data-name=X]')).opacity)"
+        " < 0.25"
+    )
+
+    assert (
+        page.locator('.node[data-name="C"]').evaluate(
+            "node => Number(getComputedStyle(node).opacity)"
+        )
+        > 0.5
+    )
+
+
 def test_a_due_date_appears_on_its_node(page, live_server):
     open_roadmap(page, live_server)
     assert "2026-08-17" in page.locator("#roadmap").inner_text()
