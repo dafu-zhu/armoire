@@ -107,6 +107,33 @@ See the [roadmap design](docs/superpowers/specs/2026-08-01-armoire-roadmap-desig
 and the [Phase 3 design](docs/superpowers/specs/2026-08-02-armoire-phase3-design.md)
 for the full field list and how category placement and status work.
 
+### Habits
+
+Projects represent finite work and participate in the roadmap dependency graph.
+`category = "habit"` represents an ongoing practice. It stays in the right-hand
+**HABIT** section and may use `blocked_by` as an unlock gate, but those gates are
+not roadmap edges.
+
+```toml
+[[project]]
+name = "Writing Practice"
+paths = ["habits/writing"]
+blocked_by = ["Writing Course"]
+category = "habit"
+note = "Maintain a regular writing practice."
+```
+
+A Habit is ready when every declared prerequisite is `done`; one with no
+prerequisites is ready immediately. Unknown prerequisites remain registry issues
+and keep the Habit locked. An ordinary project cannot use a Habit as a roadmap
+prerequisite; that invalid relationship is also reported as a registry issue.
+Habit cards do not expose the ordinary project status cycle. Single-click a card
+for a quick look or double-click it to browse its first declared path.
+
+Phase 1 does not track daily or weekly completion, cadence, streaks, history,
+reminders, or scheduling. See the focused
+[Habit Phase 1 design note](docs/superpowers/specs/2026-08-19-armoire-habit-phase1-design.md).
+
 ### The registry lives outside the folder
 
 The registry is not a file inside the folder you serve. armoire keeps it, and

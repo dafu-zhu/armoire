@@ -148,11 +148,7 @@ def minimal_pdf(page_count: int = 3) -> bytes:
     for index in range(page_count):
         stream = f"BT /F1 24 Tf 72 720 Td (Page {index + 1}) Tj ET".encode()
         objects.append(
-            b"<< /Length "
-            + str(len(stream)).encode()
-            + b" >>\nstream\n"
-            + stream
-            + b"\nendstream"
+            b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
         )
     objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
 
@@ -172,6 +168,7 @@ def minimal_pdf(page_count: int = 3) -> bytes:
         f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
     )
     return bytes(body)
+
 
 ROOT_README = """# Sample Folder
 
@@ -421,6 +418,56 @@ def live_server(sample_root):
 
     yield f"http://127.0.0.1:{port}"
 
+    server.should_exit = True
+    thread.join(timeout=5)
+
+
+@pytest.fixture(scope="session")
+def habit_root(tmp_path_factory, _isolated_store_session):
+    root = tmp_path_factory.mktemp("habits")
+    for relative in ("course", "project", "habits/ready", "habits/locked", "habits/unknown"):
+        folder = root / relative
+        folder.mkdir(parents=True)
+        (folder / "README.md").write_text(f"# {relative}\n", encoding="utf-8", newline="")
+
+    registry_file = store.registry_path(root)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "Roadmap root"\npaths = ["project"]\ncategory = "course"\n'
+        "\n"
+        '[[project]]\nname = "Roadmap leaf"\npaths = ["project"]\n'
+        'blocked_by = ["Roadmap root"]\ncategory = "course"\n'
+        "\n"
+        '[[project]]\nname = "Course"\npaths = ["course"]\ncategory = "course"\n'
+        "\n"
+        '[[project]]\nname = "Ready Practice"\npaths = ["habits/ready"]\n'
+        'category = "habit"\nnote = "Ongoing practice with no gate."\n'
+        "\n"
+        '[[project]]\nname = "Locked Practice"\npaths = ["habits/locked"]\n'
+        'blocked_by = ["Course"]\ncategory = "habit"\n'
+        "\n"
+        '[[project]]\nname = "Unknown Practice"\npaths = ["habits/unknown"]\n'
+        'blocked_by = ["Ghost"]\ncategory = "habit"\n',
+        encoding="utf-8",
+        newline="",
+    )
+    return root
+
+
+@pytest.fixture(scope="session")
+def habit_server(habit_root):
+    app = create_app(habit_root)
+    app.state.index.wait(timeout=10)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started:
+        if time.monotonic() > deadline:
+            raise RuntimeError("habit server did not start within 10s")
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
     server.should_exit = True
     thread.join(timeout=5)
 

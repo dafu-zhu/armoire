@@ -617,6 +617,28 @@ def test_the_stored_status_comes_back_from_the_projects_endpoint(tmp_path):
     assert rows["Downstream"]["status"] == "paused"
 
 
+def test_marking_a_habit_gate_done_unlocks_it_on_the_next_read(tmp_path):
+    (tmp_path / "course").mkdir()
+    (tmp_path / "habit").mkdir()
+    registry_file = store.registry_path(tmp_path)
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    registry_file.write_text(
+        '[[project]]\nname = "Course"\npaths = ["course"]\ncategory = "course"\n'
+        '\n[[project]]\nname = "Practice"\npaths = ["habit"]\n'
+        'blocked_by = ["Course"]\ncategory = "habit"\n',
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(tmp_path), base_url="http://127.0.0.1")
+
+    before = {row["name"]: row for row in client.get("/api/projects").json()["projects"]}
+    response = client.put("/api/status", json={"name": "Course", "status": "done"}, headers=HEADERS)
+    after = {row["name"]: row for row in client.get("/api/projects").json()["projects"]}
+
+    assert before["Practice"]["habit_unlocked"] is False
+    assert response.status_code == 200
+    assert after["Practice"]["habit_unlocked"] is True
+
+
 def test_an_unknown_status_is_rejected(tmp_path):
     client = _client_with_registry(tmp_path)
     response = client.put(

@@ -1055,6 +1055,154 @@ def test_double_clicking_a_category_entry_opens_its_folder(live_server, page):
     assert page.locator("#project-panel").is_hidden()
 
 
+def test_habit_cards_show_unlock_state_without_a_status_chip(habit_server, page):
+    page.goto(f"{habit_server}/#/")
+    ready = page.locator('#categories [data-name="Ready Practice"]')
+    locked = page.locator('#categories [data-name="Locked Practice"]')
+
+    ready.wait_for()
+    assert ready.locator(".entry-state").inner_text() == "Ready"
+    assert locked.locator(".entry-state").inner_text() == "Locked · Course"
+    assert ready.locator(".status-chip").count() == 0
+    assert locked.locator(".status-chip").count() == 0
+
+
+def test_habits_stay_out_of_the_graph_even_if_isolation_metadata_is_wrong(live_server, page):
+    page.route(
+        "**/api/projects",
+        lambda route: route.fulfill(
+            json={
+                "root": "fixture",
+                "registry": True,
+                "issues": [],
+                "projects": [
+                    {
+                        "name": "Finite",
+                        "paths": ["notes"],
+                        "blocked_by": [],
+                        "category": "course",
+                        "due": None,
+                        "note": None,
+                        "status": "active",
+                        "isolated": True,
+                        "is_habit": False,
+                        "habit_unlocked": False,
+                        "habit_locked_by": [],
+                    },
+                    {
+                        "name": "Practice",
+                        "paths": ["notes"],
+                        "blocked_by": ["Finite"],
+                        "category": "habit",
+                        "due": None,
+                        "note": None,
+                        "status": "not-started",
+                        "isolated": False,
+                        "is_habit": True,
+                        "habit_unlocked": False,
+                        "habit_locked_by": ["Finite"],
+                    },
+                ],
+            }
+        ),
+    )
+
+    page.goto(f"{live_server}/#/")
+    habit = page.locator('#categories [data-name="Practice"]')
+
+    habit.wait_for()
+    assert page.locator('.node[data-name="Practice"]').count() == 0
+    assert page.locator("#roadmap-canvas .edge").count() == 0
+
+
+def test_a_habit_quick_look_uses_unlock_language(habit_server, page):
+    page.goto(f"{habit_server}/#/")
+    page.locator('#categories [data-name="Locked Practice"] .entry-name').click()
+    panel = page.locator("#project-panel")
+
+    panel.wait_for()
+    assert panel.locator(".panel-habit-state").inner_text() == "Locked · Course"
+    assert panel.get_by_text("Not started", exact=True).count() == 0
+    assert panel.locator(".panel-open").inner_text() == "Open habit files"
+
+
+def test_habit_gates_never_render_as_roadmap_edges(habit_server, page):
+    page.goto(f"{habit_server}/#/")
+    page.locator('.node[data-name="Roadmap root"]').wait_for()
+
+    node_names = page.locator("#roadmap-canvas .node").evaluate_all(
+        "nodes => nodes.map((node) => node.dataset.name)"
+    )
+    assert sorted(node_names) == ["Roadmap leaf", "Roadmap root"]
+    assert page.locator("#roadmap-canvas .edge").count() == 1
+    assert page.locator('#categories [data-name="Course"]').count() == 1
+
+
+def test_double_clicking_a_habit_opens_its_folder_without_writing(habit_server, habit_root, page):
+    before = folder_snapshot(habit_root)
+    page.goto(f"{habit_server}/#/")
+    page.locator('#categories [data-name="Ready Practice"] .entry-name').dblclick()
+
+    page.wait_for_function(
+        "() => location.hash === '#/browse/habits/ready'",
+        timeout=5000,
+    )
+    page.wait_for_selector(".listing", timeout=5000)
+    assert folder_snapshot(habit_root) == before
+
+
+@pytest.fixture
+def habit_course_paused(habit_server, page):
+    before = page.request.get(f"{habit_server}/api/projects").json()
+    original = next(row["status"] for row in before["projects"] if row["name"] == "Course")
+    response = page.request.put(
+        f"{habit_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Course", "status": "paused"},
+    )
+    assert response.ok, response.text()
+    yield
+    response = page.request.put(
+        f"{habit_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Course", "status": original},
+    )
+    assert response.ok, response.text()
+
+
+def test_finishing_a_gate_updates_the_habit_without_reloading(
+    habit_server, page, habit_course_paused
+):
+    page.goto(f"{habit_server}/#/")
+    habit_state = page.locator('#categories [data-name="Locked Practice"] .entry-state')
+    assert habit_state.inner_text() == "Locked · Course"
+
+    page.locator('#categories [data-name="Course"] .status-chip').click()
+
+    page.wait_for_function(
+        "() => document.querySelector('[data-name=\"Locked Practice\"] .entry-state')?.textContent"
+        " === 'Ready'",
+        timeout=5000,
+    )
+
+
+def test_a_failed_gate_status_write_relocks_the_habit(habit_server, page, habit_course_paused):
+    page.goto(f"{habit_server}/#/")
+    page.route("**/api/status", lambda route: route.fulfill(status=500))
+
+    page.locator('#categories [data-name="Course"] .status-chip').click()
+
+    page.wait_for_function(
+        "() => document.querySelector('[data-name=\"Course\"]')?.classList"
+        ".contains('status-paused')",
+        timeout=5000,
+    )
+    assert (
+        page.locator('#categories [data-name="Locked Practice"] .entry-state').inner_text()
+        == "Locked · Course"
+    )
+
+
 def test_the_details_toggle_is_gone(live_server, page):
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")

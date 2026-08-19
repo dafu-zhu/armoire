@@ -32,6 +32,7 @@ export function closePanel(container) {
 
 export function openPanel(container, project, onOpenFolder) {
   container.replaceChildren();
+  const isHabit = project.is_habit === true;
   const status = normalizeStatus(project.status);
 
   const close = document.createElement('button');
@@ -45,11 +46,20 @@ export function openPanel(container, project, onOpenFolder) {
   title.textContent = project.name;
 
   const statusLine = document.createElement('p');
-  statusLine.className = 'panel-field';
-  const glyph = document.createElement('span');
-  glyph.className = `panel-status-glyph status-${status}`;
-  glyph.textContent = glyphFor(status);
-  statusLine.append(glyph, document.createTextNode(labelFor(status)));
+  if (isHabit) {
+    statusLine.className = `panel-field panel-habit-state ${
+      project.habit_unlocked ? 'habit-ready' : 'habit-locked'
+    }`;
+    statusLine.textContent = project.habit_unlocked
+      ? 'Ready'
+      : `Locked · ${(project.habit_locked_by || []).join(', ')}`;
+  } else {
+    statusLine.className = 'panel-field';
+    const glyph = document.createElement('span');
+    glyph.className = `panel-status-glyph status-${status}`;
+    glyph.textContent = glyphFor(status);
+    statusLine.append(glyph, document.createTextNode(labelFor(status)));
+  }
 
   container.append(close, title, statusLine);
   if (project.due) container.append(field('Due', project.due));
@@ -64,7 +74,7 @@ export function openPanel(container, project, onOpenFolder) {
   const open = document.createElement('button');
   open.type = 'button';
   open.className = 'panel-open';
-  open.textContent = 'Open project files';
+  open.textContent = isHabit ? 'Open habit files' : 'Open project files';
   open.addEventListener('click', () => onOpenFolder(project));
   container.append(open);
 

@@ -184,12 +184,15 @@ function layout(projects, heights, known) {
 // the connected half of it -- see palette.js for why building one here instead
 // puts the graph and the category column on different colours.
 //
-// `callbacks` is `{ onSelect, onOpenFolder }`: a single click opens the quick
-// -look side panel (onSelect), a double click navigates into the project's
-// folder (onOpenFolder) -- see the click/dblclick wiring below.
+// `callbacks` carries selection/navigation actions plus `onStatusChange`,
+// which lets app.js refresh Habit gates while this graph updates a prerequisite
+// optimistically (and again if the write rolls back).
 export function renderRoadmap(canvas, data, callbacks, signal, order) {
-  const { onSelect, onOpenFolder } = callbacks;
-  const projects = data.projects || [];
+  const { onSelect, onOpenFolder, onStatusChange } = callbacks;
+  // Habit gates are runtime readiness rules, never roadmap topology. Keep
+  // this boundary defensive even though dashboard.py normally marks every
+  // Habit isolated before app.js splits the payload.
+  const projects = (data.projects || []).filter((project) => !project.is_habit);
   const positions = new Map();
   const known = new Set(projects.map((p) => p.name));
 
@@ -368,6 +371,7 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
       // regardless of network state -- responsiveness must not wait on a
       // queued write.
       statuses.set(project.name, wanted);
+      onStatusChange?.(project.name, wanted);
       applyStatus();
 
       // writeStatus (status.js) serializes this project's writes -- across
@@ -375,6 +379,7 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
       // this write failed and is still the latest click for this project.
       writeStatus(project.name, wanted, () => {
         statuses.set(project.name, previous);
+        onStatusChange?.(project.name, previous);
         applyStatus();
       });
     };

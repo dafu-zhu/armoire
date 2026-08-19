@@ -5,6 +5,28 @@
 import { glyphFor, nextStatus, normalizeStatus, writeStatus } from './status.js';
 import { categoryClass } from './palette.js';
 
+function applyHabitState(item, project) {
+  item.classList.toggle('habit-ready', project.habit_unlocked);
+  item.classList.toggle('habit-locked', !project.habit_unlocked);
+  item.querySelector('.entry-state').textContent = project.habit_unlocked
+    ? 'Ready'
+    : `Locked · ${(project.habit_locked_by || []).join(', ')}`;
+}
+
+export function refreshHabitStates(container, data) {
+  const projects = data.projects || [];
+  const statuses = new Map(projects.map((project) => [project.name, normalizeStatus(project.status)]));
+  const items = [...container.querySelectorAll('.habit-entry')];
+  for (const project of projects.filter((candidate) => candidate.is_habit)) {
+    project.habit_locked_by = project.blocked_by.filter(
+      (blocker) => statuses.get(blocker) !== 'done',
+    );
+    project.habit_unlocked = project.habit_locked_by.length === 0;
+    const item = items.find((candidate) => candidate.dataset.name === project.name);
+    if (item) applyHabitState(item, project);
+  }
+}
+
 // Returns how many containers were drawn, so app.js can hide the column when
 // there are none. An empty bordered box costs 240px of canvas and says
 // nothing; "the category column is permanent, not another toggle" (the spec)
@@ -15,13 +37,13 @@ import { categoryClass } from './palette.js';
 // over the whole payload. This function only ever sees the isolated half, so
 // a map built here would disagree with the graph's.
 //
-// `callbacks` is `{ onSelect, onOpenFolder }`, the same shape roadmap.js
-// takes: a single click opens the quick-look side panel, a double click
-// navigates into the project's folder.
+// `callbacks` shares roadmap.js's selection/navigation actions plus
+// `onStatusChange`, which keeps Habit gates current while a prerequisite chip
+// changes without reloading the payload.
 export function renderCategories(container, data, callbacks, order) {
-  const { onSelect, onOpenFolder } = callbacks;
+  const { onSelect, onOpenFolder, onStatusChange } = callbacks;
   container.replaceChildren();
-  const isolated = (data.projects || []).filter((p) => p.isolated);
+  const isolated = (data.projects || []).filter((p) => p.isolated || p.is_habit);
   if (!isolated.length) return 0;
   const issues = data.issues || [];
 
@@ -53,6 +75,7 @@ export function renderCategories(container, data, callbacks, order) {
 
     const list = document.createElement('ul');
     for (const project of members) {
+      const isHabit = project.is_habit === true;
       // Seeded the same way, at the same seam, as roadmap.js's own
       // `statuses` Map -- an unrecognised status must not reach glyphFor,
       // nextStatus or the `status-…` class raw, or this column and the graph
@@ -65,7 +88,9 @@ export function renderCategories(container, data, callbacks, order) {
       // own <g role="button"> node group, not a single line of link text
       // inside an otherwise inert row.
       const item = document.createElement('li');
-      item.className = `entry ${catClass} status-${initialStatus}`;
+      item.className = isHabit
+        ? `entry ${catClass} habit-entry ${project.habit_unlocked ? 'habit-ready' : 'habit-locked'}`
+        : `entry ${catClass} status-${initialStatus}`;
       item.setAttribute('data-name', project.name);
       item.tabIndex = 0;
       item.setAttribute('role', 'button');
@@ -94,40 +119,49 @@ export function renderCategories(container, data, callbacks, order) {
         head.append(warn);
       }
 
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'status-chip';
-      chip.textContent = glyphFor(initialStatus);
-      chip.setAttribute('aria-label', `Status: ${initialStatus}. Click to change.`);
-      let status = initialStatus;
-      chip.addEventListener('click', (event) => {
-        // The chip lives inside the item; stopping propagation here keeps
-        // the chip's own click from also being read as a click on the box,
-        // the same isolation roadmap.js's node chip keeps from its node
-        // group.
-        event.stopPropagation();
-        const previous = status;
-        status = nextStatus(status);
-        chip.textContent = glyphFor(status);
-        chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
-        item.className = `entry ${catClass} status-${status}`;
-        // writeStatus (status.js) serializes this project's writes -- across
-        // both this module and roadmap.js -- and only calls back here if
-        // this write failed and is still the latest click for this project.
-        // A given project's chip lives in exactly one of the two trees (this
-        // one draws only isolated projects, roadmap.js only the rest), so
-        // there is never a second chip for the same project to reconcile
-        // against; sharing the queue is what still stops two rapid clicks on
-        // this one chip from racing their own PUTs out of order.
-        writeStatus(project.name, status, () => {
-          status = previous;
+      if (isHabit) {
+        const state = document.createElement('p');
+        state.className = 'entry-state';
+        item.append(head, state);
+        applyHabitState(item, project);
+      } else {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'status-chip';
+        chip.textContent = glyphFor(initialStatus);
+        chip.setAttribute('aria-label', `Status: ${initialStatus}. Click to change.`);
+        let status = initialStatus;
+        chip.addEventListener('click', (event) => {
+          // The chip lives inside the item; stopping propagation here keeps
+          // the chip's own click from also being read as a click on the box,
+          // the same isolation roadmap.js's node chip keeps from its node
+          // group.
+          event.stopPropagation();
+          const previous = status;
+          status = nextStatus(status);
+          onStatusChange?.(project.name, status);
           chip.textContent = glyphFor(status);
           chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
           item.className = `entry ${catClass} status-${status}`;
+          // writeStatus (status.js) serializes this project's writes -- across
+          // both this module and roadmap.js -- and only calls back here if
+          // this write failed and is still the latest click for this project.
+          // A given project's chip lives in exactly one of the two trees (this
+          // one draws only isolated projects, roadmap.js only the rest), so
+          // there is never a second chip for the same project to reconcile
+          // against; sharing the queue is what still stops two rapid clicks on
+          // this one chip from racing their own PUTs out of order.
+          writeStatus(project.name, status, () => {
+            status = previous;
+            onStatusChange?.(project.name, status);
+            chip.textContent = glyphFor(status);
+            chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
+            item.className = `entry ${catClass} status-${status}`;
+          });
         });
-      });
-      head.append(chip);
-      item.append(head);
+        head.append(chip);
+        item.append(head);
+      }
 
       if (project.due) {
         const due = document.createElement('p');

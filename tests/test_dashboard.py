@@ -13,6 +13,146 @@ def test_project_rows_reports_one_row_per_project_with_multiple_paths(tmp_path, 
     assert rows[0]["paths"] == ["alpha", "beta"]
 
 
+def test_a_habit_with_no_prerequisites_is_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    registry = Registry(projects=[Project(name="Practice", paths=("habit",), category="habit")])
+
+    row = project_rows(registry, store.state_path(tmp_path))[0]
+
+    assert row["is_habit"] is True
+    assert row["habit_unlocked"] is True
+    assert row["habit_locked_by"] == []
+
+
+def test_a_habit_with_an_incomplete_prerequisite_is_locked(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    registry = Registry(
+        projects=[
+            Project(name="Course", paths=("course",), category="course", status="active"),
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("Course",),
+                category="habit",
+            ),
+        ]
+    )
+
+    row = {item["name"]: item for item in project_rows(registry, store.state_path(tmp_path))}[
+        "Practice"
+    ]
+
+    assert row["habit_unlocked"] is False
+    assert row["habit_locked_by"] == ["Course"]
+
+
+def test_a_stored_done_prerequisite_unlocks_a_habit(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    state_file = store.state_path(tmp_path)
+    store.write_state(state_file, {"status": {"Course": "done"}})
+    registry = Registry(
+        projects=[
+            Project(name="Course", paths=("course",), category="course", status="active"),
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("Course",),
+                category="habit",
+            ),
+        ]
+    )
+
+    row = {item["name"]: item for item in project_rows(registry, state_file)}["Practice"]
+
+    assert row["habit_unlocked"] is True
+    assert row["habit_locked_by"] == []
+
+
+def test_a_habit_gate_does_not_connect_ordinary_projects(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    registry = Registry(
+        projects=[
+            Project(name="Course", paths=("course",), category="course"),
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("Course",),
+                category="habit",
+            ),
+        ]
+    )
+
+    rows = {item["name"]: item for item in project_rows(registry, store.state_path(tmp_path))}
+
+    assert rows["Course"]["isolated"] is True
+    assert rows["Practice"]["isolated"] is True
+
+
+def test_a_habit_with_multiple_gates_waits_for_every_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    registry = Registry(
+        projects=[
+            Project(name="Done", paths=("done",), category="course", status="done"),
+            Project(name="Open", paths=("open",), category="course", status="active"),
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("Done", "Open"),
+                category="habit",
+            ),
+        ]
+    )
+
+    row = {item["name"]: item for item in project_rows(registry, store.state_path(tmp_path))}[
+        "Practice"
+    ]
+
+    assert row["habit_unlocked"] is False
+    assert row["habit_locked_by"] == ["Open"]
+
+
+def test_a_habit_with_multiple_completed_gates_is_ready(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    registry = Registry(
+        projects=[
+            Project(name="First", paths=("first",), category="course", status="done"),
+            Project(name="Second", paths=("second",), category="course", status="done"),
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("First", "Second"),
+                category="habit",
+            ),
+        ]
+    )
+
+    row = {item["name"]: item for item in project_rows(registry, store.state_path(tmp_path))}[
+        "Practice"
+    ]
+
+    assert row["habit_unlocked"] is True
+    assert row["habit_locked_by"] == []
+
+
+def test_an_unknown_habit_gate_is_not_treated_as_done(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    registry = Registry(
+        projects=[
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("Ghost",),
+                category="habit",
+            )
+        ]
+    )
+
+    row = project_rows(registry, store.state_path(tmp_path))[0]
+
+    assert row["habit_unlocked"] is False
+    assert row["habit_locked_by"] == ["Ghost"]
+
+
 def test_project_detail_with_all_bad_paths_yields_empty_file_list(tmp_path):
     project = Project(name="Ghosted", paths=("nowhere", "also-nowhere"))
     registry = Registry(projects=[project], issues=[])

@@ -30,6 +30,7 @@ STATUSES = ("not-started", "active", "paused", "done")
 # with no `status` field at all has not been picked up yet, which is the
 # first of those, not the second.
 DEFAULT_STATUS = "not-started"
+HABIT_CATEGORY = "habit"
 
 
 class RegistryError(Exception):
@@ -191,6 +192,7 @@ def load_registry(root: Path, registry_file: Path | None = None) -> Registry | N
 
     issues: list[str] = []
     known = {p.name for p in projects}
+    habit_names = {p.name for p in projects if p.category == HABIT_CATEGORY}
     for position, project in enumerate(projects):
         if project.status not in STATUSES:
             # An issue, not a raise: a typo in one optional field must not
@@ -208,6 +210,11 @@ def load_registry(root: Path, registry_file: Path | None = None) -> Registry | N
         for blocker in project.blocked_by:
             if blocker not in known:
                 issues.append(f"{project.name}: blocked_by names unknown project {blocker!r}")
+            elif project.category != HABIT_CATEGORY and blocker in habit_names:
+                issues.append(
+                    f"{project.name}: blocked_by names Habit {blocker!r}, "
+                    "which cannot be a roadmap prerequisite"
+                )
         for relative in project.paths:
             try:
                 resolved = resolve_in_root(root, relative)

@@ -34,6 +34,14 @@ def test_parses_projects_in_declaration_order(tmp_path):
     assert [p.name for p in registry.projects] == ["0DTE", "FINM 320"]
 
 
+def test_habit_is_parsed_as_the_reserved_project_category(tmp_path):
+    write(tmp_path, '[[project]]\nname = "Practice"\npaths = ["."]\ncategory = "habit"\n')
+
+    registry = load_registry(tmp_path)
+
+    assert registry.projects[0].category == "habit"
+
+
 def test_optional_fields_default_to_none_or_empty(tmp_path):
     registry = load_registry(write(tmp_path, VALID))
     finm = registry.projects[1]
@@ -260,6 +268,34 @@ def test_category_alone_satisfies_the_placement_rule(tmp_path):
     write(tmp_path, '[[project]]\nname = "A"\npaths = ["."]\ncategory = "x"\n')
     registry = load_registry(tmp_path)
     assert not any(i.startswith("A:") for i in registry.issues)
+
+
+def test_an_unknown_habit_gate_remains_a_registry_issue(tmp_path):
+    write(
+        tmp_path,
+        '[[project]]\nname = "Practice"\npaths = ["."]\n'
+        'blocked_by = ["Ghost"]\ncategory = "habit"\n',
+    )
+
+    registry = load_registry(tmp_path)
+
+    assert any(i.startswith("Practice:") and "Ghost" in i for i in registry.issues)
+
+
+def test_a_habit_cannot_silently_block_an_ordinary_project(tmp_path):
+    write(
+        tmp_path,
+        '[[project]]\nname = "Practice"\npaths = ["."]\ncategory = "habit"\n'
+        '\n[[project]]\nname = "Course"\npaths = ["."]\n'
+        'blocked_by = ["Practice"]\ncategory = "course"\n',
+    )
+
+    registry = load_registry(tmp_path)
+
+    assert any(
+        issue.startswith("Course:") and "Habit" in issue and "Practice" in issue
+        for issue in registry.issues
+    )
 
 
 def test_the_registry_can_be_read_from_a_file_outside_the_root(tmp_path):

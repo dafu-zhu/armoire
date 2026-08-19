@@ -667,6 +667,7 @@ iframe.pdf {
 .entry.status-active      { border-style: solid; border-width: 2.5px; }
 .entry.status-paused      { border-style: dotted; border-width: 2px; }
 .entry.status-done        { border-style: solid; border-width: 1px; opacity: 0.55; }
+.entry.habit-entry        { border-style: solid; border-width: 1px; }
 .entry-head { display: flex; align-items: flex-start; gap: 6px; }
 .entry-name { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--fg); }
 .entry.status-done .entry-name { text-decoration: line-through; }
@@ -682,6 +683,9 @@ iframe.pdf {
 .entry.status-paused .status-chip      { color: var(--status-paused); }
 .entry.status-done .status-chip        { color: var(--status-done); }
 .entry-due { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+.entry-state { margin: 4px 0 0; font-size: 11px; font-weight: 600; }
+.entry.habit-ready .entry-state { color: var(--status-done); }
+.entry.habit-locked .entry-state { color: var(--status-paused); }
 .entry-note { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
 .entry-warn { flex: 0 0 auto; font-weight: 700; color: #bc4c00; cursor: help; }
 
@@ -738,6 +742,9 @@ iframe.pdf {
 .panel-status-glyph.status-active { color: var(--status-active); }
 .panel-status-glyph.status-paused { color: var(--status-paused); }
 .panel-status-glyph.status-done { color: var(--status-done); }
+.panel-habit-state { font-weight: 600; }
+.panel-habit-state.habit-ready { color: var(--status-done); }
+.panel-habit-state.habit-locked { color: var(--status-paused); }
 .panel-note { margin: 12px 0; font-size: 13px; white-space: pre-wrap; }
 .panel-open {
   display: block;

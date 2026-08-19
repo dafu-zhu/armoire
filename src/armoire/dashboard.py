@@ -11,7 +11,7 @@ from pathlib import Path
 
 from armoire import store
 from armoire.paths import PathOutsideRoot
-from armoire.projects import STATUSES, Registry, RegistryError, load_registry
+from armoire.projects import HABIT_CATEGORY, STATUSES, Registry, RegistryError, load_registry
 from armoire.scanner import list_dir
 
 
@@ -46,23 +46,38 @@ def _stored_statuses(state_file: Path) -> dict:
 
 
 def project_rows(registry: Registry, state_file: Path) -> list[dict]:
-    known = {p.name for p in registry.projects}
+    roadmap_projects = [p for p in registry.projects if p.category != HABIT_CATEGORY]
+    roadmap_known = {p.name for p in roadmap_projects}
     # Only edges that will actually be drawn count. An edge naming a project
     # that does not exist is reported as an issue and never rendered, so the
     # node still stands alone and belongs in a category container.
-    blocks = {b for p in registry.projects for b in p.blocked_by if b in known}
+    blocks = {b for p in roadmap_projects for b in p.blocked_by if b in roadmap_known}
     stored = _stored_statuses(state_file)
+    effective_status = {
+        project.name: (
+            stored[project.name] if stored.get(project.name) in STATUSES else project.status
+        )
+        for project in registry.projects
+    }
 
     listed = []
     for project in registry.projects:
-        connected = project.name in blocks or any(b in known for b in project.blocked_by)
-        override = stored.get(project.name)
+        is_habit = project.category == HABIT_CATEGORY
+        habit_locked_by = [
+            blocker for blocker in project.blocked_by if effective_status.get(blocker) != "done"
+        ]
+        connected = not is_habit and (
+            project.name in blocks or any(b in roadmap_known for b in project.blocked_by)
+        )
         listed.append(
             asdict(project)
             | {"paths": list(project.paths), "blocked_by": list(project.blocked_by)}
             | {
                 "isolated": not connected,
-                "status": override if override in STATUSES else project.status,
+                "status": effective_status[project.name],
+                "is_habit": is_habit,
+                "habit_unlocked": is_habit and not habit_locked_by,
+                "habit_locked_by": habit_locked_by if is_habit else [],
             }
         )
     return listed
