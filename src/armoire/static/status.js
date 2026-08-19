@@ -2,12 +2,13 @@
 // must be the same in every browser. Positions are the opposite and stay in
 // localStorage.
 
-export const STATUS_ORDER = ['not-started', 'active', 'paused', 'done'];
+export const STATUS_ORDER = ['not-started', 'active', 'paused', 'conditional-done', 'done'];
 
 const GLYPH = {
   'not-started': '○',
   active: '●',
   paused: '◐',
+  'conditional-done': '✓*',
   done: '✓',
 };
 
@@ -15,6 +16,7 @@ const LABEL = {
   'not-started': 'Not started',
   active: 'Active',
   paused: 'Paused',
+  'conditional-done': 'Conditional done',
   done: 'Done',
 };
 
@@ -46,14 +48,20 @@ export function labelFor(status) {
   return LABEL[status] || LABEL['not-started'];
 }
 
-export async function setStatus(name, status) {
+export function isComplete(status) {
+  return status === 'conditional-done' || status === 'done';
+}
+
+export async function setStatus(name, status, conditionalNote) {
+  const payload = { name, status };
+  if (conditionalNote !== undefined) payload.conditional_note = conditionalNote;
   const response = await fetch('/api/status', {
     method: 'PUT',
     // The server requires this header. A cross-origin page cannot set it
     // without a preflight armoire never answers, which is what stops any
     // other tab writing here.
     headers: { 'Content-Type': 'application/json', 'X-Armoire': '1' },
-    body: JSON.stringify({ name, status }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) throw new Error(`status ${response.status}`);
 }
@@ -78,7 +86,7 @@ const writeToken = new Map();
 // that triggers it, not for staleness itself, which is the case it must
 // stay silent for.) Optional: a caller that never fails its writes, or
 // doesn't care to roll back, may omit it.
-export function writeStatus(name, status, onLatestFailure) {
+export function writeStatus(name, status, onLatestFailure, conditionalNote) {
   const previous = writeQueue.get(name) || Promise.resolve();
   const token = (writeToken.get(name) || 0) + 1;
   writeToken.set(name, token);
@@ -88,9 +96,10 @@ export function writeStatus(name, status, onLatestFailure) {
   // reorder.
   const write = previous
     .then(
-      () => setStatus(name, status),
-      () => setStatus(name, status),
+      () => setStatus(name, status, conditionalNote),
+      () => setStatus(name, status, conditionalNote),
     )
+    .then(() => true)
     .catch(() => {
       // Only the *latest* click for this project may roll back: an
       // intervening click has already moved the optimistic state (and
@@ -98,6 +107,7 @@ export function writeStatus(name, status, onLatestFailure) {
       // click's view of "previous" would show a status the server never
       // actually held for either click.
       if (writeToken.get(name) === token) onLatestFailure?.();
+      return false;
     });
   writeQueue.set(name, write);
   return write;

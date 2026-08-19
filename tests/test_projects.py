@@ -52,6 +52,32 @@ def test_optional_fields_default_to_none_or_empty(tmp_path):
     assert finm.category == "learning"
     assert finm.due is None
     assert finm.note is None
+    assert finm.conditional_note is None
+
+
+def test_conditional_done_and_its_note_survive_parsing(tmp_path):
+    write(
+        tmp_path,
+        '[[project]]\nname = "A"\npaths = ["."]\ncategory = "x"\n'
+        'status = "conditional-done"\nconditional_note = "Revisit appendix proof."\n',
+    )
+
+    project = load_registry(tmp_path).projects[0]
+
+    assert project.status == "conditional-done"
+    assert project.conditional_note == "Revisit appendix proof."
+
+
+def test_conditional_done_without_a_note_falls_back_and_reports_an_issue(tmp_path):
+    write(
+        tmp_path,
+        '[[project]]\nname = "A"\npaths = ["."]\ncategory = "x"\nstatus = "conditional-done"\n',
+    )
+
+    registry = load_registry(tmp_path)
+
+    assert registry.projects[0].status == "not-started"
+    assert any("conditional_note" in issue for issue in registry.issues)
 
 
 def test_category_defaults_to_none_when_satisfied_via_blocked_by(tmp_path):
@@ -228,6 +254,8 @@ def test_each_declared_status_survives_parsing(tmp_path):
     body = ""
     for i, status in enumerate(STATUSES):
         body += f'[[project]]\nname = "P{i}"\npaths = ["."]\ncategory = "x"\nstatus = "{status}"\n'
+        if status == "conditional-done":
+            body += 'conditional_note = "Document the remaining work."\n'
     write(tmp_path, body)
     registry = load_registry(tmp_path)
     assert [p.status for p in registry.projects] == list(STATUSES)

@@ -98,10 +98,19 @@ registry, armoire opens straight into the file browser.
 
 Every project must declare `blocked_by`, `category`, or both — one with neither
 has nowhere on screen to go and is reported as a registry issue. `status` is one
-of `not-started`, `active`, `paused`, `done`; it defaults to `not-started`, and an
-unrecognised value falls back to `not-started` as a registry issue rather than
-dropping the project from the graph. Edit it from the roadmap by clicking the
-chip in a node's corner, or by hand in the registry file.
+of `not-started`, `active`, `paused`, `conditional-done`, `done`; it defaults to
+`not-started`, and an unrecognised value falls back to `not-started` as a
+registry issue rather than dropping the project from the graph. The registry
+field declares the default. Clicking the chip writes the current status to the
+external `state.json`; conditional-done Notes remain in `registry.toml` and the
+panel pencil edits them there.
+
+`conditional-done` means the project is complete enough to move on, while some
+work remains. It unlocks dependents exactly like `done`, but requires a non-empty
+`conditional_note` in the external registry. Its green `✓*` node uses the same
+collapsed, faded, struck-through visual language as completed work. The project
+panel shows the note under **Notes**; use the pencil beside it to edit the text
+without opening `registry.toml`.
 
 See the [roadmap design](docs/superpowers/specs/2026-08-01-armoire-roadmap-design.md)
 and the [Phase 3 design](docs/superpowers/specs/2026-08-02-armoire-phase3-design.md)
@@ -123,10 +132,11 @@ category = "habit"
 note = "Maintain a regular writing practice."
 ```
 
-A Habit is ready when every declared prerequisite is `done`; one with no
-prerequisites is ready immediately. Unknown prerequisites remain registry issues
-and keep the Habit locked. An ordinary project cannot use a Habit as a roadmap
-prerequisite; that invalid relationship is also reported as a registry issue.
+A Habit is ready when every declared prerequisite is `done` or
+`conditional-done`; one with no prerequisites is ready immediately. Unknown
+prerequisites remain registry issues and keep the Habit locked. An ordinary
+project cannot use a Habit as a roadmap prerequisite; that invalid relationship
+is also reported as a registry issue.
 Habit cards do not expose the ordinary project status cycle. Single-click a card
 for a quick look or double-click it to browse its first declared path.
 
@@ -150,7 +160,7 @@ Inside it, every folder armoire has served gets its own directory:
 
 ```
 <store>/folders/<basename>-<first 8 hex of sha256 of the resolved path>/
-    registry.toml    the projects, the dependency edges — the file you edit
+    registry.toml    projects, dependency edges, conditional-done notes
     state.json       project status, written when you click a chip
 ```
 

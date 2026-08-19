@@ -9,6 +9,7 @@ import { categoryOrder } from './palette.js';
 import { openPanel, closePanel } from './panel.js';
 import { mountRegistryButton } from './registry.js';
 import { initNativeOpen } from './opener.js';
+import { writeStatus } from './status.js';
 
 const content = document.getElementById('content');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -252,13 +253,40 @@ async function showRoadmap() {
     closePanel(panel);
     navigate(project.paths[0]);
   };
-  const onSelect = (project) => openPanel(panel, project, onOpenFolder);
-  const onStatusChange = (name, nextStatus) => {
+  const onStatusChange = (name, nextStatus, conditionalNote) => {
     const changed = data.projects.find((project) => project.name === name);
-    if (changed) changed.status = nextStatus;
+    if (changed) {
+      changed.status = nextStatus;
+      if (conditionalNote !== undefined) changed.conditional_note = conditionalNote;
+    }
     refreshHabitStates(categories, data);
   };
-  const callbacks = { onSelect, onOpenFolder, onStatusChange };
+  const onSelect = (project) => openPanel(panel, project, onOpenFolder, {
+    onSaveConditionalNote: async (note) => {
+      const saved = await writeStatus(project.name, 'conditional-done', undefined, note);
+      if (saved) {
+        project.conditional_note = note;
+        if (project.status === 'conditional-done') {
+          onStatusChange(project.name, project.status, note);
+        }
+        onSelect(project);
+      }
+      return saved;
+    },
+  });
+  const onRequestConditionalDone = (project, commit) => {
+    const preview = { ...project, status: 'conditional-done' };
+    openPanel(panel, preview, onOpenFolder, {
+      editConditionalNote: true,
+      onCancelConditionalNote: () => onSelect(project),
+      onSaveConditionalNote: async (note) => {
+        const saved = await commit(note);
+        if (saved) onSelect(project);
+        return saved;
+      },
+    });
+  };
+  const callbacks = { onSelect, onOpenFolder, onStatusChange, onRequestConditionalDone };
   roadmapView = renderRoadmap(canvas, connected, callbacks, roadmapListeners.signal, order);
   categories.hidden = renderCategories(categories, data, callbacks, order) === 0;
   document.getElementById('layout-reset').onclick = () => roadmapView.reset();

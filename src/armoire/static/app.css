@@ -27,13 +27,13 @@
   --cat-3-fill: #fbefff; --cat-3-line: #8250df;
   --cat-4-fill: #fff8c5; --cat-4-line: #9a6700;
   --cat-5-fill: var(--subtle); --cat-5-line: var(--border);
-  /* One hue per status, distinct from every category colour above and from
-     each other, so the status chip (a single small glyph) does not rely on
-     shape alone (○ ● ◐ ✓) to read at a glance. */
+  /* Status hues distinguish unfinished states. Both completion states share
+     green intentionally; ✓ versus ✓* carries the footnoted distinction. */
   --status-not-started: var(--muted);
   --status-active: var(--link);
   --status-paused: #9a6700;
   --status-done: #2da44e;
+  --status-conditional-done: var(--status-done);
   --radius: 6px;
   /* Scrollbar greys, sampled from the palette above rather than invented: the
      track is --subtle (the same fill as #status and .card-head) and the thumb
@@ -552,7 +552,9 @@ iframe.pdf {
 .node.status-active rect      { stroke-width: 2.5; }
 .node.status-paused rect      { stroke-width: 1.5; stroke-dasharray: 6 4; }
 .node.status-done rect        { stroke-width: 1; }
-.node.status-done             { opacity: 0.55; }
+.node.status-conditional-done rect { stroke-width: 1; }
+.node.status-done,
+.node.status-conditional-done { opacity: 0.55; }
 /* :not(.status-chip):not(.node-warn) -- the strikethrough is for the title
    and the subtitle (due/note) only. Both the chip's glyph and the warn
    marker are themselves <text> elements inside the same .node, so an
@@ -561,7 +563,10 @@ iframe.pdf {
    everything it was meant for. The warn marker is named here because a done
    node keeps it -- the collapse hides the note and the due date, which cost
    height, and not the marker, which shares the title row (roadmap.js). */
-.node.status-done text:not(.status-chip):not(.node-warn) { text-decoration: line-through; }
+.node.status-done text:not(.status-chip):not(.node-warn),
+.node.status-conditional-done text:not(.status-chip):not(.node-warn) {
+  text-decoration: line-through;
+}
 /* Distinct from every category fill, including cat-5's --subtle -- see the
    --blocked-fill definition at the top of this file for why. */
 .node.blocked rect            { fill: var(--blocked-fill); }
@@ -581,6 +586,7 @@ iframe.pdf {
 .node.status-not-started .status-chip { fill: var(--status-not-started); }
 .node.status-active .status-chip      { fill: var(--status-active); }
 .node.status-paused .status-chip      { fill: var(--status-paused); }
+.node.status-conditional-done .status-chip { fill: var(--status-conditional-done); }
 .node.status-done .status-chip        { fill: var(--status-done); }
 
 .cat-0 rect { fill: var(--cat-0-fill); stroke: var(--cat-0-line); }
@@ -662,18 +668,20 @@ iframe.pdf {
 .entry.cat-3 { background: var(--cat-3-fill); border-color: var(--cat-3-line); }
 .entry.cat-4 { background: var(--cat-4-fill); border-color: var(--cat-4-line); }
 .entry.cat-5 { background: var(--cat-5-fill); border-color: var(--cat-5-line); }
-/* Mirrors .node.status-* rect (roadmap block, above): four distinct
-   border treatments, one per status, in addition to the chip's own colour.
+/* Mirrors .node.status-* rect (roadmap block, above): unfinished states have
+   distinct borders; both completion states share the completed treatment.
    CSS border-style has no dasharray equivalent, so "dashed" (not-started)
    and "dotted" (paused) stand in for the SVG's two different dash lengths. */
 .entry.status-not-started { border-style: dashed; border-width: 1px; }
 .entry.status-active      { border-style: solid; border-width: 2.5px; }
 .entry.status-paused      { border-style: dotted; border-width: 2px; }
+.entry.status-conditional-done,
 .entry.status-done        { border-style: solid; border-width: 1px; opacity: 0.55; }
 .entry.habit-entry        { border-style: solid; border-width: 1px; }
 .entry-head { display: flex; align-items: flex-start; gap: 6px; }
 .entry-name { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--fg); }
-.entry.status-done .entry-name { text-decoration: line-through; }
+.entry.status-done .entry-name,
+.entry.status-conditional-done .entry-name { text-decoration: line-through; }
 /* .status-chip's other rule (above, in the roadmap block) was written for an
    SVG <text> -- no button chrome to reset there in the first place. Here the
    chip is a real HTML <button>, so it keeps the UA default border/background
@@ -684,6 +692,7 @@ iframe.pdf {
 .entry.status-not-started .status-chip { color: var(--status-not-started); }
 .entry.status-active .status-chip      { color: var(--status-active); }
 .entry.status-paused .status-chip      { color: var(--status-paused); }
+.entry.status-conditional-done .status-chip { color: var(--status-conditional-done); }
 .entry.status-done .status-chip        { color: var(--status-done); }
 .entry-due { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
 .entry-state { margin: 4px 0 0; font-size: 11px; font-weight: 600; }
@@ -744,11 +753,30 @@ iframe.pdf {
 .panel-status-glyph.status-not-started { color: var(--status-not-started); }
 .panel-status-glyph.status-active { color: var(--status-active); }
 .panel-status-glyph.status-paused { color: var(--status-paused); }
+.panel-status-glyph.status-conditional-done { color: var(--status-conditional-done); }
 .panel-status-glyph.status-done { color: var(--status-done); }
 .panel-habit-state { font-weight: 600; }
 .panel-habit-state.habit-ready { color: var(--status-done); }
 .panel-habit-state.habit-locked { color: var(--status-paused); }
 .panel-note { margin: 12px 0; font-size: 13px; white-space: pre-wrap; }
+.panel-conditional-notes { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.panel-note-heading { display: flex; align-items: center; justify-content: space-between; font-size: 13px; }
+.panel-note-edit { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; }
+.panel-note-edit:hover { color: var(--fg); }
+.panel-conditional-note { margin: 8px 0 0; font-size: 13px; white-space: pre-wrap; }
+.panel-conditional-notes textarea {
+  width: 100%; margin-top: 8px; padding: 8px; resize: vertical; font: inherit;
+  color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.panel-conditional-notes textarea:focus { outline: 2px solid var(--link); outline-offset: 1px; }
+.panel-note-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.panel-note-actions button {
+  padding: 5px 10px; font: inherit; color: var(--fg); background: var(--subtle);
+  border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+}
+.panel-note-actions button.primary { color: #fff; background: var(--link); border-color: var(--link); }
+.panel-note-actions button:disabled { opacity: 0.55; cursor: default; }
+.panel-note-error { margin: 6px 0 0; color: #cf222e; font-size: 12px; }
 .panel-open {
   display: block;
   width: 100%;

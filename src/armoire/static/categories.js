@@ -2,7 +2,7 @@
 // Phase 2 let dagre park them mid-canvas, where they pushed the real roots
 // off-centre and read as part of a structure they are not in.
 
-import { glyphFor, nextStatus, normalizeStatus, writeStatus } from './status.js';
+import { glyphFor, isComplete, nextStatus, normalizeStatus, writeStatus } from './status.js';
 import { categoryClass } from './palette.js';
 
 function applyHabitState(item, project) {
@@ -19,7 +19,7 @@ export function refreshHabitStates(container, data) {
   const items = [...container.querySelectorAll('.habit-entry')];
   for (const project of projects.filter((candidate) => candidate.is_habit)) {
     project.habit_locked_by = project.blocked_by.filter(
-      (blocker) => statuses.get(blocker) !== 'done',
+      (blocker) => !isComplete(statuses.get(blocker)),
     );
     project.habit_unlocked = project.habit_locked_by.length === 0;
     const item = items.find((candidate) => candidate.dataset.name === project.name);
@@ -41,7 +41,7 @@ export function refreshHabitStates(container, data) {
 // `onStatusChange`, which keeps Habit gates current while a prerequisite chip
 // changes without reloading the payload.
 export function renderCategories(container, data, callbacks, order) {
-  const { onSelect, onOpenFolder, onStatusChange } = callbacks;
+  const { onSelect, onOpenFolder, onStatusChange, onRequestConditionalDone } = callbacks;
   container.replaceChildren();
   const isolated = (data.projects || []).filter((p) => p.isolated || p.is_habit);
   if (!isolated.length) return 0;
@@ -138,11 +138,25 @@ export function renderCategories(container, data, callbacks, order) {
           // group.
           event.stopPropagation();
           const previous = status;
-          status = nextStatus(status);
-          onStatusChange?.(project.name, status);
-          chip.textContent = glyphFor(status);
-          chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
-          item.className = `entry ${catClass} status-${status}`;
+          const wanted = nextStatus(status);
+          const applyWanted = (conditionalNote) => {
+            status = wanted;
+            onStatusChange?.(project.name, status, conditionalNote);
+            chip.textContent = glyphFor(status);
+            chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
+            item.className = `entry ${catClass} status-${status}`;
+            return writeStatus(project.name, status, () => {
+              status = previous;
+              onStatusChange?.(project.name, status);
+              chip.textContent = glyphFor(status);
+              chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
+              item.className = `entry ${catClass} status-${status}`;
+            }, conditionalNote);
+          };
+          if (wanted === 'conditional-done') {
+            onRequestConditionalDone?.(project, applyWanted);
+            return;
+          }
           // writeStatus (status.js) serializes this project's writes -- across
           // both this module and roadmap.js -- and only calls back here if
           // this write failed and is still the latest click for this project.
@@ -151,13 +165,7 @@ export function renderCategories(container, data, callbacks, order) {
           // there is never a second chip for the same project to reconcile
           // against; sharing the queue is what still stops two rapid clicks on
           // this one chip from racing their own PUTs out of order.
-          writeStatus(project.name, status, () => {
-            status = previous;
-            onStatusChange?.(project.name, status);
-            chip.textContent = glyphFor(status);
-            chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);
-            item.className = `entry ${catClass} status-${status}`;
-          });
+          applyWanted();
         });
         head.append(chip);
         item.append(head);

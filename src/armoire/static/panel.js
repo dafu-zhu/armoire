@@ -30,7 +30,7 @@ export function closePanel(container) {
   }
 }
 
-export function openPanel(container, project, onOpenFolder) {
+export function openPanel(container, project, onOpenFolder, options = {}) {
   container.replaceChildren();
   const isHabit = project.is_habit === true;
   const status = normalizeStatus(project.status);
@@ -69,6 +69,79 @@ export function openPanel(container, project, onOpenFolder) {
     note.className = 'panel-note';
     note.textContent = project.note;
     container.append(note);
+  }
+
+  if (status === 'conditional-done') {
+    const section = document.createElement('section');
+    section.className = 'panel-conditional-notes';
+    const heading = document.createElement('div');
+    heading.className = 'panel-note-heading';
+    const label = document.createElement('strong');
+    label.textContent = 'Notes';
+    heading.append(label);
+
+    if (options.editConditionalNote) {
+      const textarea = document.createElement('textarea');
+      textarea.id = 'conditional-note-input';
+      textarea.value = project.conditional_note || '';
+      textarea.setAttribute('aria-label', 'Notes');
+      textarea.rows = 5;
+
+      const error = document.createElement('p');
+      error.className = 'panel-note-error';
+      error.setAttribute('role', 'alert');
+      error.hidden = true;
+
+      const actions = document.createElement('div');
+      actions.className = 'panel-note-actions';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', () => {
+        if (options.onCancelConditionalNote) options.onCancelConditionalNote();
+        else openPanel(container, project, onOpenFolder, { ...options, editConditionalNote: false });
+      });
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'primary';
+      save.textContent = 'Save changes';
+      save.addEventListener('click', async () => {
+        const note = textarea.value.trim();
+        if (!note) {
+          error.textContent = 'Notes are required for conditional done.';
+          error.hidden = false;
+          textarea.focus();
+          return;
+        }
+        save.disabled = true;
+        cancel.disabled = true;
+        error.hidden = true;
+        const saved = await options.onSaveConditionalNote?.(note);
+        if (!saved) {
+          error.textContent = 'Notes could not be saved. Try again.';
+          error.hidden = false;
+          save.disabled = false;
+          cancel.disabled = false;
+        }
+      });
+      actions.append(cancel, save);
+      section.append(heading, textarea, error, actions);
+    } else {
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'panel-note-edit';
+      edit.setAttribute('aria-label', 'Edit notes');
+      edit.textContent = '✎';
+      edit.addEventListener('click', () => {
+        openPanel(container, project, onOpenFolder, { ...options, editConditionalNote: true });
+      });
+      heading.append(edit);
+      const note = document.createElement('p');
+      note.className = 'panel-conditional-note';
+      note.textContent = project.conditional_note;
+      section.append(heading, note);
+    }
+    container.append(section);
   }
 
   const open = document.createElement('button');
