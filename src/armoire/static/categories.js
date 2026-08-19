@@ -139,8 +139,8 @@ export function renderCategories(container, data, callbacks, order) {
           event.stopPropagation();
           const previous = status;
           const wanted = nextStatus(status);
-          const applyWanted = (conditionalNote) => {
-            status = wanted;
+          const applyWanted = (conditionalNote, statusOverride = wanted) => {
+            status = statusOverride;
             onStatusChange?.(project.name, status, conditionalNote);
             chip.textContent = glyphFor(status);
             chip.setAttribute('aria-label', `Status: ${status}. Click to change.`);

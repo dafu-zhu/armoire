@@ -124,7 +124,28 @@ export function openPanel(container, project, onOpenFolder, options = {}) {
           cancel.disabled = false;
         }
       });
-      actions.append(cancel, save);
+      actions.append(cancel);
+      if (options.onMarkFullyDone) {
+        const markDone = document.createElement('button');
+        markDone.type = 'button';
+        markDone.textContent = 'Mark fully done';
+        markDone.addEventListener('click', async () => {
+          markDone.disabled = true;
+          save.disabled = true;
+          cancel.disabled = true;
+          error.hidden = true;
+          const saved = await options.onMarkFullyDone();
+          if (!saved) {
+            error.textContent = 'Status could not be saved. Try again.';
+            error.hidden = false;
+            markDone.disabled = false;
+            save.disabled = false;
+            cancel.disabled = false;
+          }
+        });
+        actions.append(markDone);
+      }
+      actions.append(save);
       section.append(heading, textarea, error, actions);
     } else {
       const edit = document.createElement('button');

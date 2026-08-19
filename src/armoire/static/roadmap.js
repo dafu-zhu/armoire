@@ -407,12 +407,12 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
       event.preventDefault();
       const previous = statuses.get(project.name);
       const wanted = nextStatus(previous);
-      const applyWanted = (conditionalNote) => {
-        statuses.set(project.name, wanted);
-        onStatusChange?.(project.name, wanted, conditionalNote);
+      const applyWanted = (conditionalNote, statusOverride = wanted) => {
+        statuses.set(project.name, statusOverride);
+        onStatusChange?.(project.name, statusOverride, conditionalNote);
         applyStatus();
 
-        return writeStatus(project.name, wanted, () => {
+        return writeStatus(project.name, statusOverride, () => {
           statuses.set(project.name, previous);
           onStatusChange?.(project.name, previous);
           applyStatus();
