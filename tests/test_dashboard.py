@@ -68,6 +68,34 @@ def test_a_stored_done_prerequisite_unlocks_a_habit(tmp_path, monkeypatch):
     assert row["habit_locked_by"] == []
 
 
+def test_a_stored_conditional_done_prerequisite_unlocks_a_habit(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
+    state_file = store.state_path(tmp_path)
+    store.write_state(state_file, {"status": {"Course": "conditional-done"}})
+    registry = Registry(
+        projects=[
+            Project(
+                name="Course",
+                paths=("course",),
+                category="course",
+                status="active",
+                conditional_note="Finish the optional exercises.",
+            ),
+            Project(
+                name="Practice",
+                paths=("habit",),
+                blocked_by=("Course",),
+                category="habit",
+            ),
+        ]
+    )
+
+    row = {item["name"]: item for item in project_rows(registry, state_file)}["Practice"]
+
+    assert row["habit_unlocked"] is True
+    assert row["habit_locked_by"] == []
+
+
 def test_a_habit_gate_does_not_connect_ordinary_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "config_root", lambda: tmp_path / "cfg")
     registry = Registry(

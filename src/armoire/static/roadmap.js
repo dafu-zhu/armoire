@@ -2,7 +2,7 @@
 // click targets, drag and styling stay under our control -- mermaid would emit
 // a static picture we would then have to fight.
 
-import { nextStatus, glyphFor, normalizeStatus, writeStatus } from './status.js';
+import { glyphFor, isComplete, nextStatus, normalizeStatus, writeStatus } from './status.js';
 import { categoryClass } from './palette.js';
 
 const NODE_W = 168;
@@ -14,7 +14,7 @@ const NODE_MIN_H = 40;
 // marker can sit beside it rather than under it. The chip is 12px and
 // end-anchored at NODE_W - NODE_PAD_X; 18 leaves the widest glyph (the filled
 // and half-filled circles) clear of the marker with a few pixels to spare.
-const CHIP_SLOT = 18;
+const CHIP_SLOT = 26;
 
 // SVG <text> does not wrap. Measure in the live SVG rather than guessing from
 // character counts: font metrics are not knowable ahead of time, and the
@@ -81,7 +81,7 @@ function buildSubtitle(canvas, project) {
   // the whole graph and move every node under the pointer, so the collapse
   // is deliberately one render behind a click. Do not "fix" this into a
   // reflow.
-  if (project.status === 'done') return { dueLine: null, noteLines: [] };
+  if (isComplete(project.status)) return { dueLine: null, noteLines: [] };
   const dueLine = project.due ? `Due ${project.due}` : null;
   const noteLines = project.note ? wrapLines(canvas, project.note, NODE_W - NODE_PAD_X * 2) : [];
   return { dueLine, noteLines };
@@ -188,7 +188,7 @@ function layout(projects, heights, known) {
 // which lets app.js refresh Habit gates while this graph updates a prerequisite
 // optimistically (and again if the write rolls back).
 export function renderRoadmap(canvas, data, callbacks, signal, order) {
-  const { onSelect, onOpenFolder, onStatusChange } = callbacks;
+  const { onSelect, onOpenFolder, onStatusChange, onRequestConditionalDone } = callbacks;
   // Habit gates are runtime readiness rules, never roadmap topology. Keep
   // this boundary defensive even though dashboard.py normally marks every
   // Habit isolated before app.js splits the payload.
@@ -305,8 +305,8 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
   function isBlocked(project) {
     // Blocked means "waiting on something unfinished", not "has a blocker".
     // A done project is waiting on nothing by definition.
-    if (statuses.get(project.name) === 'done') return false;
-    return project.blocked_by.some((b) => known.has(b) && statuses.get(b) !== 'done');
+    if (isComplete(statuses.get(project.name))) return false;
+    return project.blocked_by.some((b) => known.has(b) && !isComplete(statuses.get(b)));
   }
 
   // Match each project against the issues rather than splitting the issue on
@@ -407,21 +407,25 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
       event.preventDefault();
       const previous = statuses.get(project.name);
       const wanted = nextStatus(previous);
+      const applyWanted = (conditionalNote) => {
+        statuses.set(project.name, wanted);
+        onStatusChange?.(project.name, wanted, conditionalNote);
+        applyStatus();
+
+        return writeStatus(project.name, wanted, () => {
+          statuses.set(project.name, previous);
+          onStatusChange?.(project.name, previous);
+          applyStatus();
+        }, conditionalNote);
+      };
+      if (wanted === 'conditional-done') {
+        onRequestConditionalDone?.(project, applyWanted);
+        return;
+      }
       // The optimistic UI update happens on every click, synchronously,
       // regardless of network state -- responsiveness must not wait on a
       // queued write.
-      statuses.set(project.name, wanted);
-      onStatusChange?.(project.name, wanted);
-      applyStatus();
-
-      // writeStatus (status.js) serializes this project's writes -- across
-      // both this module and categories.js -- and only calls back here if
-      // this write failed and is still the latest click for this project.
-      writeStatus(project.name, wanted, () => {
-        statuses.set(project.name, previous);
-        onStatusChange?.(project.name, previous);
-        applyStatus();
-      });
+      applyWanted();
     };
     chip.addEventListener('click', cycle);
     chip.addEventListener('keydown', (event) => {
@@ -480,7 +484,7 @@ export function renderRoadmap(canvas, data, callbacks, signal, order) {
       }
     }
     for (const edge of edges) {
-      edge.path.classList.toggle('from-done', statuses.get(edge.from) === 'done');
+      edge.path.classList.toggle('from-done', isComplete(statuses.get(edge.from)));
     }
   }
   // Called once here, unconditionally, so the initial edge classes (e.g. a

@@ -13,6 +13,7 @@ dependencies = [
     "psutil>=6.0",
     "nbformat>=5.10",
     "nbconvert>=7.16",
+    "tomlkit>=0.13",
 ]
 
 [project.scripts]

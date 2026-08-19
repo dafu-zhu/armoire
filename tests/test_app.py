@@ -610,6 +610,78 @@ def test_a_status_edit_is_stored(tmp_path):
     assert store.read_state(store.state_path(tmp_path))["status"]["Downstream"] == "done"
 
 
+def test_conditional_done_requires_a_nonempty_note(tmp_path):
+    client = _client_with_registry(tmp_path)
+    registry_file = store.registry_path(tmp_path)
+    before = registry_file.read_text(encoding="utf-8")
+
+    response = client.put(
+        "/api/status",
+        json={"name": "Downstream", "status": "conditional-done", "conditional_note": "  "},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 400
+    assert "conditional_note" in response.json()["detail"]
+    assert store.read_state(store.state_path(tmp_path)) == {}
+    assert registry_file.read_text(encoding="utf-8") == before
+
+
+def test_conditional_done_stores_its_note_in_the_external_registry(tmp_path):
+    client = _client_with_registry(tmp_path)
+    registry_file = store.registry_path(tmp_path)
+    registry_file.write_text("# keep this comment\n" + REGISTRY, encoding="utf-8")
+    before_served = folder_snapshot(tmp_path)
+
+    response = client.put(
+        "/api/status",
+        json={
+            "name": "Downstream",
+            "status": "conditional-done",
+            "conditional_note": "Revisit the calibration appendix.",
+        },
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    assert store.read_state(store.state_path(tmp_path))["status"]["Downstream"] == (
+        "conditional-done"
+    )
+    text = registry_file.read_text(encoding="utf-8")
+    assert "# keep this comment" in text
+    assert 'note = "a note"' in text
+    assert 'conditional_note = "Revisit the calibration appendix."' in text
+    assert folder_snapshot(tmp_path) == before_served
+
+
+def test_conditional_done_note_can_be_replaced_without_moving_projects(tmp_path):
+    client = _client_with_registry(tmp_path)
+    first = client.put(
+        "/api/status",
+        json={
+            "name": "Downstream",
+            "status": "conditional-done",
+            "conditional_note": "First remainder.",
+        },
+        headers=HEADERS,
+    )
+    second = client.put(
+        "/api/status",
+        json={
+            "name": "Downstream",
+            "status": "conditional-done",
+            "conditional_note": "Updated remainder.",
+        },
+        headers=HEADERS,
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    payload = client.get("/api/project/Downstream").json()["project"]
+    assert payload["conditional_note"] == "Updated remainder."
+    assert store.registry_path(tmp_path).read_text(encoding="utf-8").count("conditional_note") == 1
+
+
 def test_the_stored_status_comes_back_from_the_projects_endpoint(tmp_path):
     client = _client_with_registry(tmp_path)
     client.put("/api/status", json={"name": "Downstream", "status": "paused"}, headers=HEADERS)

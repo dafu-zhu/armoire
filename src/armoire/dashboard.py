@@ -11,7 +11,14 @@ from pathlib import Path
 
 from armoire import store
 from armoire.paths import PathOutsideRoot
-from armoire.projects import HABIT_CATEGORY, STATUSES, Registry, RegistryError, load_registry
+from armoire.projects import (
+    COMPLETED_STATUSES,
+    HABIT_CATEGORY,
+    STATUSES,
+    Registry,
+    RegistryError,
+    load_registry,
+)
 from armoire.scanner import list_dir
 
 
@@ -64,7 +71,9 @@ def project_rows(registry: Registry, state_file: Path) -> list[dict]:
     for project in registry.projects:
         is_habit = project.category == HABIT_CATEGORY
         habit_locked_by = [
-            blocker for blocker in project.blocked_by if effective_status.get(blocker) != "done"
+            blocker
+            for blocker in project.blocked_by
+            if effective_status.get(blocker) not in COMPLETED_STATUSES
         ]
         connected = not is_habit and (
             project.name in blocks or any(b in roadmap_known for b in project.blocked_by)

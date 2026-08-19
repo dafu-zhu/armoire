@@ -15,20 +15,25 @@ copy it into the store; once copied, the folder's own armoire.toml is never
 read again.
 """
 
+import os
+import tempfile
 import tomllib
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
+
+import tomlkit
 
 from armoire.paths import PathOutsideRoot, resolve_in_root
 
 # The legacy filename to migrate *from*, not the file production reads. See
 # the module docstring.
 REGISTRY_NAME = "armoire.toml"
-STATUSES = ("not-started", "active", "paused", "done")
-# A project's status walks not-started -> active -> paused -> done; a project
-# with no `status` field at all has not been picked up yet, which is the
-# first of those, not the second.
+STATUSES = ("not-started", "active", "paused", "conditional-done", "done")
+COMPLETED_STATUSES = ("conditional-done", "done")
+# A project's status walks not-started -> active -> paused -> conditional-done
+# -> done. A project with no `status` field at all has not been picked up yet,
+# which is the first of those, not the second.
 DEFAULT_STATUS = "not-started"
 HABIT_CATEGORY = "habit"
 
@@ -45,6 +50,7 @@ class Project:
     category: str | None = None
     due: str | None = None
     note: str | None = None
+    conditional_note: str | None = None
     status: str = DEFAULT_STATUS
 
 
@@ -114,8 +120,39 @@ def _parse_project(entry, position: int) -> Project:
         category=entry.get("category"),
         due=due,
         note=entry.get("note"),
+        conditional_note=entry.get("conditional_note"),
         status=entry.get("status", DEFAULT_STATUS),
     )
+
+
+def set_conditional_note(registry_file: Path, name: str, note: str) -> None:
+    """Set one project's note while preserving the registry's TOML layout."""
+    try:
+        document = tomlkit.parse(registry_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RegistryError(f"{registry_file}: {exc}") from exc
+
+    entries = document.get("project", [])
+    match = next((entry for entry in entries if str(entry.get("name")) == name), None)
+    if match is None:
+        raise RegistryError(f"no such project {name!r}")
+    match["conditional_note"] = note
+
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(
+        dir=registry_file.parent, prefix=f"{registry_file.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="") as stream:
+            stream.write(tomlkit.dumps(document))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, registry_file)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def _find_cycle(projects: list[Project]) -> list[str] | None:
@@ -199,6 +236,14 @@ def load_registry(root: Path, registry_file: Path | None = None) -> Registry | N
             # remove the project from the graph.
             issues.append(
                 f"{project.name}: unknown status {project.status!r}, using {DEFAULT_STATUS!r}"
+            )
+            projects[position] = replace(project, status=DEFAULT_STATUS)
+        elif project.status == "conditional-done" and not (
+            isinstance(project.conditional_note, str) and project.conditional_note.strip()
+        ):
+            issues.append(
+                f"{project.name}: status 'conditional-done' requires a non-empty "
+                "conditional_note, using 'not-started'"
             )
             projects[position] = replace(project, status=DEFAULT_STATUS)
         if not project.blocked_by and not project.category:

@@ -22,7 +22,7 @@ from armoire.previews import extension_of, kind_for
 from armoire.previews.notebook import preview_notebook
 from armoire.previews.table import preview_table
 from armoire.previews.text import preview_text
-from armoire.projects import STATUSES, RegistryError, load_registry
+from armoire.projects import STATUSES, RegistryError, load_registry, set_conditional_note
 from armoire.scanner import list_dir
 
 logger = logging.getLogger(__name__)
@@ -314,6 +314,14 @@ def create_app(root: Path) -> FastAPI:
         if status not in STATUSES:
             raise HTTPException(status_code=400, detail=f"unknown status {status!r}")
         name = payload.get("name")
+        conditional_note = payload.get("conditional_note")
+        if status == "conditional-done" and not (
+            isinstance(conditional_note, str) and conditional_note.strip()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="conditional_note must be non-empty for status 'conditional-done'",
+            )
 
         try:
             registry = load_registry(root, registry_file)
@@ -326,6 +334,11 @@ def create_app(root: Path) -> FastAPI:
         # whole, so two threads that read it before either writes each
         # produce a document missing the other's edit. See _state_lock.
         with _state_lock:
+            if status == "conditional-done":
+                try:
+                    set_conditional_note(registry_file, name, conditional_note.strip())
+                except RegistryError as exc:
+                    raise HTTPException(status_code=404, detail=str(exc)) from None
             state = store.read_state(state_file)
             # An entry naming a project the registry no longer has is kept, not
             # pruned: renaming a project and renaming it back should not lose its
@@ -333,7 +346,10 @@ def create_app(root: Path) -> FastAPI:
             statuses = state.get("status")
             state["status"] = (statuses if isinstance(statuses, dict) else {}) | {name: status}
             store.write_state(state_file, state)
-        return {"name": name, "status": status}
+        result = {"name": name, "status": status}
+        if status == "conditional-done":
+            result["conditional_note"] = conditional_note.strip()
+        return result
 
     @app.post("/api/registry/open")
     def open_registry(request: Request) -> dict:

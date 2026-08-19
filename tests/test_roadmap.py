@@ -9,7 +9,7 @@ from conftest import folder_snapshot
 
 # The cycle order status.js's nextStatus walks. Imported from the server's own
 # tuple rather than retyped: STATUSES and STATUS_ORDER (status.js) are the same
-# four values in the same order, and the endpoint validates against STATUSES.
+# five values in the same order, and the endpoint validates against STATUSES.
 STATUS_ORDER = list(STATUSES)
 
 
@@ -701,6 +701,7 @@ def _status_reset_fixture(name):
 
 reset_upstream_status = _status_reset_fixture("Upstream")
 reset_downstream_status = _status_reset_fixture("Downstream")
+reset_standalone_status = _status_reset_fixture("Standalone")
 
 
 def test_the_four_statuses_render_four_distinct_borders(live_server, page):
@@ -809,6 +810,83 @@ def test_clicking_the_chip_does_not_open_the_side_panel(live_server, page, reset
     assert page.locator("#project-panel").is_hidden()
 
 
+def test_conditional_done_collects_and_edits_its_required_note(
+    live_server, page, reset_upstream_status
+):
+    paused = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Upstream", "status": "paused"},
+    )
+    assert paused.ok, paused.status
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    upstream = page.locator('.node[data-name="Upstream"]')
+
+    upstream.locator(".status-chip").click()
+
+    panel = page.locator("#project-panel")
+    panel.wait_for(state="visible")
+    assert "status-paused" in upstream.get_attribute("class")
+    assert "Conditional done" in panel.locator(".panel-field").first.text_content()
+    editor = panel.get_by_label("Notes")
+    assert editor.input_value() == ""
+    editor.fill("Finish the optional calibration examples.")
+    panel.get_by_role("button", name="Save changes").click()
+
+    page.wait_for_function(
+        "() => document.querySelector('.node[data-name=Upstream]')"
+        ".className.baseVal.includes('status-conditional-done')"
+    )
+    assert upstream.locator(".status-chip").text_content() == "✓*"
+    page.wait_for_function(
+        "() => !document.querySelector('.node[data-name=Downstream]')"
+        ".className.baseVal.includes('blocked')"
+    )
+    panel.get_by_text("Finish the optional calibration examples.", exact=True).wait_for()
+
+    panel.get_by_role("button", name="Edit notes").click()
+    editor = panel.get_by_label("Notes")
+    editor.fill("Finish examples 7–9 and document the exception.")
+    panel.get_by_role("button", name="Save changes").click()
+    panel.get_by_text("Finish examples 7–9 and document the exception.", exact=True).wait_for()
+
+    detail = page.request.get(f"{live_server}/api/project/Upstream").json()["project"]
+    assert detail["status"] == "conditional-done"
+    assert detail["conditional_note"] == "Finish examples 7–9 and document the exception."
+
+
+def test_conditional_done_uses_completed_visual_language(
+    live_server, page, reset_downstream_status
+):
+    response = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={
+            "name": "Downstream",
+            "status": "conditional-done",
+            "conditional_note": "Revisit the archived source notes.",
+        },
+    )
+    assert response.ok, response.status
+    page.goto(f"{live_server}/#/")
+    page.wait_for_selector(".node")
+    node = page.locator('.node[data-name="Downstream"]')
+
+    assert "status-conditional-done" in node.get_attribute("class")
+    assert float(node.locator("rect").get_attribute("height")) == 40
+    assert node.locator(".node-due").count() == 0
+    assert node.locator(".node-sub").count() == 0
+    assert node.locator(".status-chip").text_content() == "✓*"
+    assert "line-through" in node.locator(".node-title").evaluate(
+        "el => getComputedStyle(el).textDecorationLine"
+    )
+    conditional_fill = node.locator(".status-chip").evaluate("el => getComputedStyle(el).fill")
+    node.evaluate("el => el.setAttribute('class', 'node cat-0 status-done')")
+    done_fill = node.locator(".status-chip").evaluate("el => getComputedStyle(el).fill")
+    assert conditional_fill == done_fill
+
+
 def test_a_status_edit_survives_a_fresh_browser_context(
     live_server, page, browser, reset_upstream_status
 ):
@@ -843,23 +921,31 @@ def test_a_status_edit_survives_a_fresh_browser_context(
 def test_marking_the_last_blocker_done_unblocks_its_dependent(
     live_server, page, reset_upstream_status
 ):
+    paused = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Upstream", "status": "paused"},
+    )
+    assert paused.ok, paused.status
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
     dependent = page.locator('.node[data-name="Downstream"]')
     assert "blocked" in dependent.get_attribute("class")
     blocker = page.locator('.node[data-name="Upstream"] .status-chip')
     upstream = page.locator('.node[data-name="Upstream"]')
-    # Bounded, not `while ...: click()` -- no pytest-timeout is installed, so
-    # a chip that stopped cycling (a regression, not a hypothetical: this is
-    # exactly the class of bug fix round 1 introduced and fixed in setStatus
-    # ordering) would hang this test, and CI, forever. STATUS_ORDER has 4
-    # entries, so 4 clicks always reach "done" from any starting status; +1
-    # is slack, not a magic number.
-    for _ in range(5):
-        if "status-done" in upstream.get_attribute("class"):
-            break
-        blocker.click()
-        page.wait_for_timeout(150)
+    blocker.click()
+    panel = page.locator("#project-panel")
+    panel.get_by_label("Notes").fill("Complete the optional exercises later.")
+    panel.get_by_role("button", name="Save changes").click()
+    page.wait_for_function(
+        "() => document.querySelector('.node[data-name=Upstream]')"
+        ".className.baseVal.includes('status-conditional-done')"
+    )
+    blocker.click()
+    page.wait_for_function(
+        "() => document.querySelector('.node[data-name=Upstream]')"
+        ".className.baseVal.includes('status-done')"
+    )
     assert "status-done" in upstream.get_attribute("class")
     # Same unquoted-attribute-value fix as above, for the same reason.
     page.wait_for_function(
@@ -922,41 +1008,30 @@ def test_a_done_projects_node_collapses_on_reload(live_server, page, reset_downs
 def test_a_failed_status_write_reverts_the_chip_and_its_dependents(
     live_server, page, reset_upstream_status
 ):
-    """The rollback path (cycle()'s catch in roadmap.js) had zero coverage --
-    this is the gap that let Important 2's stale-rollback race through
-    review undetected. Cycles Upstream from its default 'not-started' through
-    'active' to 'paused' first (two normal, succeeding writes) so the write
-    this test actually breaks is the one that would also flip Downstream's
-    blocked-ness (paused -> done), proving applyStatus()'s full
-    recompute-on-rollback carries the dependent along too, not just the
-    clicked node itself."""
+    """A failed done -> not-started write restores both node and dependent."""
+    done = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Upstream", "status": "done"},
+    )
+    assert done.ok, done.status
     page.goto(f"{live_server}/#/")
     page.wait_for_selector(".node")
     upstream = page.locator('.node[data-name="Upstream"]')
     downstream = page.locator('.node[data-name="Downstream"]')
     chip = upstream.locator(".status-chip")
 
-    for _ in range(2):
-        before = upstream.get_attribute("class")
-        chip.click()
-        page.wait_for_function(
-            "cls => document.querySelector('.node[data-name=Upstream]').className.baseVal !== cls",
-            arg=before,
-        )
-    assert "status-paused" in upstream.get_attribute("class")
-    assert "blocked" in downstream.get_attribute("class")
+    assert "status-done" in upstream.get_attribute("class")
+    assert "blocked" not in downstream.get_attribute("class")
 
     page.route("**/api/status", lambda route: route.fulfill(status=500))
     chip.click()
-    # The optimistic change (status-done, Downstream unblocked) must revert
-    # once the write fails -- on both the clicked node and the dependent
-    # applyStatus's full recompute carries along.
     page.wait_for_function(
         "() => document.querySelector('.node[data-name=Upstream]')"
-        ".className.baseVal.includes('status-paused')"
+        ".className.baseVal.includes('status-done')"
     )
-    assert "status-paused" in upstream.get_attribute("class")
-    assert "blocked" in downstream.get_attribute("class")
+    assert "status-done" in upstream.get_attribute("class")
+    assert "blocked" not in downstream.get_attribute("class")
     page.unroute("**/api/status")
 
 
@@ -1295,6 +1370,9 @@ def test_finishing_a_gate_updates_the_habit_without_reloading(
     assert habit_state.inner_text() == "Locked · Course"
 
     page.locator('#categories [data-name="Course"] .status-chip').click()
+    panel = page.locator("#project-panel")
+    panel.get_by_label("Notes").fill("Repeat the final drill later.")
+    panel.get_by_role("button", name="Save changes").click()
 
     page.wait_for_function(
         "() => document.querySelector('[data-name=\"Locked Practice\"] .entry-state')?.textContent"
@@ -1308,6 +1386,9 @@ def test_a_failed_gate_status_write_relocks_the_habit(habit_server, page, habit_
     page.route("**/api/status", lambda route: route.fulfill(status=500))
 
     page.locator('#categories [data-name="Course"] .status-chip').click()
+    panel = page.locator("#project-panel")
+    panel.get_by_label("Notes").fill("Repeat the final drill later.")
+    panel.get_by_role("button", name="Save changes").click()
 
     page.wait_for_function(
         "() => document.querySelector('[data-name=\"Course\"]')?.classList"
@@ -1446,7 +1527,9 @@ def click_chip(page, selector, times):
     )
 
 
-def test_rapid_clicks_on_the_category_chip_serialize_their_writes(live_server, page):
+def test_rapid_clicks_on_the_category_chip_serialize_their_writes(
+    live_server, page, reset_standalone_status
+):
     """writeStatus (status.js) is a shared, module-scoped queue used by both
     roadmap.js and categories.js, and this is the only test of the ordering
     guarantee it exists for.
@@ -1464,6 +1547,12 @@ def test_rapid_clicks_on_the_category_chip_serialize_their_writes(live_server, p
     server whether the writes are queued or not.
     """
     page.add_init_script(FETCH_PROBE % SETTLE_MS)
+    seeded = page.request.put(
+        f"{live_server}/api/status",
+        headers={"X-Armoire": "1"},
+        data={"name": "Standalone", "status": "done"},
+    )
+    assert seeded.ok, seeded.status
     bodies = []
 
     def handler(route):
